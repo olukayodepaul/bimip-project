@@ -30,4 +30,4 @@ defmodule Storage.SubscriberSeeder do
 end
 
 # c("lib/test/simu.exs")
-# Storage.SubscriberSeeder.test_update()
+# Storage.SubscriberSeeder.seed_subscribers()

@@ -14,22 +14,35 @@ defmodule Bimip.SubscriberPresence do
   # ----------------------------------------------------
   # Subscribe the current owner to all friends' topics
   # ---------------------------------------------------
-  def subscribe_to_friends(owner_eid) do
+  def presence_subscriber(owner_eid) do
+    
+    # Each owner always listens to their own SINGLE channel
+    owner_topic = "SINGLE:#{owner_eid}"
+    :ok = PubSub.subscribe(@pubsub, owner_topic)
+
     friends = fetch_friends(owner_eid)
 
     Enum.each(friends, fn friend_eid ->
-      topic = "TOPIC:#{friend_eid}"
-      :ok = PubSub.subscribe(@pubsub, topic)
+      topic = "GENERAL:#{friend_eid}"
+      case PubSub.subscribe(@pubsub, topic) do
+        :ok ->
+          Logger.debug("[Awareness] owner=#{owner_eid} subscribed to #{topic}")
+
+        {:error, {:already_subscribed, ^topic}} ->
+          Logger.debug("[Awareness] owner=#{owner_eid} already subscribed to #{topic}")
+
+        other ->
+          Logger.warning(
+            "[Awareness] owner=#{owner_eid} unexpected result subscribing to #{topic}: #{inspect(other)}"
+          )
+      end
     end)
 
     Logger.debug(
-      "[Awareness] owner=#{owner_eid} subscribed to #{length(friends)} friends: #{inspect(friends)}"
+      "[Awareness] owner=#{owner_eid} total friends=#{length(friends)}"
     )
-  end
 
-  def user_level_subscribtion(eid) do
-    topic = "user_level_communication#{eid}"
-    PubSub.subscribe(@pubsub, topic)
+    :ok
   end
 
   def user_level_broadcast(eid, pid, message) do
@@ -54,7 +67,7 @@ defmodule Bimip.SubscriberPresence do
       awareness_intention: awareness_intention
     }
 
-    topic = "TOPIC:#{owner_eid}"
+    topic = "GENERAL:#{owner_eid}"
 
     Logger.info(
       "[Awareness] Broadcasting owner=#{owner_eid} status=#{awareness.status} to topic=#{topic}"
@@ -63,23 +76,18 @@ defmodule Bimip.SubscriberPresence do
     Phoenix.PubSub.broadcast(@pubsub, topic, {:awareness_update, awareness})
   end
 
-
   # ------------------------------
   # Fetch friends/subscribers directly from Storage.Subscriber
   # ------------------------------
-  defp fetch_friends(owner_eid) do
-    case Storage.Subscriber.fetch_subscribers_by_owner(owner_eid) do
-      {:ok, subscribers} ->
-        subscribers
-        |> Enum.filter(fn s -> s.status == :online and not s.blocked end)
-        |> Enum.map(& &1.subscriber_eid)
-
-      _ -> []
-    end
+  def fetch_friends(owner_eid) do
+    Storage.Subscriber.fetch_subscriber_ids_by_owner_all_arrays(owner_eid)
   end
+
 
 end
 
+# Storage.Subscriber.fetch_subscriber_ids_by_owner_all_arrays("a@domain.com")
+# Bimip.SubscriberPresence.fetch_friends("a@domain.com")
 #   # # ------------------------------
 #   # # Fan out awareness to all online child GenServers
 #   # # ------------------------------

@@ -140,5 +140,5 @@ end
 
 
 
-# Storage.Subscriber.fetch_subscriber_ids_by_owner_all_arrays("@domain.com")
+# Storage.Subscriber.fetch_subscriber_ids_by_owner_all_arrays("a@domain.com")
 # Storage.Subscriber.get_subscriber("a@domain.com", "b@domain.com") 

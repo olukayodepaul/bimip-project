@@ -5,7 +5,12 @@ defmodule Bimip.Service.Master do
   alias Bimip.Registry
   alias Bimip.Device.Supervisor
   alias Storage.DeviceStorage
+  alias Bimip.SubscriberPresence
+  alias Storage.DeviceStateChange
+  alias Settings.ServerState
   require Logger
+
+  @stale_threshold_seconds ServerState.stale_threshold_seconds()
 
   def start_link(eid) do
     GenServer.start(__MODULE__, eid, name: Registry.via_monitor_registry(eid))
@@ -13,7 +18,8 @@ defmodule Bimip.Service.Master do
 
   @impl true
   def init(eid) do
-    {:ok, %{eid: eid, current_timer: nil, force_stale: DateTime.utc_now(),  devices: %{}}}
+    SubscriberPresence.presence_subscriber(eid)
+    {:ok, %{eid: eid, current_timer: nil, force_stale: DateTime.utc_now(), awareness: nil, devices: %{}}}
   end
 
   # Device session start
@@ -50,24 +56,86 @@ defmodule Bimip.Service.Master do
         supports_media: true,
         status_source: "LOGIN",
         awareness_intention: 2,
-        inserted_at: now
+        inserted_at: now,
+
     }
-    DeviceStorage.save(device_id, eid, device_payload)
+  
+    case DeviceStorage.save(device_id, eid, device_payload) do
+      {:ok, awareness} ->
+        case Storage.DeviceStateChange.track_state_change(eid) do
+          {:changed, user_status, _online_devices} ->
+            Logger.info(""" 
+            [LOGIN] changed eid=#{eid} device_id=#{device_id} awareness=#{awareness}
+            → user_status CHANGED to #{user_status}
+            """)
+            
+            SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
+            DeviceStateChange.cancel_termination_if_all_offline(state, awareness)
 
-    case Storage.DeviceStateChange.track_state_change(eid) do
-    {:changed, user_status, _online_devices} ->
-      Logger.warning(":changed Reach by server login 2 #{device_id} - user_status: #{user_status}")
+          {:unchanged, user_status, _online_devices} ->
 
-    {:unchanged, user_status, _online_devices} ->
-      Logger.warning(":unchanged Reach by server login 3 #{device_id} - user_status: #{user_status}")
+            Logger.debug(""" 
+            [LOGIN] unchanged eid=#{eid} device_id=#{device_id} awareness=#{awareness}
+            → user_status remains #{user_status}
+            """)
+            DeviceStateChange.cancel_termination_if_all_offline(state, awareness)
+
+        end
+
+      {:error, reason} ->
+        Logger.error("""
+        [LOGIN-FAILED] eid=#{eid} device_id=#{device_id}
+        → failed to save device, reason=#{inspect(reason)}
+        """)
+        # terminate_user(device_id, eid)
+        {:noreply, state}
     end
-
-    {:noreply, state}
+    
   end
 
   # @impl true
-  def handle_cast({:client_send_pong, {eid, device_id, status}},  state) do
+  def handle_cast({:client_send_pong, {eid, device_id, status}},  %{ force_stale: force_stale, awareness: awareness } = state) do
+    
+    now = DateTime.utc_now()
+    DeviceStorage.update_device_status(device_id, eid, "PONG")
+    
+    case Storage.DeviceStateChange.track_state_change(eid) do
+      {:changed, user_status, _online_devices} ->
+
+        IO.inspect({eid, "PONG 1", :changed})
+        SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
+        {:noreply, %{state | force_stale: now}}
+
+      {:unchanged, user_status, _online_devices} ->
+
+        IO.inspect({eid, "PONG 2", :unchanged})
+
+        idle_too_long? = DateTime.diff(now, force_stale) >= @stale_threshold_seconds
+
+        if idle_too_long? do
+          IO.inspect({eid, "PONG 3", :unchanged})
+          SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
+          {:noreply, %{state | force_stale: now}}
+
+        else
+
+          {:noreply, state}
+
+        end
+    end
+  end
+
+  #still need to make adjustment to this
+  @impl true
+  def handle_info({:awareness_update, %Strucs.Awareness{} = awareness}, %{eid: eid} = state) do
+    IO.inspect({ awareness})
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:terminate_process, intent}, state) do
+    # IO.inspect("Terminate")
+    {:stop, :normal, state}
   end
 
 

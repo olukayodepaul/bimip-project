@@ -16,10 +16,10 @@ defmodule Storage.DeviceStateChange do
   # -----------------------------
   defp user_status_with_devices(owner_eid) do
     now = DateTime.utc_now()
-    devices = DeviceStorage.get_devices_by_eid(owner_eid)
+    devices = DeviceStorage.fetch_devices_by_eid(owner_eid)
 
     owner_override? =
-      Enum.any?(devices, fn d -> d.payload.awareness_intention == 1 end)
+      Enum.any?(devices, fn d -> d.awareness_intention == 1 end)
 
     online_devices =
       if owner_override? do
@@ -27,10 +27,10 @@ defmodule Storage.DeviceStateChange do
       else
         devices
         |> Enum.filter(fn d ->
-          d.payload.status == "ONLINE" and
-          DateTime.diff(now, d.payload.last_seen) <= @stale_threshold_seconds
+          d.status == "ONLINE" and
+          DateTime.diff(now, d.last_seen) <= @stale_threshold_seconds
         end)
-        |> Enum.sort_by(& &1.payload.last_seen, {:desc, DateTime})
+        |> Enum.sort_by(& &1.last_seen, {:desc, DateTime})
       end
 
     user_status =
@@ -42,6 +42,7 @@ defmodule Storage.DeviceStateChange do
 
     {user_status, online_devices}
   end
+
 
 
   defp device_ids(devices), do: Enum.map(devices, & &1.device_id) |> Enum.sort()
@@ -113,7 +114,7 @@ defmodule Storage.DeviceStateChange do
   # -----------------------------
   def schedule_termination_if_all_offline(%{eid: eid, current_timer: current_timer} = state, intent) do
     now = DateTime.utc_now()
-    devices = DeviceStorage.get_devices_by_eid(eid)
+    devices = DeviceStorage.fetch_devices_by_eid(eid)
 
     online_devices =
       devices
@@ -144,12 +145,12 @@ defmodule Storage.DeviceStateChange do
     end
   end
 
-  def cancel_termination_if_all_offline(state) do
+  def cancel_termination_if_all_offline(state, awareness) do
     if state.current_timer do
       Process.cancel_timer(state.current_timer)
       Logger.info("Cancelled termination timer for #{state.eid}")
     end
-    {:noreply, %{state | current_timer: nil}}
+    {:noreply, %{state | current_timer: nil, awareness: awareness}}
   end
 
   def remaining_active_devices?(eid) do
@@ -171,3 +172,4 @@ defmodule Storage.DeviceStateChange do
   end
   
 end
+
