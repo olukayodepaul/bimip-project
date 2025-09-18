@@ -1,0 +1,222 @@
+syntax = "proto3";
+
+package bimip.chat;
+
+// ---------------- Identity ----------------
+message Identity {
+  string eid = 1;                     // User ID
+  string connection_resource_id = 2;  // Device/session ID
+}
+
+// ---------------- Payloads ----------------
+message TextPayload {
+  string content = 1;
+}
+
+message MediaPayload {
+  int32  type         = 1;  // 1=image | 2=audio | 3=video | 4=file
+  string cdn_url      = 2;  // CDN resource link (may be placeholder at first)
+  string thumbnail_url = 3;
+  int64  size_bytes   = 4;
+  int64  duration_ms  = 5;  // for audio/video
+}
+
+// ---------------------------------- ChatMessage ----------------------------
+message ChatMessage {
+  string message_id       = 1;  // server-assigned global ID (empty if pending)
+  string message_id_local = 2;  // client temporary ID
+  int64  version          = 3;  // server-assigned chat sequence (0 if pending)
+  string chat_id          = 4;  // conversation ID
+
+  Identity from           = 5;
+  repeated Identity to    = 6;
+
+  oneof payload {
+    TextPayload  text  = 7;
+    MediaPayload media = 8;
+  }
+
+  int64 created_at         = 9;  // client timestamp (ms)
+  int64 server_received_at = 10; // server persist timestamp (ms)
+}
+
+// ---------------- MessageUpdate ----------------
+message MessageUpdate {
+  string message_id       = 1;  // target server ID
+  string message_id_local = 2;  // optional, reconcile pending message
+  int64  version          = 3;  // updated server version
+
+  // fields updated later (CDN, size, duration, etc.)
+  string cdn_url       = 4;
+  string thumbnail_url = 5;
+  int64  size_bytes    = 6;
+  int64  duration_ms   = 7;
+}
+
+// ---------------- Acknowledgment ----------------
+message Acknowledgment {
+  string message_id = 1;       // server-assigned global ID
+  Identity from     = 2;       // receiving client
+  Identity to       = 3;       // original sender
+  int32  status     = 4;       // 1=sent | 2=delivered | 3=read
+  int64  timestamp  = 5;       // client-side timestamp
+}
+
+// ---------------- Awareness ----------------
+message Awareness {
+  string awareness_id = 1; // unique id for this event
+  Identity from       = 2; // who generated it
+  string chat_id      = 3; // which chat
+
+  int32 typing          = 4; // 0=false, 1=true
+  int32 recording_audio = 5; // 0=false, 1=true
+  int32 recording_video = 6; // 0=false, 1=true
+  int32 online          = 7; // 0=false, 1=true
+  int64 last_seen       = 8; // ms epoch
+  int64 timestamp       = 9; // when event emitted
+}
+
+// ---------------- Device Version Sync ----------------
+message DeviceVersion {
+  Identity to           = 1;
+  string connection_resource_id = 1; // Device ID
+  int64 last_seen_version       = 2; // Last version synced
+}
+
+
+
+message VersionResponse {
+  repeated ChatMessage messages = 1; // messages since last version
+}
+
+// ---------------- Media Upload ----------------
+message MediaUploadRequest {
+  string upload_id   = 1;   // client-generated
+  int32  type        = 2;   // 1=image | 2=audio | 3=video | 4=file
+  bytes  data_chunk  = 3;   // chunked data
+  int32  last_chunk  = 4;   // 0=false, 1=true
+}
+
+message MediaUploadResponse {
+  string upload_id     = 1;
+  string cdn_url       = 2;   // final CDN URL
+  string thumbnail_url = 3;
+  int64  size_bytes    = 4;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+syntax = "proto3";
+
+package dartmessaging;
+
+// ---------------- Identity ----------------
+message Identity {
+  string eid                    = 1; // e.g., user@domain.com
+  string connection_resource_id  = 2; // optional, for multi-device support
+}
+
+// ---------------- Payloads ----------------
+message TextPayloadRequest {
+  Identity from           = 1;
+  repeated Identity to    = 2;
+  string content          = 3;
+  string message_id_local = 4;
+  string text_size_count  = 5;
+  int64 created_at        = 6;
+}
+
+message MediaPayloadRequest {
+  Identity from           = 1;
+  repeated Identity to    = 2;
+  string message_id_local = 3;
+  string chat_id          = 4;
+  int32  type             = 5;  // 1=image | 2=audio | 3=video | 4=file
+  string caption          = 6;
+  string thumbnail_url    = 7;
+  string cdn_url_id       = 8;
+  int64 media_size_bytes  = 9;
+  int64 created_at        = 10;
+}
+
+// ---------------- Acknowledgment ----------------
+message AcknowledgmentRequest {
+  Identity from     = 1;  // sending client or receiving client depending on flow
+  Identity to       = 2;  // original sender or receiver
+  string message_id = 3;
+
+  // Status codes:
+  // Sender side: 1=unread | 2=delivered | 3=read
+  // Receiver side: 4=sent (initial) | 2=delivered | 3=read
+  int32  status     = 4;  
+  int64  timestamp  = 5;  // time of acknowledgment
+}
+
+message AcknowledgmentResponse {
+  Identity from     = 1;  // sender/receiver depending on flow
+  Identity to       = 2;  // receiver/sender depending on flow
+  string message_id = 3;
+
+  // Status codes:
+  // Sender side: 1=unread | 2=delivered | 3=read
+  // Receiver side: 4=sent (initial) | 2=delivered | 3=read
+  int32  status     = 4;
+  int64  timestamp  = 5;  // time of acknowledgment
+}
+
+// ---------------- ChatMessage ----------------
+
+message VersionUpdate {
+  Identity to       = 1;  // original sender or receiver
+  string message_id = 2;
+  string message_id_local = 3;  // client temporary ID
+  type = 3; //1 = REQUEST
+  timestamp = 4;
+  status = 5; send =1, updated =2 
+}
+
+message VersionResponse {
+  Identity to       = 1;  // original sender or receiver
+  string message_id = 2;
+  string message_id_local = 3;  // client temporary ID
+  type = 3; //1 = RESPONSE
+  timestamp = 4
+}
+
+
+message ChatMessage {
+  string message_id       = 1;  // server-assigned global ID
+  string message_id_local = 2;  // client temporary ID
+  int64  version          = 3;  // server-assigned chat sequence
+  string chat_id          = 4;  // conversation ID
+  Identity from           = 5;  // message sender
+  repeated Identity to    = 6;  // message receivers
+  string author           = 7;  // 1=sender | 2=receiver (was ownership)
+
+  oneof payload {
+    string text       = 8;
+    string media_url  = 9;  // CDN links
+  }
+
+  // Acknowledgment status codes:
+  // For sender: 1=unread | 2=delivered | 3=read
+  // For receiver: 4=sent (initial) | 2=delivered | 3=read
+  int32 acknowledgment            = 10;  // current acknowledgment status
+  int64 acknowledgment_timestamp  = 11;  // time of latest acknowledgment update
+
+  int64 created_at                = 12;  // message creation timestamp (client)
+  int64 server_received_at        = 13;  // timestamp when server received message
+}
