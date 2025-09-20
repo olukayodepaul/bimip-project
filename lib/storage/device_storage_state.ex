@@ -112,7 +112,7 @@ defmodule Storage.DeviceStateChange do
   # -----------------------------
   # Termination scheduling
   # -----------------------------
-  def schedule_termination_if_all_offline(%{eid: eid, current_timer: current_timer} = state, intent) do
+  def schedule_termination_if_all_offline(%{eid: eid, current_timer: current_timer} = state) do
     now = DateTime.utc_now()
     devices = DeviceStorage.fetch_devices_by_eid(eid)
 
@@ -137,7 +137,7 @@ defmodule Storage.DeviceStateChange do
         "(stale_threshold: #{@stale_threshold_seconds}s, last_seen diff: #{diff}s)"
       )
 
-      timer_ref = Process.send_after(self(), {:terminate_process, intent}, grace_period_ms)
+      timer_ref = Process.send_after(self(), :terminate, grace_period_ms)
       {:noreply, %{state | current_timer: timer_ref}}
     else
       Logger.info("There are still online devices. No termination scheduled.")
@@ -157,7 +157,7 @@ defmodule Storage.DeviceStateChange do
     now = DateTime.utc_now()
     benchmark_time = DateTime.add(now, -@stale_threshold_seconds, :second)
 
-    DeviceStorage.get_devices_by_eid(eid)
+    DeviceStorage.fetch_devices_by_eid(eid)
     |> Enum.filter(fn d ->
       d.status == "ONLINE" and
         case d.last_seen do
@@ -173,3 +173,6 @@ defmodule Storage.DeviceStateChange do
   
 end
 
+# Storage.DeviceStateChange.remaining_active_devices?("a@domain.com")
+# Storage.DeviceStorage.get_device("a@domain.com", "aaaaa2")
+# Storage.DeviceStorage.delete_device("aaaaa2", "a@domain.com")

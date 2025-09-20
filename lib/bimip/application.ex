@@ -18,6 +18,8 @@ defmodule Bimip.Application do
     ensure_user_state_table()
     ensure_subscriber_table()
     ensure_subscriber_index()
+    ensure_queue()
+    ensure_queuing_index()
 
     tcp_connection =
       if Connections.secure_tls?() do
@@ -137,6 +139,58 @@ defmodule Bimip.Application do
       other -> Logger.error("⚠️ Failed to create subscriber index table: #{inspect(other)}")
     end
   end
+
+
+    @doc """
+  Ensures the queuing_index table exists.
+  - eid: Entity ID (owner of the queue)
+  - channel: Queue channel (:sub, :block_sub, etc.)
+  - max_id: Highest message id assigned so far
+  - last_offset: Last consumed offset for FIFO tracking
+  """
+  def ensure_queuing_index do
+    case :mnesia.create_table(:queuing_index, [
+          {:attributes, [:eid, :max_id, :last_offset]},
+          {:disc_copies, [node()]},
+          {:type, :set}
+        ]) do
+      {:atomic, :ok} ->
+        Logger.info("✅ queuing_index table created")
+
+      {:aborted, {:already_exists, _}} ->
+        :ok
+
+      other ->
+        Logger.error("⚠️ Failed to create queuing_index table: #{inspect(other)}")
+    end
+  end
+
+  @doc """
+  Ensures the queue table exists.
+  - eid: Entity ID (owner of the queue)
+  - msg_id: Sequential message id
+  - payload: Message content
+  - timestamp: Insert time
+  """
+  def ensure_queue do
+    case :mnesia.create_table(:queue, [
+          {:attributes, [:key, :payload, :timestamp]},
+          {:disc_copies, [node()]},
+          {:type, :set}
+        ]) do
+      {:atomic, :ok} ->
+        Logger.info("✅ queue table created")
+
+      {:aborted, {:already_exists, _}} ->
+        :ok
+
+      other ->
+        Logger.error("⚠️ Failed to create queue table: #{inspect(other)}")
+    end
+  end
+
+
+  
 
 end
 

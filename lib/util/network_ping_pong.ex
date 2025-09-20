@@ -13,7 +13,7 @@ defmodule Util.Network.AdaptivePingPong do
   require Logger
   alias Settings.AdaptiveNetwork
   alias App.RegistryHub
-  alias Util.DeviceState
+  alias Util.Client.DeviceState
 
   @max_pong_counter AdaptiveNetwork.max_pong_retries()
   @default_ping_interval AdaptiveNetwork.default_ping_interval_ms()
@@ -41,6 +41,7 @@ defmodule Util.Network.AdaptivePingPong do
         Logger.error(
           "[#{device_id}] Ping delayed by #{delta}s (> #{@max_allowed_delay}), terminating GenServer"
         )
+        RegistryHub.send_terminate_signal_to_server({device_id, eid})
         {:stop, :normal, state}
 
       # Too many missed pongs → mark offline
@@ -56,15 +57,15 @@ defmodule Util.Network.AdaptivePingPong do
             schedule_ping(device_id, last_rtt)
 
             {:noreply,
-             %{
-               state
-               | missed_pongs: max_missed,
-                 pong_counter: counter,
-                 last_rtt: nil,
-                 last_send_ping: nil,
-                 last_state_change: now,
-                 device_state: new_device_state
-             }}
+              %{
+                state
+                | missed_pongs: max_missed,
+                  pong_counter: counter,
+                  last_rtt: nil,
+                  last_send_ping: nil,
+                  last_state_change: now,
+                  device_state: new_device_state
+              }}
 
           {:unchr, same_device_state} ->
             Logger.debug("[#{device_id}] Still OFFLINE (no new state change)")
@@ -72,14 +73,14 @@ defmodule Util.Network.AdaptivePingPong do
             schedule_ping(device_id, last_rtt)
 
             {:noreply,
-             %{
-               state
-               | missed_pongs: max_missed,
-                 pong_counter: counter,
-                 last_rtt: nil,
-                 last_send_ping: nil,
-                 device_state: same_device_state
-             }}
+              %{
+                state
+                | missed_pongs: max_missed,
+                  pong_counter: counter,
+                  last_rtt: nil,
+                  last_send_ping: nil,
+                  device_state: same_device_state
+              }}
         end
 
       # Normal ping
@@ -109,14 +110,14 @@ defmodule Util.Network.AdaptivePingPong do
         )
 
         {:noreply,
-         %{
-           state
-           | missed_pongs: missed + 1,
-             pong_counter: counter,
-             timer: now,
-             last_rtt: last_rtt,
-             last_send_ping: now
-         }}
+          %{
+            state
+            | missed_pongs: missed + 1,
+              pong_counter: counter,
+              timer: now,
+              last_rtt: last_rtt,
+              last_send_ping: now
+          }}
     end
   end
 
@@ -124,31 +125,31 @@ defmodule Util.Network.AdaptivePingPong do
     Logger.info("[#{state.device_id}] Device ONLINE state refreshed via ping counter reset")
 
     {:noreply,
-     %{
-       state
-       | missed_pongs: missed + 1,
-         pong_counter: counter,
-         timer: now,
-         last_rtt: last_rtt,
-         last_send_ping: now,
-         last_state_change: DateTime.utc_now(),
-         device_state: chr_device_state
-     }}
+      %{
+        state
+        | missed_pongs: missed + 1,
+          pong_counter: counter,
+          timer: now,
+          last_rtt: last_rtt,
+          last_send_ping: now,
+          last_state_change: DateTime.utc_now(),
+          device_state: chr_device_state
+      }}
   end
 
   defp update_state_after_increment(state, counter, missed, last_rtt, now, {:unchr, unchr_device_state}) do
     Logger.debug("[#{state.device_id}] Device state unchanged (ONLINE) after ping counter increment")
 
     {:noreply,
-     %{
-       state
-       | missed_pongs: missed + 1,
-         pong_counter: counter,
-         timer: now,
-         last_rtt: last_rtt,
-         last_send_ping: now,
-         device_state: unchr_device_state
-     }}
+    %{
+      state
+      | missed_pongs: missed + 1,
+        pong_counter: counter,
+        timer: now,
+        last_rtt: last_rtt,
+        last_send_ping: now,
+        device_state: unchr_device_state
+    }}
   end
 
   defp increment_counter(counter, device_id, eid, last_state_change, state) do

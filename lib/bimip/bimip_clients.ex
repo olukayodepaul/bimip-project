@@ -32,7 +32,7 @@ defmodule Bimip.Device.Client do
 
       # nested device state (replacement for ETS)
       device_state: %{
-        device_status: "OFFLINE",  # pick one as default
+        device_status: "ONLINE",  # pick one as default
         last_change_at: nil,
         last_seen: nil,
         last_activity: nil,
@@ -50,6 +50,14 @@ defmodule Bimip.Device.Client do
   def handle_cast({:received_pong, {device_id, receive_time}}, state) do 
     AdaptivePingPong.pongs_received(device_id, receive_time, state)
   end
+
+  def handle_cast({:send_terminate_signal_to_client, {device_id, eid}}, state) do
+    IO.inspect("CLIENT")
+    RegistryHub.send_terminate_signal_to_server({device_id, eid})
+    {:stop, :normal, state}
+  end
+
+
 
 end
 

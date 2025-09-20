@@ -1,5 +1,5 @@
 defmodule Bimip.Service.Master do
-    #bimip
+  #bimip
 
   use GenServer
   alias Bimip.Registry
@@ -8,6 +8,8 @@ defmodule Bimip.Service.Master do
   alias Bimip.SubscriberPresence
   alias Storage.DeviceStateChange
   alias Settings.ServerState
+  
+
   require Logger
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
@@ -57,7 +59,6 @@ defmodule Bimip.Service.Master do
         status_source: "LOGIN",
         awareness_intention: 2,
         inserted_at: now,
-
     }
   
     case DeviceStorage.save(device_id, eid, device_payload) do
@@ -102,13 +103,10 @@ defmodule Bimip.Service.Master do
     case Storage.DeviceStateChange.track_state_change(eid) do
       {:changed, user_status, _online_devices} ->
 
-        IO.inspect({eid, "PONG 1", :changed})
         SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
         {:noreply, %{state | force_stale: now}}
 
       {:unchanged, user_status, _online_devices} ->
-
-        IO.inspect({eid, "PONG 2", :unchanged})
 
         idle_too_long? = DateTime.diff(now, force_stale) >= @stale_threshold_seconds
 
@@ -116,13 +114,41 @@ defmodule Bimip.Service.Master do
           IO.inspect({eid, "PONG 3", :unchanged})
           SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
           {:noreply, %{state | force_stale: now}}
-
         else
-
           {:noreply, state}
-
         end
     end
+  end
+
+  @impl true
+  def handle_cast({:send_terminate_signal_to_server, %{device_id: device_id, eid: eid}}, %{awareness: awareness} = state) do
+      # remove the device
+      DeviceStorage.delete_device(device_id, eid)
+      case DeviceStateChange.remaining_active_devices?(eid) do
+      true ->
+        # At least one device is still active
+        Logger.warning("2 No active devices for #{eid}. Terminating process.")
+        DeviceStateChange.cancel_termination_if_all_offline(state, awareness)
+      false ->
+        # No active devices → safe to terminate
+        Logger.warning("No active devices for #{eid}. Terminating process.")
+        DeviceStateChange.schedule_termination_if_all_offline(state)
+      end
+  end
+
+  def handle_info(:terminate, %{eid: eid, awareness: awareness} = state) do
+    case DeviceStateChange.remaining_active_devices?(eid) do
+      true ->
+        # At least one device is still active
+        Logger.info("Devices still active for #{eid}. Not terminating.")
+        {:noreply, %{state | current_timer: nil}}
+
+      false ->
+        # No active devices → safe to terminate
+        Logger.warning("No active devices for #{eid}. Terminating process.")
+        SubscriberPresence.broadcast_awareness(eid, awareness, :offline)
+        {:stop, :normal, state}
+      end
   end
 
   #still need to make adjustment to this
@@ -133,10 +159,52 @@ defmodule Bimip.Service.Master do
   end
 
   @impl true
-  def handle_info({:terminate_process, intent}, state) do
-    # IO.inspect("Terminate")
-    {:stop, :normal, state}
+  def handle_info(:fetch_batch, state) do
+    # Only fetch if devices are active
+    if DeviceStateChange.remaining_active_devices?(state.eid) do
+      # Get latest offsets from queue_index
+      {last_offset, max_id} = QueueStorage.fetch_queue_index(state.eid, state.channel)
+
+      # Fetch next batch starting from last_offset + 1
+      batch = QueueStorage.fetch(state.eid, state.channel, state.batch_size, last_offset + 1)
+
+      if batch != [] do
+        # Fan-out messages to devices
+        Logger.info("Fetched batch: #{inspect(batch)} for active devices")
+        # TODO: push batch to online devices
+
+        new_last_offset = last_offset + length(batch)
+        QueueStorage.update_queue_index(state.eid, state.channel, new_last_offset, max_id)
+
+        # Schedule next batch fetch after a short delay
+        state = schedule_fetch(state)
+        {:noreply, state}
+      else
+        # No more messages → stop fan-out
+        Logger.info("No more messages to fetch for #{state.eid}")
+        {:noreply, %{state | fetch_timer: nil}}
+      end
+    else
+      # No devices online → terminate process
+      Logger.warning("No active devices for #{state.eid}. Terminating fan relay.")
+      #schdule termination
+      {:noreply, state}
+    end
   end
+
+  defp schedule_fetch(state) do
+    if DeviceStateChange.remaining_active_devices?(state.eid) do
+      fetch_timer = Process.send_after(self(), :fetch_batch, 100)
+      %{state | fetch_timer: fetch_timer}
+    else
+      #schdule termination
+      {:noreply, state}
+    end
+  end
+
+
+
+
 
 
 end

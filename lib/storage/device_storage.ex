@@ -185,11 +185,11 @@ defmodule Storage.DeviceStorage do
     key = {eid, device_id}
 
     :mnesia.transaction(fn ->
-      # delete from main table
+      # Delete from primary table
       :mnesia.delete({@device_table, key})
 
-      # delete from index table
-      :mnesia.delete({@device_index_table, eid, device_id})
+      # Delete only the matching entry in the index
+      :mnesia.delete_object({@device_index_table, eid, device_id})
     end)
     |> case do
       {:atomic, _} -> :ok
@@ -199,3 +199,5 @@ defmodule Storage.DeviceStorage do
 
 end
 # Storage.DeviceStorage.get_device("a@domain.com", "aaaaa1")
+# Storage.DeviceStorage.check_index_by_eid("a@domain.com")
+# Storage.DeviceStorage.delete_device("aaaaa1", "a@domain.com")

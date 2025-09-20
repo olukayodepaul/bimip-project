@@ -1,4 +1,4 @@
-defmodule Util.DeviceState do
+defmodule Util.Client.DeviceState do
   @moduledoc """
   Tracks device state changes using the same logic as ETS, but keeps state in the GenServer.
 

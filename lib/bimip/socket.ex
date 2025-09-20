@@ -5,6 +5,7 @@ defmodule Bimip.Socket do
   alias Bimip.Auth.TokenVerifier
   alias Util.{ConnectionsHelper, TokenRevoked}
   alias Bimip.Supervisor.Orchestrator
+  alias App.RegistryHub
   alias Bimip.Service.Master
   alias Util.Network.AdaptivePingPong
   require Logger
@@ -43,7 +44,9 @@ defmodule Bimip.Socket do
     end
 
     #terminate, send offline message.......
-    def terminate(_reason, _req, _state) do
+    def terminate(reason, _req, state) do
+      IO.inspect("SOCKET")
+      RegistryHub.handle_terminate(reason, state)
       :ok
     end
 
