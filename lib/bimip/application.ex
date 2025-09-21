@@ -9,6 +9,7 @@ defmodule Bimip.Application do
   @impl true
   def start(_type, _args) do
 
+    
     :mnesia.stop()
     # :mnesia.delete_schema([node()])
     :mnesia.create_schema([node()])
@@ -188,9 +189,6 @@ defmodule Bimip.Application do
         Logger.error("⚠️ Failed to create queue table: #{inspect(other)}")
     end
   end
-
-
-  
 
 end
 

@@ -202,9 +202,4 @@ defmodule Bimip.Service.Master do
     end
   end
 
-
-
-
-
-
 end
