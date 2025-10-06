@@ -8,7 +8,6 @@ defmodule Bimip.Application do
 
   @impl true
   def start(_type, _args) do
-
     
     :mnesia.stop()
     # :mnesia.delete_schema([node()])
@@ -19,6 +18,7 @@ defmodule Bimip.Application do
     ensure_user_state_table()
     ensure_subscriber_table()
     ensure_subscriber_index()
+    ensure_user_awareness_table()
     ensure_queue()
     ensure_queuing_index()
 
@@ -88,6 +88,15 @@ defmodule Bimip.Application do
   defp ensure_device_table do
     ensure_table(:device, [
       {:attributes, [:key, :payload, :last_offset, :timestamp]},
+      {:disc_copies, [node()]},
+      {:type, :set}
+    ])
+  end
+
+  # Device table
+  defp ensure_user_awareness_table do
+    ensure_table(:user_awareness_table, [
+      {:attributes, [:key, :awareness,  :timestamp]},
       {:disc_copies, [node()]},
       {:type, :set}
     ])

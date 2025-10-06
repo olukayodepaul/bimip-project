@@ -6,8 +6,9 @@ defmodule QueueStorage do
   1. `:queuing_index` – stores queue metadata: `[msg_ids]` and `offset`.
   2. `:queue` – stores actual messages by `{eid, msg_id}`.
   """
+  alias Settings.Queue
 
-  @max_queue_size 20  # max messages to keep per queue, adjust as needed
+  @max_queue_size Queue.max_queue_size() # max messages to keep per queue, adjust as needed
 
   ## --------------------
   ## Insert message (append to list, prune old)
@@ -95,7 +96,7 @@ defmodule QueueStorage do
           Enum.flat_map(match_spec, &(:mnesia.select(:queue, [&1])))
         end)
       end,
-      max_concurrency: 8,
+      max_concurrency: 4,
       timeout: :infinity
     )
     |> Enum.flat_map(fn {:ok, results} -> results end)

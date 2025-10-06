@@ -166,6 +166,7 @@ defmodule Util.Network.AdaptivePingPong do
   # Device state change
   # -------------------------
   def state_change(device_id, eid, status, last_state_change, state, awareness_intention \\ 2) do
+    
     attrs = %{
       status: status,
       last_seen: DateTime.utc_now(),
@@ -264,15 +265,15 @@ defmodule Util.Network.AdaptivePingPong do
 
       {:unpr_count, counter} ->
         {:noreply,
-         %{
-           state
-           | missed_pongs: 0,
-             pong_counter: counter,
-             timer: receive_time,
-             last_rtt: rtt,
-             max_missed_pongs_adaptive: adaptive_max_missed,
-             last_send_ping: receive_time
-         }}
+          %{
+            state
+            | missed_pongs: 0,
+              pong_counter: counter,
+              timer: receive_time,
+              last_rtt: rtt,
+              max_missed_pongs_adaptive: adaptive_max_missed,
+              last_send_ping: receive_time
+          }}
     end
   end
 

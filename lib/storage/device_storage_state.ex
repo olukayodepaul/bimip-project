@@ -43,8 +43,6 @@ defmodule Storage.DeviceStateChange do
     {user_status, online_devices}
   end
 
-
-
   defp device_ids(devices), do: Enum.map(devices, & &1.device_id) |> Enum.sort()
 
   # -----------------------------
@@ -145,12 +143,11 @@ defmodule Storage.DeviceStateChange do
     end
   end
 
-  def cancel_termination_if_all_offline(state, awareness) do
-    if state.current_timer do
-      Process.cancel_timer(state.current_timer)
-      Logger.info("Cancelled termination timer for #{state.eid}")
+  def cancel_termination_if_device_is_online(current_timer) do
+    if current_timer do
+      Logger.info("Cancelled termination timer for #{current_timer}")
+      Process.cancel_timer(current_timer)
     end
-    {:noreply, %{state | current_timer: nil, awareness: awareness}}
   end
 
   def remaining_active_devices?(eid) do

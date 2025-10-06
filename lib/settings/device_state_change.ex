@@ -1,4 +1,4 @@
-defmodule Settings.DeviceState do
+defmodule Settings.AppDeviceState do
   @moduledoc """
   Provides access to device state thresholds for Bimip.
   """

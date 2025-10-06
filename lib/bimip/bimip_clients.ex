@@ -14,8 +14,8 @@ defmodule Bimip.Device.Client do
   @impl true
   def init({eid, device_id, ws_pid}) do
 
-    AdaptivePingPong.schedule_ping(device_id)
     RegistryHub.register_device_in_server({device_id, eid, ws_pid}) # pass
+    AdaptivePingPong.schedule_ping(device_id)
 
     {:ok,
     %{
@@ -35,7 +35,7 @@ defmodule Bimip.Device.Client do
         device_status: "ONLINE",  # pick one as default
         last_change_at: nil,
         last_seen: nil,
-        last_activity: nil,
+        last_activity:  DateTime.utc_now()
       }
     }}
   end

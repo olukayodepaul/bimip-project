@@ -27,9 +27,12 @@ config :bimip, :adaptive_network_ping_pong,
   max_missed_pongs: %{high: 8, low: 3, default: 5}
 
 config :bimip, :device_state_change,
-  stale_threshold_seconds: 60 * 3,   # Device considered stale after 2 min without pong
-  force_change_seconds: 20    # Force a rebroadcast every 1 min idle
+  stale_threshold_seconds: 60 * 1,   # Device considered stale after 2 min without pong
+  force_change_seconds: 10   # Force a rebroadcast every 1 min idle
 
 config :bimip, :server_state,
   stale_threshold_seconds: 60 * 1,   # 60 * 20 User considered stale after 10 min no device activity
-  force_change_seconds: 60 * 1       # Force rebroadcast every 5 min idle
+  force_change_seconds: 10       # Force rebroadcast every 5 min idle
+
+config :bimip, :queue,
+  max_queue_size: 1000

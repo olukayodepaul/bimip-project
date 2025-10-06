@@ -10,11 +10,14 @@ defmodule Storage.DeviceStorage do
 
   @device_table :device
   @device_index_table :device_index
-
+  @device_index_table :device_index
+  @user_awareness_table :user_awareness_table
   @doc """
   Save a device payload and update secondary index.
   """
-  def save(device_id, eid, payload, last_offset \\ 0) do
+
+  #change this to local file at version two
+  def register_device_session(device_id, eid, payload, last_offset \\ 0) do
     key = {eid, device_id}
     timestamp = DateTime.utc_now()
 
@@ -42,7 +45,8 @@ defmodule Storage.DeviceStorage do
                 |> Map.put(:status_source, "LOGIN")
 
               :mnesia.write({@device_table, key, updated_payload, old_offset, timestamp})
-              Map.get(updated_payload, :awareness_intention, 2)
+              Map.get(updated_payload, :awareness_intention, 2) #The awareness is not use
+
           end
         end) do
       {:atomic, awareness} ->
@@ -59,7 +63,50 @@ defmodule Storage.DeviceStorage do
     end
   end
 
-    def update_device_status(device_id, eid, status_source, status \\ "ONLINE") do
+  def insert_awareness(eid, awareness) do
+    key = {eid}
+    timestamp = DateTime.utc_now()
+
+    :mnesia.transaction(fn ->
+      case :mnesia.read({@user_awareness_table, key}) do
+        [] ->
+          # eid not found → insert with default awareness = 2
+          :mnesia.write({@user_awareness_table, key, 2, timestamp})
+
+        _ ->
+          # eid already exists → update normally
+          :mnesia.write({@user_awareness_table, key, awareness, timestamp})
+      end
+    end)
+    |> case do
+      {:atomic, _result} ->
+        {:ok, :updated}
+
+      {:aborted, reason} ->
+        {:error, reason}
+    end
+  end
+
+
+  def fetch_user_awareness(eid) do
+    key = {eid}
+
+    :mnesia.transaction(fn ->
+      case :mnesia.read({@user_awareness_table, key}) do
+        [{@user_awareness_table, ^key, awareness, _timestamp}] ->
+          {:ok, awareness}
+
+        [] ->
+          {:error, :not_found}
+      end
+    end)
+    |> case do
+      {:atomic, result} -> result
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  def update_device_status(device_id, eid, status_source, status \\ "ONLINE") do
     key = {eid, device_id}
     now = DateTime.utc_now()
 
@@ -198,6 +245,8 @@ defmodule Storage.DeviceStorage do
   end
 
 end
+
+# Storage.DeviceStorage.update_device_status("a@domain.com")
 # Storage.DeviceStorage.get_device("a@domain.com", "aaaaa1")
 # Storage.DeviceStorage.check_index_by_eid("a@domain.com")
 # Storage.DeviceStorage.delete_device("aaaaa1", "a@domain.com")

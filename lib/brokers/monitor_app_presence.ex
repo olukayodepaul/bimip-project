@@ -54,6 +54,7 @@ defmodule Bimip.SubscriberPresence do
   # Broadcast the owner's awareness to all subscribers/friends
   # ------------------------------
   def broadcast_awareness(owner_eid, awareness_intention \\ 2, status \\ :online, latitude \\ 0.0, longitude \\ 0.0) do
+
     state_change_status = StatusMapper.to_int(status)
     friends = fetch_friends(owner_eid)
 
@@ -73,6 +74,7 @@ defmodule Bimip.SubscriberPresence do
       "[Awareness] Broadcasting owner=#{owner_eid} status=#{awareness.status} to topic=#{topic}"
     )
 
+    IO.inspect(awareness)
     Phoenix.PubSub.broadcast(@pubsub, topic, {:awareness_update, awareness})
   end
 
