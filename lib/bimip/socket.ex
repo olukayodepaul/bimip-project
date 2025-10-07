@@ -44,11 +44,10 @@ defmodule Bimip.Socket do
     end
 
     #terminate, send offline message.......
-    def terminate(reason, _req, state) do
-      IO.inspect("SOCKET")
-      RegistryHub.handle_terminate(reason, state)
-      :ok
-    end
+    # def terminate(reason, _req, state) do
+    #   RegistryHub.handle_terminate(reason, state)
+    #   :ok
+    # end
 
 
 end

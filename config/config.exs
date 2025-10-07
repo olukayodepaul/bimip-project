@@ -17,7 +17,7 @@ config :bimip, :jwt,
 
 config :bimip, :adaptive_network_ping_pong,
   default_ping_interval_ms: 10_000,     # Ping every 10s → light but responsive
-  max_allowed_delay_seconds: 60 * 1,    # Allow up to 45s delay before forcing check
+  max_allowed_delay_seconds: 60 * 2,    # Allow up to 45s delay before forcing check
   max_pong_retries: 3,                  # Refresh ONLINE every ~30s (3 × 10s)
   initial_max_missed_pings: 6,          # 6 misses = ~60s silence → OFFLINE
 
@@ -27,12 +27,12 @@ config :bimip, :adaptive_network_ping_pong,
   max_missed_pongs: %{high: 8, low: 3, default: 5}
 
 config :bimip, :device_state_change,
-  stale_threshold_seconds: 60 * 1,   # Device considered stale after 2 min without pong
-  force_change_seconds: 10   # Force a rebroadcast every 1 min idle
+  stale_threshold_seconds: 60 * 10,   # Device considered stale after 2 min without pong
+  force_change_seconds: 60 * 5    # Force a rebroadcast every 1 min idle
 
 config :bimip, :server_state,
-  stale_threshold_seconds: 60 * 1,   # 60 * 20 User considered stale after 10 min no device activity
-  force_change_seconds: 10       # Force rebroadcast every 5 min idle
+  stale_threshold_seconds: 60 * 10,   # 60 * 20 User considered stale after 10 min no device activity
+  force_change_seconds: 60 * 2       # Force rebroadcast every 5 min idle
 
 config :bimip, :queue,
   max_queue_size: 1000

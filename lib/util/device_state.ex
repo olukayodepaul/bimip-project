@@ -15,7 +15,6 @@ defmodule Util.Client.DeviceState do
   @stale_threshold_seconds AppDeviceState.stale_threshold_seconds()
   @force_change_seconds AppDeviceState.force_change_seconds()
 
-
   @doc """
   Compare current device_state with incoming attrs, return three values:
   - :changed | :refresh | :unchanged
@@ -23,13 +22,9 @@ defmodule Util.Client.DeviceState do
   - new_device_state equivalent to what ETS would have stored
   """
   def track_state_change(attrs, device_state) do
-
-    IO.inspect({attrs, device_state})
-    IO.inspect({@stale_threshold_seconds, @force_change_seconds})
     now = DateTime.utc_now()
-    
 
-    # Determine current statusSSS
+    # Determine current status
     curr_status =
       cond do
         attrs.awareness_intention == 1 ->
@@ -51,7 +46,6 @@ defmodule Util.Client.DeviceState do
       end
 
     # Build ETS-equivalent state (what we would have saved in ETS)
-
     cond do
       prev_status != curr_status ->
         # Status changed
@@ -62,7 +56,7 @@ defmodule Util.Client.DeviceState do
           last_activity: now
         })
 
-        IO.inspect({:changed, curr_status, new_state})
+        Logger.info("[DeviceState] Status changed from #{prev_status} → #{curr_status}")
         {:changed, curr_status, new_state}
 
       idle_too_long? ->
@@ -73,7 +67,7 @@ defmodule Util.Client.DeviceState do
           last_activity: now
         })
 
-        IO.inspect({:refresh, prev_status, new_state})
+        Logger.debug("[DeviceState] Forced refresh after idle timeout for status #{prev_status}")
         {:refresh, prev_status, new_state}
 
       true ->
@@ -81,8 +75,8 @@ defmodule Util.Client.DeviceState do
         new_state = Map.merge(device_state, %{
           last_seen: attrs.last_seen
         })
-      
-        IO.inspect({:unchanged, curr_status, new_state})
+
+        Logger.debug("[DeviceState] No change for device (status #{curr_status})")
         {:unchanged, curr_status, new_state}
     end
   end

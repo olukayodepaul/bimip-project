@@ -137,13 +137,14 @@ defmodule Storage.DeviceStateChange do
 
       timer_ref = Process.send_after(self(), :terminate, grace_period_ms)
       {:noreply, %{state | current_timer: timer_ref}}
+
     else
       Logger.info("There are still online devices. No termination scheduled.")
       {:noreply, %{state | current_timer: nil}}
     end
   end
 
-  def cancel_termination_if_device_is_online(current_timer) do
+  def cancel_termination_if_any_device_are_online(current_timer) do
     if current_timer do
       Logger.info("Cancelled termination timer for #{current_timer}")
       Process.cancel_timer(current_timer)
