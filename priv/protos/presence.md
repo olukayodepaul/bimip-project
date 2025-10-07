@@ -138,3 +138,38 @@ UnsubscribeResponse unsubscribe_response      = 10;
 Logout logout                                 = 11; // Logout message
 ErrorMessage error                            = 12; // Error message
 ```
+
+logout
+
+```proto
+logout = %Bimip.Logout{
+  to: %Bimip.Identity{
+    eid: "a@domain.com",
+    connection_resource_id: "aaaaa1",
+  },
+  type: 1,
+  status: 4,
+  timestamp: System.system_time(:millisecond)
+}
+
+is_logout = %Bimip.MessageScheme{
+  route: 10,
+  payload: {:logout, logout}
+}
+
+binary = Bimip.MessageScheme.encode(is_logout)
+hex    = Base.encode16(binary, case: :upper)
+080A52230A160A0C6140646F6D61696E2E636F6D12066161616161311001180420E1EA99EB9B33
+```
+
+error
+
+```proto
+logout = %Bimip.Logout{
+  code: 200,
+  route: 10,
+  details: "Invalid ",
+  timestamp: System.system_time(:millisecond)
+}
+
+```

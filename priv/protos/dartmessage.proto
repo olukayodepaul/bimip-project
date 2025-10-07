@@ -23,11 +23,23 @@ message AwarenessNotification {
 
 // ---------------- ErrorMessage ----------------
 // Represents an error response with code, description, and optional details
+// ---------------- ResponseStatus ----------------
+// Generic response status for any stanza.
+// Important Status Codes:
+//   200 = OK                    → Operation successful
+//   100 = INVALID_REQUEST       → Malformed or missing fields
+//   401 = UNAUTHORIZED          → Invalid or missing authentication
+//   408 = TIMEOUT               → Request or ping timed out
+//   500 = INTERNAL_ERROR        → Server/device error
+//   600 = DEVICE_DISCONNECTED   → Target device lost connection
+//   601 = SOCKET_TERMINATED     → Socket closed by client or server
+//   602 = SESSION_EXPIRED       → Token/session no longer valid
+//   604 = FORCE_LOGOUT          → Session terminated by server/mother
 message ErrorMessage {
-  int32 code = 1;       // Numeric error code
-  string message = 2;   // Short error description
-  string route = 3;     // Route or context where the error occurred
-  string details = 4;   // Additional error details (optional)
+  int32 code = 1;       // See list above
+  int32 error_origin = 2;     // Route or context where the status originated
+  string details = 3;   // Additional info (optional)
+  int64 timestamp = 4; 
 }
 
 // ---------------- LogoutMessage ----------------
@@ -92,7 +104,7 @@ message SubscribeResponse {
   Identity to = 2;             // Original requester (A)
   int32 status = 3;            // 1=ACCEPTED, 2=REJECTED
   string message = 4;          // Optional reason (e.g., "User rejected request")
-  string subscription_id = 6;  // Matches SubscribeRequest.subscription_id
+  string subscription_id = 5;  // Matches SubscribeRequest.subscription_id
   bool one_way = 6;            // True if subscription is one-way, false if two-way (default)
   int64 timestamp = 7;         // Response time
 }

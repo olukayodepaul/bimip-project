@@ -31,9 +31,9 @@ defmodule Bimip.ErrorMessage do
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
   field :code, 1, type: :int32
-  field :message, 2, type: :string
-  field :route, 3, type: :string
-  field :details, 4, type: :string
+  field :error_origin, 2, type: :int32, json_name: "errorOrigin"
+  field :details, 3, type: :string
+  field :timestamp, 4, type: :int64
 end
 
 defmodule Bimip.Logout do
@@ -102,9 +102,9 @@ defmodule Bimip.SubscribeResponse do
   field :to, 2, type: Bimip.Identity
   field :status, 3, type: :int32
   field :message, 4, type: :string
-  field :timestamp, 5, type: :int64
-  field :subscription_id, 6, type: :string, json_name: "subscriptionId"
-  field :one_way, 7, type: :bool, json_name: "oneWay"
+  field :subscription_id, 5, type: :string, json_name: "subscriptionId"
+  field :one_way, 6, type: :bool, json_name: "oneWay"
+  field :timestamp, 7, type: :int64
 end
 
 defmodule Bimip.UnsubscribeRequest do

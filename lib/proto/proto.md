@@ -6,7 +6,8 @@ protoc \
 ## Testing UserContactList
 
 ```
-user_contact = %Dartmessaging.PresenceSubscription{
+user_contact = %Dartmessaging.PresenceSu
+bscription{
   eid: "user_123",
   device_id: "aaaaa",
   friends: ["friend_1", "friend_2", "friend_3"],

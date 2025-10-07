@@ -57,6 +57,3 @@ defmodule Bimip.Device.Client do
 end
 
 # Bimip.Device.Client.get_state("aaaaa2")
-
-
-
