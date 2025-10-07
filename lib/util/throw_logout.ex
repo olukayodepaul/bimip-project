@@ -1,4 +1,4 @@
-defmodule LogouResponseSchema do
+defmodule ThrowLogouResponseSchema do
 
   def logout(eid, device_id, type \\ 2,  status \\ 3) do
 
@@ -7,8 +7,8 @@ defmodule LogouResponseSchema do
         eid: eid,
         connection_resource_id: device_id
       },
-      type: 2,
-      status: 3,
+      type: type,
+      status: status,
       timestamp: System.system_time(:millisecond)
     }
 

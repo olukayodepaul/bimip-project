@@ -39,6 +39,11 @@ defmodule Bimip.Device.Client do
       }}
   end
 
+  def handle_cast({:receive_awareness_from_server, {_eid, _device_id, binary}}, %{ws_pid: ws_pid} = state) do
+    send(ws_pid, {:binary, binary})
+    {:noreply, state}
+  end
+
   # Handle ping/pong
   @impl true
   def handle_info({:send_ping, interval}, state) do

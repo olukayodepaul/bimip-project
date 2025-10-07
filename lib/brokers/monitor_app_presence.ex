@@ -56,7 +56,7 @@ defmodule Bimip.SubscriberPresence do
   # ------------------------------
   # Broadcast the owner's awareness to all subscribers/friends
   # ------------------------------
-  def broadcast_awareness(owner_eid, awareness_intention \\ 2, status \\ :online, latitude \\ 0.0, longitude \\ 0.0) do
+  def broadcast_awareness(owner_eid, intention \\ 2, status \\ :online, latitude \\ 0.0, longitude \\ 0.0, location_sharing \\ false) do
     state_change_status = StatusMapper.to_int(status)
     friends = fetch_friends(owner_eid)
 
@@ -67,7 +67,8 @@ defmodule Bimip.SubscriberPresence do
       last_seen: DateTime.utc_now() |> DateTime.truncate(:second),
       latitude: latitude,
       longitude: longitude,
-      awareness_intention: awareness_intention
+      location_sharing: location_sharing,
+      intention: intention
     }
 
     topic = "GENERAL:#{owner_eid}"

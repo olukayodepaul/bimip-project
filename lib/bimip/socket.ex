@@ -9,7 +9,7 @@ defmodule Bimip.Socket do
   alias Bimip.Service.Master
   alias Util.Network.AdaptivePingPong
   alias ThrowErrorScheme
-  alias LogouResponseSchema
+  alias ThrowLogouResponseSchema
   require Logger
 
   def init(req, _state) do
@@ -41,7 +41,7 @@ defmodule Bimip.Socket do
     end
 
     # client receiving awareness status from server
-    # create route binary
+    # create route binary dont
     # send sunscriber request and subscriber reponse (Modify online queue) No file system yet only version two
     
     def websocket_info({:binary, binary}, state) do
@@ -106,7 +106,7 @@ defmodule Bimip.Socket do
             send(self(), :terminate_socket)
             {:ok, state}
           else
-            is_logout = LogouResponseSchema.logout(logout_msg.to.eid, logout_msg.to.connection_resource_id)
+            is_logout = ThrowLogouResponseSchema.logout(logout_msg.to.eid, logout_msg.to.connection_resource_id)
             send(self(), {:binary, is_logout})
             send(self(), :terminate_socket)
             {:ok, state}

@@ -96,7 +96,7 @@ defmodule Bimip.Application do
   # Device table
   defp ensure_user_awareness_table do
     ensure_table(:user_awareness_table, [
-      {:attributes, [:key, :awareness,  :timestamp]},
+      {:attributes, [:key, :awareness, :lat, :lng,  :status_broadcast, :timestamp]},
       {:disc_copies, [node()]},
       {:type, :set}
     ])
@@ -151,7 +151,7 @@ defmodule Bimip.Application do
   end
 
 
-    @doc """
+  @doc """
   Ensures the queuing_index table exists.
   - eid: Entity ID (owner of the queue)
   - channel: Queue channel (:sub, :block_sub, etc.)

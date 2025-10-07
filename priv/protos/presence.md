@@ -1,3 +1,5 @@
+add Scheme for Awareness change.
+
 ```
 message AwarenessRequest {
   Identity from = 1;

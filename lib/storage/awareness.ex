@@ -9,6 +9,7 @@ defmodule Strucs.Awareness do
     :last_seen,  # Unix timestamp
     :latitude,   # optional
     :longitude,   # optional
-    :awareness_intention
+    :location_sharing,
+    :intention
   ]
 end

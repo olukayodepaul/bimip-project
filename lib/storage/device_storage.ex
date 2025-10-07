@@ -63,7 +63,7 @@ defmodule Storage.DeviceStorage do
     end
   end
 
-  def insert_awareness(eid, awareness) do
+  def insert_awareness(eid, awareness \\ 2,  lat \\ 0.0, lng \\ 0.0, status_broadcast \\ false) do
     key = {eid}
     timestamp = DateTime.utc_now()
 
@@ -71,11 +71,11 @@ defmodule Storage.DeviceStorage do
       case :mnesia.read({@user_awareness_table, key}) do
         [] ->
           # eid not found → insert with default awareness = 2
-          :mnesia.write({@user_awareness_table, key, 2, timestamp})
+          :mnesia.write({@user_awareness_table, key, 2, 0.0, 0.0, false, timestamp})
 
         _ ->
           # eid already exists → update normally
-          :mnesia.write({@user_awareness_table, key, awareness, timestamp})
+          :mnesia.write({@user_awareness_table, key, awareness, lat, lng, status_broadcast, timestamp})
       end
     end)
     |> case do
@@ -87,14 +87,13 @@ defmodule Storage.DeviceStorage do
     end
   end
 
-
   def fetch_user_awareness(eid) do
     key = {eid}
 
     :mnesia.transaction(fn ->
       case :mnesia.read({@user_awareness_table, key}) do
-        [{@user_awareness_table, ^key, awareness, _timestamp}] ->
-          {:ok, awareness}
+        [{@user_awareness_table, ^key, awareness, lat, lng, status_broadcast,  _timestamp}] ->
+          {:ok, awareness, lat, lng, status_broadcast}
 
         [] ->
           {:error, :not_found}

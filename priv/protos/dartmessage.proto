@@ -9,16 +9,17 @@ message Identity {
   optional string connection_resource_id = 2;   // Identifier for a specific device or session instance
 }
 
-// ---------------- AwarenessNotification ----------------
+// ---------------- Awareness ----------------
 // Sends a user’s awareness (presence, location, and status) to other users
-message AwarenessNotification {
-  Identity from = 1;                 // Sender (uses eid only)
-  Identity to = 2;                   // Recipient (uses eid only)
+message Awareness {
+  string from = 1;                 // Sender (uses eid only)
+  string to = 2;                   // Recipient (uses eid only)
   int32 status = 3;                  // Presence state: 1=ONLINE, 2=OFFLINE, 3=AWAY, 4=BUSY, 5=DND, 6=INVISIBLE, 7=IDLE, 8=UNKNOWN
-  int64 last_seen = 4;               // Last active time (Unix UTC, ms)
+  bool location_sharing = 4;
   double latitude = 5;               // Latitude
   double longitude = 6;              // Longitude
-  int32 awareness_intention = 7;     // Broadcast control: 1=DO_NOT_BROADCAST, 2=BROADCAST
+  int32 intention = 7;     // Broadcast control: 1=DO_NOT_BROADCAST, 2=BROADCAST
+  int64 timestamp = 8; 
 }
 
 // ---------------- ErrorMessage ----------------
@@ -141,7 +142,7 @@ message MessageScheme {
   int64 route = 1;  // Unique route identifier for message routing
 
   oneof payload {
-    AwarenessNotification awareness_notification  = 2;  // User awareness/presence update
+    Awareness awareness  = 2;  // User awareness/presence update
     PingPong ping_pong                            = 3;
     TokenRevokeRequest token_revoke_request       = 4;
     TokenRevokeResponse token_revoke_response     = 5;

@@ -2,8 +2,8 @@ defmodule Route.SelfFanOut do
 
   alias Storage.DeviceStorage
   alias Settings.ServerState
+  alias App.RegistryHub
 
-  #use this to also shedule termination
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
 
   def awareness(awareness, eid) do
@@ -18,7 +18,7 @@ defmodule Route.SelfFanOut do
   end
 
   def send_to_owner_device({awareness, device_id, eid}) do
-    IO.inspect({awareness, device_id, eid})
+    RegistryHub.receive_awareness_from_server(device_id, eid, awareness)
   end
 
 end

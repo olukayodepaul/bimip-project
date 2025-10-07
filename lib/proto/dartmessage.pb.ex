@@ -11,18 +11,19 @@ defmodule Bimip.Identity do
     json_name: "connectionResourceId"
 end
 
-defmodule Bimip.AwarenessNotification do
+defmodule Bimip.Awareness do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :from, 1, type: Bimip.Identity
-  field :to, 2, type: Bimip.Identity
+  field :from, 1, type: :string
+  field :to, 2, type: :string
   field :status, 3, type: :int32
-  field :last_seen, 4, type: :int64, json_name: "lastSeen"
+  field :location_sharing, 4, type: :bool, json_name: "locationSharing"
   field :latitude, 5, type: :double
   field :longitude, 6, type: :double
-  field :awareness_intention, 7, type: :int32, json_name: "awarenessIntention"
+  field :intention, 7, type: :int32
+  field :timestamp, 8, type: :int64
 end
 
 defmodule Bimip.ErrorMessage do
@@ -139,12 +140,7 @@ defmodule Bimip.MessageScheme do
   oneof :payload, 0
 
   field :route, 1, type: :int64
-
-  field :awareness_notification, 2,
-    type: Bimip.AwarenessNotification,
-    json_name: "awarenessNotification",
-    oneof: 0
-
+  field :awareness, 2, type: Bimip.Awareness, oneof: 0
   field :ping_pong, 3, type: Bimip.PingPong, json_name: "pingPong", oneof: 0
 
   field :token_revoke_request, 4,

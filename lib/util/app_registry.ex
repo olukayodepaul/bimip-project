@@ -12,6 +12,16 @@ defmodule App.RegistryHub do
     end
   end
 
+  def receive_awareness_from_server(device_id, eid, binary) do
+    case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:receive_awareness_from_server, {eid, device_id, binary}})
+        :ok
+      [] ->
+        :error
+    end
+  end
+
   def schedule_ping_registry(_device_id, interval) do
     Process.send_after(self(), {:send_ping, interval}, interval)
   end

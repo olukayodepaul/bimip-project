@@ -7,6 +7,7 @@ defmodule Bimip.Service.Master do
   alias Storage.DeviceStateChange
   alias Settings.ServerState
   alias Route.SelfFanOut
+  alias ThrowAwareness
 
   require Logger
 
@@ -20,25 +21,30 @@ defmodule Bimip.Service.Master do
   def init(eid) do
     SubscriberPresence.presence_subscriber(eid)
 
-    awareness =
+    {level, lat, lng, location_sharing} =
       case DeviceStorage.fetch_user_awareness(eid) do
-        {:ok, level} ->
-          level
+        {:ok, level, lat, lng, status_broadcast} ->
+          {level, lat, lng, status_broadcast}
 
         {:error, :not_found} ->
           default_awareness = 2
-          DeviceStorage.insert_awareness(eid, default_awareness)
-          default_awareness
-
+          DeviceStorage.insert_awareness(eid)
+          result = {2, 0.0, 0.0, true}
+          result
         {:error, reason} ->
           Logger.error("Error fetching awareness for #{eid}: #{inspect(reason)}")
-          2
+          result = {2, 0.0, 0.0, true}
+          result
+
       end
 
     {:ok,
       %{
         eid: eid,
-        awareness: awareness,
+        awareness: level,
+        lat: lat,
+        lng: lng,
+        location_sharing: location_sharing,
         current_timer: nil,
         force_stale: DateTime.utc_now(),
         devices: %{}
@@ -83,7 +89,11 @@ defmodule Bimip.Service.Master do
       inserted_at: now
     }
 
-    SubscriberPresence.broadcast_awareness(eid, state.awareness, :online)
+    if state.location_sharing do
+      SubscriberPresence.broadcast_awareness(eid, state.awareness, :online, state.lat, state.lng, state.location_sharing)
+    else
+      SubscriberPresence.broadcast_awareness(eid, state.awareness, :online)
+    end
 
     case DeviceStorage.register_device_session(device_id, eid, device_payload) do
       {:ok, awareness} ->
@@ -122,17 +132,26 @@ defmodule Bimip.Service.Master do
 
     case Storage.DeviceStateChange.track_state_change(eid) do
       {:changed, user_status, _online_devices} ->
-        IO.inspect({"state change here is my 3", "changed", device_id})
-        SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
+        if state.location_sharing do
+          SubscriberPresence.broadcast_awareness(eid, awareness, user_status, state.lat, state.lng, state.location_sharing)
+        else
+          SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
+        end
+
+        
         {:noreply, %{state | force_stale: now}}
 
       {:unchanged, user_status, _online_devices} ->
-
-        IO.inspect({"state change here is my 4", "changed", device_id})
         idle_too_long? = DateTime.diff(now, force_stale) >= @stale_threshold_seconds
 
         if idle_too_long? do
-          SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
+
+          if state.location_sharing do
+            SubscriberPresence.broadcast_awareness(eid, awareness, user_status, state.lat, state.lng, state.location_sharing)
+          else
+            SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
+          end
+
           {:noreply, %{state | force_stale: now}}
         else
           {:noreply, state}
@@ -144,7 +163,6 @@ defmodule Bimip.Service.Master do
   def handle_cast({:send_terminate_signal_to_server, %{device_id: device_id, eid: eid}},
                   %{awareness: awareness, current_timer: current_timer} = state) do
 
-    IO.inspect({"Terminate signal", device_id})
     DeviceStorage.delete_device(device_id, eid)
 
     case DeviceStateChange.remaining_active_devices?(eid) do
@@ -154,13 +172,18 @@ defmodule Bimip.Service.Master do
         {:noreply, state}
 
       false ->
-        SubscriberPresence.broadcast_awareness(eid, awareness, :offline)
+        if state.location_sharing do
+          SubscriberPresence.broadcast_awareness(eid, awareness, :offline, state.lat, state.lng, state.location_sharing)
+        else
+          SubscriberPresence.broadcast_awareness(eid, awareness, :offline)
+        end
+        
         DeviceStateChange.schedule_termination_if_all_offline(state)
         {:noreply, state}
     end
   end
 
-  def handle_info(:terminate, %{eid: eid, awareness: awareness, current_timer: current_timer} = state) do
+  def handle_info(:terminate, %{eid: eid, current_timer: current_timer} = state) do
     case DeviceStateChange.remaining_active_devices?(eid) do
       true ->
         Logger.warning("Devices still active for #{eid} #{current_timer}. Not terminating.")
@@ -174,7 +197,16 @@ defmodule Bimip.Service.Master do
 
   @impl true
   def handle_info({:awareness_update, %Strucs.Awareness{} = awareness}, %{eid: eid} = state) do
-    SelfFanOut.awareness(awareness, eid)
+    publish = ThrowAwareness.awareness(
+      awareness.owner_eid,
+      eid,
+      awareness.intention,
+      awareness.status,
+      awareness.latitude,
+      awareness.longitude,
+      awareness.location_sharing
+    )
+    SelfFanOut.awareness(publish, eid)
     {:noreply, state}
   end
 
