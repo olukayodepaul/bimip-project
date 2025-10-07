@@ -77,6 +77,7 @@ defmodule Bimip.Socket do
 
     defp dispatch_map do
       %{
+        3 => &handle_ping_pong/2,
         10 => &handle_logout/2
       }
     end
@@ -91,16 +92,12 @@ defmodule Bimip.Socket do
       {:ok, state}
     end
 
-
-    #check the request type and other data. if not match then report error....
     defp handle_logout(state, data) do
-      # Decode the incoming message
       msg = Bimip.MessageScheme.decode(data)
 
       case msg.payload do
         {:logout, %Bimip.Logout{type: 1} = logout_msg} ->
-          if logout_msg.to.eid != state.eid and logout_msg.to.connection_resource_id != state.device_id do
-            #version two. use this to intiate token revocake
+          if logout_msg.to.eid != state.eid or logout_msg.to.connection_resource_id != state.device_id do
             error_msg = ThrowErrorScheme.error(401, "Invalid User Session Credential", 10)
             send(self(), {:binary, error_msg})
             send(self(), :terminate_socket)
@@ -113,14 +110,63 @@ defmodule Bimip.Socket do
           end
 
         _ ->
-          # Invalid request type
-          #version two. use this to intiate token revocake
           error_msg = ThrowErrorScheme.error(401, "Invalid Request", 10)
           send(self(), {:binary, error_msg})
           send(self(), :terminate_socket)
           {:ok, state}
       end
     end
+
+    defp handle_ping_pong(state, data) do
+      msg = Bimip.MessageScheme.decode(data)
+
+      case msg.payload do
+        {:ping_pong, %Bimip.PingPong{type: 1} = ping_pong_msg} ->
+          # Validate user session identity
+          if ping_pong_msg.to.eid != state.eid or
+            ping_pong_msg.to.connection_resource_id != state.device_id do
+
+            error_msg = ThrowErrorScheme.error(401, "Invalid User Session Credential", 3)
+            send(self(), {:binary, error_msg})
+            send(self(), :terminate_socket)
+            {:ok, state}
+
+          else
+            case ping_pong_msg.resource do
+  
+              1 ->
+                pong_request = {state.eid, state.device_id, ping_pong_msg.ping_time}
+                request_pong_from_local_client(pong_request)
+                {:ok, state}
+
+              2 ->
+                pong_request = {
+                  ping_pong_msg.from.eid,
+                  ping_pong_msg.from.connection_resource_id,
+                  ping_pong_msg.to.eid,
+                  ping_pong_msg.to.connection_resource_id,
+                  ping_pong_msg.ping_time
+                }
+
+                request_pong_from_remote_server(pong_request)
+                {:ok, state}
+
+              _ ->
+                error_msg = ThrowErrorScheme.error(100, "Malformed or missing fields", 3)
+                send(self(), {:binary, error_msg})
+                send(self(), :terminate_socket)
+                {:ok, state}
+            end
+          end
+
+        _ ->
+          error_msg = ThrowErrorScheme.error(401, "Invalid Request", 3)
+          send(self(), {:binary, error_msg})
+          send(self(), :terminate_socket)
+          {:ok, state}
+      end
+    end
+
 
     def websocket_info(:terminate_socket, state) do
       {:stop, state}

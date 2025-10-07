@@ -53,11 +53,12 @@ defmodule Bimip.PingPong do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :to, 1, type: Bimip.Identity
-  field :type, 2, type: :int32
-  field :ping_time, 3, type: :int64, json_name: "pingTime"
-  field :pong_time, 4, type: :int64, json_name: "pongTime"
-  field :ping_id, 5, type: :string, json_name: "pingId"
+  field :from, 1, type: Bimip.Identity
+  field :to, 2, type: Bimip.Identity
+  field :resource, 3, type: :int32
+  field :type, 4, type: :int32
+  field :ping_time, 5, type: :int64, json_name: "pingTime"
+  field :pong_time, 6, type: :int64, json_name: "pongTime"
 end
 
 defmodule Bimip.TokenRevokeRequest do

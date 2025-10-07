@@ -7,11 +7,11 @@ defmodule ThrowErrorScheme do
       timestamp: System.system_time(:millisecond)
     }
 
-    response = %Bimip.MessageScheme{
+    %Bimip.MessageScheme{
       route: 11,
       payload: {:error, error}
     }
+    |> Bimip.MessageScheme.encode()
 
-    Bimip.MessageScheme.encode(response)
   end
 end

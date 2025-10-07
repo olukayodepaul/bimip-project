@@ -12,12 +12,11 @@ defmodule ThrowLogouResponseSchema do
       timestamp: System.system_time(:millisecond)
     }
 
-    response = %Bimip.MessageScheme{
+    %Bimip.MessageScheme{
       route: 10,
       payload: {:logout, logout}
     }
-
-    Bimip.MessageScheme.encode(response)
+    |> Bimip.MessageScheme.encode()
 
   end
 end
