@@ -5,6 +5,8 @@ defmodule Bimip.Device.Client do
   alias Settings.AdaptiveNetwork
   alias Util.Network.AdaptivePingPong
   alias App.RegistryHub
+  alias ThrowErrorScheme
+  alias ThrowLogouResponseSchema
 
   # Start GenServer for device session
   def start_link({_eid, device_id, _ws_pid} = state) do
@@ -59,6 +61,77 @@ defmodule Bimip.Device.Client do
     RegistryHub.send_terminate_signal_to_server({device_id, eid})
     {:stop, :normal, state}
   end
+
+  def handle_cast({:logout, _eid, _device_id, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
+    msg = Bimip.MessageScheme.decode(data)
+
+    case msg.payload do
+      {:logout, %Bimip.Logout{type: 1, to: %{eid: ^eid, connection_resource_id: ^device_id}} = logout_msg} ->
+        is_logout = ThrowLogouResponseSchema.logout(eid, device_id)
+        send(ws_pid, {:binary, is_logout})
+        send(ws_pid, :terminate_socket)
+        {:noreply, state}
+
+      {:logout, _} ->
+        error_msg = ThrowErrorScheme.error(401, "Invalid User Session Credential", 10)
+        send(ws_pid, {:binary, error_msg})
+        send(ws_pid, :terminate_socket)
+        {:noreply, state}
+
+      _ ->
+        error_msg = ThrowErrorScheme.error(401, "Invalid Request", 10)
+        send(ws_pid, {:binary, error_msg})
+        send(ws_pid, :terminate_socket)
+        {:noreply, state}
+    end
+  end
+
+  # def handle_cast({:ping_pong, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
+  #   msg = Bimip.MessageScheme.decode(data)
+
+  #   case msg.payload do
+  #     {:ping_pong, %Bimip.PingPong{type: 1, to: %{eid: ^eid, connection_resource_id: ^device_id}} = ping_pong_msg} ->
+  #       handle_ping_request(ping_pong_msg, state)
+
+  #     {:ping_pong, _} ->
+  #       reply_and_close(ws_pid, ThrowErrorScheme.error(401, "Invalid User Session Credential", 3))
+  #       {:noreply, state}
+
+  #     _ ->
+  #       reply_and_close(ws_pid, ThrowErrorScheme.error(401, "Invalid Request", 3))
+  #       {:noreply, state}
+  #   end
+  # end
+
+  # defp reply_and_close(ws_pid, binary) do
+  #   send(ws_pid, {:binary, binary})
+  #   send(ws_pid, :terminate_socket)
+  # end
+
+  # defp handle_ping_request(%Bimip.PingPong{resource: 1, ping_time: ping_time}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
+  #   case RegistryHub.route_same_ping(eid) do
+  #     :ok ->
+  #       pong = ThrowPingPongSchema.same(eid, device_id, ping_time)
+  #       send(ws_pid, {:binary, pong})
+  #       {:noreply, state}
+
+  #     :error ->
+  #       reply_and_close(ws_pid, ThrowErrorScheme.error(404, "Service Unavailable", 3))
+  #       {:noreply, state}
+  #   end
+  # end
+
+  # defp handle_ping_request(%Bimip.PingPong{resource: 2, from: from, to: to, ping_time: ping_time}, state) do
+  #   pong_request = {from.eid, from.connection_resource_id, to.eid, to.connection_resource_id, ping_time}
+  #   RegistryHub.route_others_ping(pong_request)
+  #   {:noreply, state}
+  # end
+
+  # defp handle_ping_request(_, %{ws_pid: ws_pid} = state) do
+  #   reply_and_close(ws_pid, ThrowErrorScheme.error(100, "Malformed or missing fields", 3))
+  #   {:noreply, state}
+  # end
+
 end
 
 # Bimip.Device.Client.get_state("aaaaa2")

@@ -9,7 +9,6 @@ defmodule Bimip.Socket do
   alias Bimip.Service.Master
   alias Util.Network.AdaptivePingPong
   alias ThrowErrorScheme
-  alias ThrowLogouResponseSchema
   require Logger
 
   def init(req, _state) do
@@ -93,80 +92,21 @@ defmodule Bimip.Socket do
     end
 
     defp handle_logout(state, data) do
-      msg = Bimip.MessageScheme.decode(data)
+      case RegistryHub.route_same_ping(state.eid, state.device_id, data) do
+        :ok -> {:ok, state}
+        :error ->
+        
+        error_msg =
+        ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
 
-      case msg.payload do
-        {:logout, %Bimip.Logout{type: 1} = logout_msg} ->
-          if logout_msg.to.eid != state.eid or logout_msg.to.connection_resource_id != state.device_id do
-            error_msg = ThrowErrorScheme.error(401, "Invalid User Session Credential", 10)
-            send(self(), {:binary, error_msg})
-            send(self(), :terminate_socket)
-            {:ok, state}
-          else
-            is_logout = ThrowLogouResponseSchema.logout(logout_msg.to.eid, logout_msg.to.connection_resource_id)
-            send(self(), {:binary, is_logout})
-            send(self(), :terminate_socket)
-            {:ok, state}
-          end
-
-        _ ->
-          error_msg = ThrowErrorScheme.error(401, "Invalid Request", 10)
-          send(self(), {:binary, error_msg})
-          send(self(), :terminate_socket)
-          {:ok, state}
+        send(state.ws_pid, {:binary, error_msg})
+        {:ok, state}
       end
     end
 
     defp handle_ping_pong(state, data) do
-      msg = Bimip.MessageScheme.decode(data)
-
-      case msg.payload do
-        {:ping_pong, %Bimip.PingPong{type: 1} = ping_pong_msg} ->
-          # Validate user session identity
-          if ping_pong_msg.to.eid != state.eid or
-            ping_pong_msg.to.connection_resource_id != state.device_id do
-
-            error_msg = ThrowErrorScheme.error(401, "Invalid User Session Credential", 3)
-            send(self(), {:binary, error_msg})
-            send(self(), :terminate_socket)
-            {:ok, state}
-
-          else
-            case ping_pong_msg.resource do
-  
-              1 ->
-                pong_request = {state.eid, state.device_id, ping_pong_msg.ping_time}
-                request_pong_from_local_client(pong_request)
-                {:ok, state}
-
-              2 ->
-                pong_request = {
-                  ping_pong_msg.from.eid,
-                  ping_pong_msg.from.connection_resource_id,
-                  ping_pong_msg.to.eid,
-                  ping_pong_msg.to.connection_resource_id,
-                  ping_pong_msg.ping_time
-                }
-
-                request_pong_from_remote_server(pong_request)
-                {:ok, state}
-
-              _ ->
-                error_msg = ThrowErrorScheme.error(100, "Malformed or missing fields", 3)
-                send(self(), {:binary, error_msg})
-                send(self(), :terminate_socket)
-                {:ok, state}
-            end
-          end
-
-        _ ->
-          error_msg = ThrowErrorScheme.error(401, "Invalid Request", 3)
-          send(self(), {:binary, error_msg})
-          send(self(), :terminate_socket)
-          {:ok, state}
-      end
+      {:ok, state}
     end
-
 
     def websocket_info(:terminate_socket, state) do
       {:stop, state}
