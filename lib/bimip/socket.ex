@@ -62,7 +62,6 @@ defmodule Bimip.Socket do
       else
         case safe_decode_route(data) do
           {:ok, route} ->
-            # Dispatch to the function mapped to this route
             dispatch_map()
             |> Map.get(route, &default_handler/2)
             |> then(fn handler -> handler.(state, data) end)
@@ -99,13 +98,22 @@ defmodule Bimip.Socket do
         error_msg =
         ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
 
-        send(state.ws_pid, {:binary, error_msg})
+        send(self(), {:binary, error_msg})
         {:ok, state}
       end
     end
 
     defp handle_ping_pong(state, data) do
-      {:ok, state}
+      case RegistryHub.route_others_ping(state.eid, state.device_id, data) do
+        :ok -> {:ok, state}
+        :error ->
+        
+        error_msg =
+        ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
+
+        send(self(), {:binary, error_msg})
+        {:ok, state}
+      end
     end
 
     def websocket_info(:terminate_socket, state) do

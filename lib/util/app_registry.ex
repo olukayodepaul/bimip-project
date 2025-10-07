@@ -22,12 +22,22 @@ defmodule App.RegistryHub do
     end
   end
 
-  # def route_others_ping(eid) do
-  #   case Horde.Registry.lookup(EidRegistry, eid) do
-  #     [{_pid, _}] -> :ok
-  #     [] -> :error
-  #   end
-  # end
+  def route_others_ping(eid, device_id, data) do
+    case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:logout, eid, device_id, data})
+        :ok
+      [] ->
+        :error
+    end
+  end
+
+  def request_cross_server_online_state(eid) do
+    case Horde.Registry.lookup(EidRegistry, eid) do
+      [{_pid, _}] -> :ok
+      [] -> :error
+    end
+  end
 
   def receive_awareness_from_server(device_id, eid, binary) do
     case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
