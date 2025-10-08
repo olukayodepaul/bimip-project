@@ -46,6 +46,7 @@ defmodule Bimip.Logout do
   field :type, 2, type: :int32
   field :status, 3, type: :int32
   field :timestamp, 4, type: :int64
+  field :reason, 5, type: :string
 end
 
 defmodule Bimip.PingPong do
@@ -59,28 +60,30 @@ defmodule Bimip.PingPong do
   field :type, 4, type: :int32
   field :ping_time, 5, type: :int64, json_name: "pingTime"
   field :pong_time, 6, type: :int64, json_name: "pongTime"
+  field :error_reason, 7, type: :string, json_name: "errorReason"
 end
 
-defmodule Bimip.TokenRevokeRequest do
+defmodule Bimip.TokenRevoke do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
   field :to, 1, type: Bimip.Identity
   field :token, 2, type: :string
-  field :timestamp, 3, type: :int64
-  field :reason, 4, type: :string
+  field :phase, 3, type: :int32
+  field :timestamp, 4, type: :int64
+  field :reason, 5, type: :string
 end
 
-defmodule Bimip.TokenRevokeResponse do
+defmodule Bimip.TokenRefresh do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
   field :to, 1, type: Bimip.Identity
-  field :status, 2, type: :int32
-  field :timestamp, 3, type: :int64
-  field :reason, 4, type: :string
+  field :refresh_token, 2, type: :string, json_name: "refreshToken"
+  field :phase, 3, type: :int32
+  field :timestamp, 4, type: :int64
 end
 
 defmodule Bimip.SubscribeRequest do
@@ -143,16 +146,8 @@ defmodule Bimip.MessageScheme do
   field :route, 1, type: :int64
   field :awareness, 2, type: Bimip.Awareness, oneof: 0
   field :ping_pong, 3, type: Bimip.PingPong, json_name: "pingPong", oneof: 0
-
-  field :token_revoke_request, 4,
-    type: Bimip.TokenRevokeRequest,
-    json_name: "tokenRevokeRequest",
-    oneof: 0
-
-  field :token_revoke_response, 5,
-    type: Bimip.TokenRevokeResponse,
-    json_name: "tokenRevokeResponse",
-    oneof: 0
+  field :token_revoke, 4, type: Bimip.TokenRevoke, json_name: "tokenRevoke", oneof: 0
+  field :token_refresh, 5, type: Bimip.TokenRefresh, json_name: "tokenRefresh", oneof: 0
 
   field :subscribe_request, 6,
     type: Bimip.SubscribeRequest,

@@ -46,10 +46,11 @@ message ErrorMessage {
 // ---------------- LogoutMessage ----------------
 // Uses both eid and connection_resource_id to log out a specific device
 message Logout {
-  Identity to = 1;      // The user/device performing logout
-  int32 type = 2;           // 1 = REQUEST, 2 = RESPONSE
-  int32 status = 3;         // 1 = DISCONNECT, 2 = FAIL, 3 = SUCCESS, 4 = PENDING
-  int64 timestamp = 4;      // Unix UTC timestamp (ms) of the action
+  Identity to = 1;        // Target of logout (client or server)
+  int32 type = 2;         // 1=REQUEST, 2=RESPONSE, 3=ERROR
+  int32 status = 3;       // 1=DISCONNECT, 2=FAIL, 3=SUCCESS, 4=PENDING
+  int64 timestamp = 4;    // Unix UTC timestamp (ms)
+  string reason = 5;      // Optional: error or failure description
 }
 
 // ---------------- PingPong ----------------
@@ -57,11 +58,12 @@ message Logout {
 // Client generates ping_id; server echoes it back in PONG with pong_time
 message PingPong {
   Identity from = 1;              // Sender's identity (user or device)
-  Identity to = 2;                // Optional: target identity (used if resource = OTHERS)
+  Identity to = 2;                // Target identity (used if resource = OTHERS)
   int32 resource = 3;             // 1=SAME (server ping), 2=OTHERS (user-to-user ping)
-  int32 type = 4;                 // 1=PING, 2=PONG
+  int32 type = 4;                 // 1=PING, 2=PONG, 3=ERROR
   int64 ping_time = 5;            // Unix UTC timestamp (ms)
   int64 pong_time = 6;            // Unix UTC timestamp (ms)
+  string error_reason = 7;        // Optional: only set when type = 3 (ERROR)
 }
 
 // ---------------- TokenRevokeRequest ----------------
@@ -69,19 +71,22 @@ message PingPong {
 // `to` specifies the server/device responsible for revoking.
 // `reason` is optional but useful for auditing and explaining forced revokes.
 
-message TokenRevokeRequest {
-  Identity to     = 1;
-  string token    = 2;
-  int64 timestamp = 3;
-  string reason   = 4;   // e.g., "LOGOUT", "COMPROMISED", "SESSION_EXPIRED"
+message TokenRevoke {
+  Identity to = 1;          // Target entity (server or client)
+  string token = 2;         // Token to revoke (used only in REQUEST)
+  int32 phase = 3;          // 1=REQUEST, 2=RESULT, 3=ERROR
+  int64 timestamp = 4;      // Unix UTC timestamp (ms)
+  string reason = 5;        // Optional explanation (LOGOUT, COMPROMISED, INVALID_TOKEN, etc.)
 }
 
-message TokenRevokeResponse {
-  Identity to = 1;
-  int32 status = 2;       // 1=SUCCESS, 2=FAILED
-  int64 timestamp = 3;
-  string reason = 4;      // optional: provides explanation if status=FAILED
+message TokenRefresh {
+  Identity to = 1;             // The target server or client
+  string refresh_token = 2;    // Used only in SUBMIT phase
+  int32 phase = 3;             // 1=REQUEST, 2=SUBMIT, 3=RESULT, 4=ERROR
+  int64 timestamp = 4;         // Unix UTC timestamp (ms)
 }
+
+
 
 // ---------------- SubscribeRequest ----------------
 // A user (from) requests to connect with another user (to).
@@ -145,8 +150,8 @@ message MessageScheme {
   oneof payload {
     Awareness awareness                           = 2;  // User awareness/presence update
     PingPong ping_pong                            = 3;
-    TokenRevokeRequest token_revoke_request       = 4;
-    TokenRevokeResponse token_revoke_response     = 5;
+    TokenRevoke token_revoke                      = 4;
+    TokenRefresh token_refresh                    = 5;
     SubscribeRequest subscribe_request            = 6;
     SubscribeResponse subscribe_response          = 7;
     UnsubscribeRequest unsubscribe_request        = 8;

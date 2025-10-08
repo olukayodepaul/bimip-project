@@ -73,67 +73,57 @@ defmodule Bimip.Device.Client do
 
     case msg.payload do
       {:logout, %Bimip.Logout{} = logout_msg} ->
-        # Step 1: Validate the Logout message structure
-        case Bimip.Validators.LogoutValidator.validate_logout(logout_msg) do
+        case Bimip.Validators.LogoutValidator.validate_logout(logout_msg, eid, device_id) do
           :ok ->
-            # Step 2: Ensure the logout is coming from the same session
+            # Check if request is truly from this session
             if logout_msg.to.eid == eid and logout_msg.to.connection_resource_id == device_id do
-              is_logout = ThrowLogouResponseSchema.logout(eid, device_id)
-              send(ws_pid, {:binary, is_logout})
+              success = ThrowLogouResponseSchema.logout(eid, device_id, 2, 1)
+              send(ws_pid, {:binary, success})
               send(ws_pid, :terminate_socket)
-              {:noreply, state}
             else
-              details = %{description: "Invalid User Session Credential", field: "to"}
-              error_msg = ThrowErrorScheme.error(401, details, 10)
-              send(ws_pid, {:binary, error_msg})
+              fail = ThrowLogouResponseSchema.logout(eid, device_id, 3, 2, "Invalid user session credentials")
+              send(ws_pid, {:binary, fail})
               send(ws_pid, :terminate_socket)
-              {:noreply, state}
             end
 
           {:error, err} ->
-            # Step 3: Send structured protobuf error back to client
-            details = %{description: err.description, field: err.field}
-            error_msg = ThrowErrorScheme.error(err.code, details, 10)
-            send(ws_pid, {:binary, error_msg})
-            {:noreply, state}
+            reason = "Field '#{err.field}' → #{err.description}"
+            fail = ThrowLogouResponseSchema.logout(eid, device_id, 3, 2, reason)
+            send(ws_pid, {:binary, fail})
         end
 
+        {:noreply, state}
+
       _ ->
-        # Catch-all for invalid payload type
-        details = %{description: "Invalid Request", field: "payload"}
-        error_msg = ThrowErrorScheme.error(401, details, 10)
-        send(ws_pid, {:binary, error_msg})
-        send(ws_pid, :terminate_socket)
+        # Invalid stanza or wrong payload type
+        invalid = ThrowLogouResponseSchema.logout(eid, device_id, 3, 2, "Invalid logout stanza")
+        send(ws_pid, {:binary, invalid})
         {:noreply, state}
     end
   end
-
 
   def handle_cast({:ping_pong, eid, device_id, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
     msg = Bimip.MessageScheme.decode(data)
 
     case msg.payload do
       {:ping_pong, %PingPong{} = ping_pong_msg} ->
-        case PingPongValidator.validate_pingpong(ping_pong_msg) do
-          {:ok, valid_msg} ->
-            handle_valid_pingpong(valid_msg, state)
+        case PingPongValidator.validate_pingpong(ping_pong_msg, eid, device_id) do
+          :ok ->
+            handle_valid_pingpong(ping_pong_msg, state)
 
           {:error, err} ->
-
-            details = %{
-              description: err.description,
-              field: err.field
-            }
-
-            reply_client(ws_pid, ThrowErrorScheme.error(err.code, details, 3))
+            fail = ThrowPingPongSchema.error(eid, device_id, err.description)
+            reply_client(ws_pid, fail)
             {:noreply, state}
         end
 
       _ ->
-        reply_client(ws_pid, ThrowErrorScheme.error(100, %{description: "Invalid Request. Expected valid ping_pong payload"}, 3))
+        fail = ThrowPingPongSchema.error(eid, device_id, "Invalid Request. Expected valid ping_pong payload")
+        reply_client(ws_pid, fail)
         {:noreply, state}
     end
   end
+
 
   defp handle_valid_pingpong(%PingPong{type: 1} = ping_pong, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
     case ping_pong.resource do
@@ -144,41 +134,39 @@ defmodule Bimip.Device.Client do
 
       2 ->
         case RegistryHub.request_cross_server_online_state(ping_pong.to.eid) do
-          
           :ok ->
+            pong =
+              ThrowPingPongSchema.others(
+                ping_pong.from.eid,
+                ping_pong.from.connection_resource_id,
+                ping_pong.to.eid,
+                ping_pong.to.connection_resource_id,
+                ping_pong.ping_time
+              )
 
-            pong = ThrowPingPongSchema.others(ping_pong.from.eid, ping_pong.from.connection_resource_id, ping_pong.to.eid, ping_pong.to.connection_resource_id, ping_pong.ping_time)
             reply_client(ws_pid, pong)
             {:noreply, state}
 
           :error ->
-            reply_client(ws_pid, ThrowErrorScheme.error(600, %{description: "Target device disconnected"}, 3))
+            fail = ThrowPingPongSchema.error(eid, device_id, "Target device disconnected")
+            reply_client(ws_pid, fail)
             {:noreply, state}
-            
         end
 
       _ ->
-        reply_client(ws_pid, ThrowErrorScheme.error(100, %{description: "Invalid resource value"}, 3))
+        fail = ThrowPingPongSchema.error(eid, device_id, "Invalid resource value")
+        reply_client(ws_pid, fail)
         {:noreply, state}
     end
   end
 
-  defp handle_valid_pingpong(%PingPong{type: 2} = _pong_msg, %{ws_pid: ws_pid} = state) do
-    err = %{
-      code: 400, 
-      field: "type",
-      description: "Client cannot send PONG; only PING is allowed"
-    }
 
-    details = %{
-      description: err.description,
-      field: err.field
-    }
-
-    reply_client(ws_pid, ThrowErrorScheme.error(err.code, details, 3))
-
+  defp handle_valid_pingpong(%PingPong{type: 2}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
+    fail = ThrowPingPongSchema.error(eid, device_id, "Client cannot send PONG; only PING is allowed")
+    reply_client(ws_pid, fail)
     {:noreply, state}
   end
+
 
   defp reply_client(ws_pid, binary) do
     send(ws_pid, {:binary, binary})

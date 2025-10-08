@@ -1,7 +1,10 @@
 defmodule ThrowLogouResponseSchema do
-
-  def logout(eid, device_id, type \\ 2,  status \\ 1) do
-
+  @doc """
+  Builds a Logout protobuf stanza for response or error.
+  type: 2=RESPONSE, 3=ERROR
+  status: 1=DISCONNECT, 2=FAIL, 3=SUCCESS, 4=PENDING
+  """
+  def logout(eid, device_id, type \\ 2, status \\ 1, reason \\ nil) do
     logout = %Bimip.Logout{
       to: %Bimip.Identity{
         eid: eid,
@@ -9,7 +12,8 @@ defmodule ThrowLogouResponseSchema do
       },
       type: type,
       status: status,
-      timestamp: System.system_time(:millisecond)
+      timestamp: System.system_time(:millisecond),
+      reason: reason
     }
 
     %Bimip.MessageScheme{
@@ -17,6 +21,5 @@ defmodule ThrowLogouResponseSchema do
       payload: {:logout, logout}
     }
     |> Bimip.MessageScheme.encode()
-
   end
 end
