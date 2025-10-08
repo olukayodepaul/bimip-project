@@ -143,7 +143,7 @@ message MessageScheme {
   int64 route = 1;  // Unique route identifier for message routing
 
   oneof payload {
-    Awareness awareness  = 2;  // User awareness/presence update
+    Awareness awareness                           = 2;  // User awareness/presence update
     PingPong ping_pong                            = 3;
     TokenRevokeRequest token_revoke_request       = 4;
     TokenRevokeResponse token_revoke_response     = 5;

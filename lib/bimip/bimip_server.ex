@@ -51,13 +51,13 @@ defmodule Bimip.Service.Master do
       }}
   end
 
-  def start_device(eid, {eid, device_id, ws_pid}) do
-    GenServer.call(Registry.via_monitor_registry(eid), {:start_device, {eid, device_id, ws_pid}})
+  def start_device(eid, {eid, device_id, exp, ws_pid}) do
+    GenServer.call(Registry.via_monitor_registry(eid), {:start_device, {eid, device_id, exp, ws_pid}})
   end
 
   @impl true
-  def handle_call({:start_device, {eid, device_id, ws_pid}}, _from, state) do
-    case Supervisor.start_session({eid, device_id, ws_pid}) do
+  def handle_call({:start_device, {eid, device_id, exp, ws_pid}}, _from, state) do
+    case Supervisor.start_session({eid, device_id, exp, ws_pid}) do
       {:ok, pid} ->
         devices = Map.put(state.devices, device_id, pid)
         {:reply, {:ok, pid}, %{state | devices: devices}}
@@ -138,7 +138,6 @@ defmodule Bimip.Service.Master do
           SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
         end
 
-        
         {:noreply, %{state | force_stale: now}}
 
       {:unchanged, user_status, _online_devices} ->
@@ -167,7 +166,6 @@ defmodule Bimip.Service.Master do
 
     case DeviceStateChange.remaining_active_devices?(eid) do
       true ->
-        Logger.warning("Active devices remain for #{eid}. Cancelling termination.")
         DeviceStateChange.cancel_termination_if_any_device_are_online(current_timer)
         {:noreply, state}
 
@@ -186,11 +184,18 @@ defmodule Bimip.Service.Master do
   def handle_info(:terminate, %{eid: eid, current_timer: current_timer} = state) do
     case DeviceStateChange.remaining_active_devices?(eid) do
       true ->
-        Logger.warning("Devices still active for #{eid} #{current_timer}. Not terminating.")
+        Logger.warning("Active devices detected. Skipping termination.",
+          eid: eid,
+          timer: current_timer,
+          reason: :devices_still_active
+        )
         {:noreply, state}
 
       false ->
-        Logger.warning("No active devices for #{eid}. Process Terminated.")
+        Logger.warning("Client process terminated gracefully",
+          eid: state.eid,
+          reason: :no_active_devices
+        )
         {:stop, :normal, state}
     end
   end

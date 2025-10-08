@@ -16,8 +16,8 @@ use Horde.DynamicSupervisor
     Horde.DynamicSupervisor.init(strategy: :one_for_one)
   end
 
-  @spec start_session({ any(), any(), pid()}) :: {:ok, pid()} | {:error, any()}
-  def start_session({eid, device_id, _ws_pid} = state) do
+  @spec start_session({ any(), any(), any(), pid()}) :: {:ok, pid()} | {:error, any()}
+  def start_session({eid, device_id, _exp, _ws_pid} = state) do
     child_spec = %{
       id: {:device_session, device_id},
       start: {Bimip.Device.Client, :start_link, [state]},

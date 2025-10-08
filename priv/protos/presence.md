@@ -161,17 +161,86 @@ is_logout = %Bimip.MessageScheme{
 
 binary = Bimip.MessageScheme.encode(is_logout)
 hex    = Base.encode16(binary, case: :upper)
-080A52230A160A0C6140646F6D61696E2E636F6D12066161616161311001180420E1EA99EB9B33
+
 ```
 
 error
 
 ```proto
-logout = %Bimip.Logout{
-  code: 200,
-  route: 10,
-  details: "Invalid ",
-  timestamp: System.system_time(:millisecond)
+// ---------------- PingPong ----------------
+// Heartbeat messages from client to server to check connectivity of a specific device (Identity includes both eid and connection_resource_id)
+// Client generates ping_id; server echoes it back in PONG with pong_time
+message PingPong {
+  Identity from = 1;              // Sender's identity (user or device)
+  Identity to = 2;                // Optional: target identity (used if resource = OTHERS)
+  int32 resource = 3;             // 1=SAME (server ping), 2=OTHERS (user-to-user ping)
+  int32 type = 4;                 // 1=PING, 2=PONG
+  int64 ping_time = 5;            // Unix UTC timestamp (ms)
+  int64 pong_time = 6;            // Unix UTC timestamp (ms)
 }
 
+
+
+message PingPong {
+  Identity from = 1;              // Sender's identity (user or device)
+  Identity to = 2;                // Optional: target identity (used if resource = OTHERS)
+  int32 resource = 3;             // 1=SAME (server ping), 2=OTHERS (user-to-user ping)
+  int32 type = 4;                 // 1=PING, 2=PONG
+  int64 ping_time = 5;            // Unix UTC timestamp (ms)
+  int64 pong_time = 6;            // Unix UTC timestamp (ms)
+}
+
+
+logout = %Bimip.PingPong {
+  from: %Bimip.Identity{
+    eid: "a@domain.com",
+    connection_resource_id: "aaaaa1",
+  },
+  to: %Bimip.Identity{
+    eid: "b@domain.com",
+    connection_resource_id: "bbbbb1",
+  },
+  resource: 2,
+  type: 1,
+  ping_time: System.system_time(:millisecond),
+  pong_time: System.system_time(:millisecond)
+}
+is_logout = %Bimip.MessageScheme{
+  route: 3,
+  payload: {:ping_pong, logout}
+}
+
+binary = Bimip.MessageScheme.encode(is_logout)
+hex    = Base.encode16(binary, case: :upper)
+
+
 ```
+
+defp handle_ping_request(
+%Bimip.PingPong{resource: resource, ping_time: ping_time},
+%{ws_pid: ws_pid, eid: eid, device_id: device_id} = state
+) do
+case resource do
+1 ->
+case RegistryHub.request_cross_server_online_state(eid) do
+:ok ->
+pong = ThrowPingPongSchema.same(eid, device_id, ping_time)
+send(ws_pid, {:binary, pong})
+{:noreply, state}
+
+          :error ->
+            reply_and_close(ws_pid, ThrowErrorScheme.error(404, "Service Unavailable", 3))
+            {:noreply, state}
+        end
+
+      2 ->
+        # Resource 2: user-to-user ping (currently no-op here)
+        {:noreply, state}
+
+      _ ->
+        # Invalid resource
+        reply_and_close(ws_pid, ThrowErrorScheme.error(401, "Invalid Resource ID", 3))
+        {:noreply, state}
+    end
+
+end

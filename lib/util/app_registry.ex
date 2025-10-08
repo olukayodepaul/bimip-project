@@ -25,7 +25,7 @@ defmodule App.RegistryHub do
   def route_others_ping(eid, device_id, data) do
     case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
       [{pid, _}] ->
-        GenServer.cast(pid, {:logout, eid, device_id, data})
+        GenServer.cast(pid, {:ping_pong, eid, device_id, data})
         :ok
       [] ->
         :error

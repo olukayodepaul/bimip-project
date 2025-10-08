@@ -29,9 +29,9 @@ defmodule Bimip.Socket do
       end
     end
 
-    def websocket_init(%{ eid: eid, device_id: device_id} = state) do
+    def websocket_init(%{ eid: eid, device_id: device_id, exp: exp} = state) do
       Orchestrator.start_mother(eid)
-      Master.start_device(eid, {eid, device_id, self()})
+      Master.start_device(eid, {eid, device_id, exp, self()})
       {:ok, state}
     end
 
@@ -91,6 +91,7 @@ defmodule Bimip.Socket do
     end
 
     defp handle_logout(state, data) do
+      IO.inspect("log_out_route")
       case RegistryHub.route_same_ping(state.eid, state.device_id, data) do
         :ok -> {:ok, state}
         :error ->

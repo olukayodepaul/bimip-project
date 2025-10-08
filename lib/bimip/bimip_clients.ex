@@ -8,14 +8,16 @@ defmodule Bimip.Device.Client do
   alias ThrowErrorScheme
   alias ThrowLogouResponseSchema
   alias ThrowPingPongSchema
+  alias PingPongHandler
+  alias Bimip.PingPong
 
   # Start GenServer for device session
-  def start_link({_eid, device_id, _ws_pid} = state) do
+  def start_link({_eid, device_id, _exp, _ws_pid} = state) do
     GenServer.start_link(__MODULE__, state, name: Registry.via_registry(device_id))
   end
 
   @impl true
-  def init({eid, device_id, ws_pid}) do
+  def init({eid, device_id, exp, ws_pid}) do
     RegistryHub.register_device_in_server({device_id, eid, ws_pid}) # pass
     AdaptivePingPong.schedule_ping(device_id)
 
@@ -26,11 +28,14 @@ defmodule Bimip.Device.Client do
         timer: DateTime.utc_now(),
         eid: eid,
         device_id: device_id,
+        exp_time: exp,
+        token_state: :active,
         ws_pid: ws_pid,
         last_rtt: nil,
         max_missed_pongs_adaptive: AdaptiveNetwork.initial_max_missed_pings(),
         last_send_ping: nil,
         last_state_change: DateTime.utc_now(),
+        
 
         # nested device state (replacement for ETS)
         device_state: %{
@@ -86,38 +91,75 @@ defmodule Bimip.Device.Client do
     end
   end
 
-  def handle_cast({:ping_pong, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
+  def handle_cast({:ping_pong, eid, device_id, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
     msg = Bimip.MessageScheme.decode(data)
 
     case msg.payload do
-      {:ping_pong, %Bimip.PingPong{type: 1, to: %{eid: ^eid, connection_resource_id: ^device_id}} = ping_pong_msg} ->
-        handle_ping_request(ping_pong_msg, state)
+      {:ping_pong, %PingPong{} = ping_pong_msg} ->
+        case PingPongHandler.validate_pingpong(ping_pong_msg) do
+          {:ok, valid_msg} ->
+            handle_valid_pingpong(valid_msg, state)
 
-      {:ping_pong, _} ->
-        reply_and_close(ws_pid, ThrowErrorScheme.error(401, "Invalid User Session Credential", 3))
-        {:noreply, state}
+          {:error, err} ->
+
+            details = %{
+              description: err.description,
+              field: err.field
+            }
+
+            reply_client(ws_pid, ThrowErrorScheme.error(err.code, details, 3))
+            {:noreply, state}
+        end
 
       _ ->
-        reply_and_close(ws_pid, ThrowErrorScheme.error(401, "Invalid Request", 3))
+        reply_client(ws_pid, ThrowErrorScheme.error(100, %{description: "Invalid Request. Expected valid ping_pong payload"}, 3))
         {:noreply, state}
     end
   end
 
-  defp reply_and_close(ws_pid, binary) do
+  defp handle_valid_pingpong(%PingPong{type: 1} = ping_pong, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
+    case ping_pong.resource do
+      1 ->
+        pong = ThrowPingPongSchema.same(eid, device_id, ping_pong.ping_time)
+        reply_client(ws_pid, pong)
+        {:noreply, state}
+
+      2 ->
+        case RegistryHub.request_cross_server_online_state(ping_pong.to.eid) do
+          :ok ->
+            IO.inspect("Cross-server PING processed for #{ping_pong.to.eid}")
+            {:noreply, state}
+
+          :error ->
+            reply_client(ws_pid, ThrowErrorScheme.error(600, %{description: "Target device disconnected"}, 3))
+            {:noreply, state}
+        end
+
+      _ ->
+        reply_client(ws_pid, ThrowErrorScheme.error(100, %{description: "Invalid resource value"}, 3))
+        {:noreply, state}
+    end
+  end
+
+  defp handle_valid_pingpong(%PingPong{type: 2} = _pong_msg, %{ws_pid: ws_pid} = state) do
+    err = %{
+      code: 400, 
+      field: "type",
+      description: "Client cannot send PONG; only PING is allowed"
+    }
+
+    details = %{
+      description: err.description,
+      field: err.field
+    }
+
+    reply_client(ws_pid, ThrowErrorScheme.error(err.code, details, 3))
+
+    {:noreply, state}
+  end
+
+  defp reply_client(ws_pid, binary) do
     send(ws_pid, {:binary, binary})
-  end
-
-  defp handle_ping_request(%Bimip.PingPong{resource: 1, ping_time: ping_time}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
-    case RegistryHub.request_cross_server_online_state(eid) do
-      :ok ->
-        pong = ThrowPingPongSchema.same(eid, device_id, ping_time)
-        send(ws_pid, {:binary, pong})
-        {:noreply, state}
-
-      :error ->
-        reply_and_close(ws_pid, ThrowErrorScheme.error(404, "Service Unavailable", 3))
-        {:noreply, state}
-    end
   end
 
 end
