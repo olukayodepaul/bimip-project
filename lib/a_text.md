@@ -1,31 +1,22 @@
-//testing login stages testing ping pong
-message PingPong {
-Identity from = 1; // Sender's identity (user or device)
-Identity to = 2; // Optional: target identity (used if resource = OTHERS)
-int32 resource = 3; // 1=SAME (server ping), 2=OTHERS (user-to-user ping)
-int32 type = 4; // 1=PING, 2=PONG
-int64 ping_time = 5; // Unix UTC timestamp (ms)
-int64 pong_time = 6; // Unix UTC timestamp (ms)
+message Logout {
+Identity to = 1; // The user/device performing logout
+int32 type = 2; // 1 = REQUEST, 2 = RESPONSE
+int32 status = 3; // 1 = DISCONNECT, 2 = FAIL, 3 = SUCCESS, 4 = PENDING
+int64 timestamp = 4; // Unix UTC timestamp (ms) of the action
 }
 
-logout = %Bimip.PingPong {
+logout = %Bimip.Logout {
 to: %Bimip.Identity{
-eid: "a@domain.com",
-connection_resource_id: "aaaa1",
-},
-
-from: %Bimip.Identity{
 eid: "a@domain.com",
 connection_resource_id: "aaaaa1",
 },
-
-resource: 1,
-type: 2,
-ping_time: System.system_time(:millisecond)
+type: 1,
+status: 4,
+timestamp: System.system_time(:millisecond)
 }
 is_logout = %Bimip.MessageScheme{
-route: 3,
-payload: {:ping_pong, logout}
+route: 10,
+payload: {:logout, logout}
 }
 
 binary = Bimip.MessageScheme.encode(is_logout)

@@ -1,6 +1,6 @@
 defmodule ThrowLogouResponseSchema do
 
-  def logout(eid, device_id, type \\ 2,  status \\ 3) do
+  def logout(eid, device_id, type \\ 2,  status \\ 1) do
 
     logout = %Bimip.Logout{
       to: %Bimip.Identity{

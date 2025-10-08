@@ -8,7 +8,7 @@ defmodule Bimip.Device.Client do
   alias ThrowErrorScheme
   alias ThrowLogouResponseSchema
   alias ThrowPingPongSchema
-  alias PingPongHandler
+  alias Bimip.Validators.PingPongValidator
   alias Bimip.PingPong
 
   # Start GenServer for device session
@@ -70,33 +70,51 @@ defmodule Bimip.Device.Client do
 
   def handle_cast({:logout, _eid, _device_id, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
     msg = Bimip.MessageScheme.decode(data)
-    case msg.payload do
-      {:logout, %Bimip.Logout{type: 1, to: %{eid: ^eid, connection_resource_id: ^device_id}} = logout_msg} ->
-        is_logout = ThrowLogouResponseSchema.logout(eid, device_id)
-        send(ws_pid, {:binary, is_logout})
-        send(ws_pid, :terminate_socket)
-        {:noreply, state}
 
-      {:logout, _} ->
-        error_msg = ThrowErrorScheme.error(401, "Invalid User Session Credential", 10)
-        send(ws_pid, {:binary, error_msg})
-        send(ws_pid, :terminate_socket)
-        {:noreply, state}
+    case msg.payload do
+      {:logout, %Bimip.Logout{} = logout_msg} ->
+        # Step 1: Validate the Logout message structure
+        case Bimip.Validators.LogoutValidator.validate_logout(logout_msg) do
+          :ok ->
+            # Step 2: Ensure the logout is coming from the same session
+            if logout_msg.to.eid == eid and logout_msg.to.connection_resource_id == device_id do
+              is_logout = ThrowLogouResponseSchema.logout(eid, device_id)
+              send(ws_pid, {:binary, is_logout})
+              send(ws_pid, :terminate_socket)
+              {:noreply, state}
+            else
+              details = %{description: "Invalid User Session Credential", field: "to"}
+              error_msg = ThrowErrorScheme.error(401, details, 10)
+              send(ws_pid, {:binary, error_msg})
+              send(ws_pid, :terminate_socket)
+              {:noreply, state}
+            end
+
+          {:error, err} ->
+            # Step 3: Send structured protobuf error back to client
+            details = %{description: err.description, field: err.field}
+            error_msg = ThrowErrorScheme.error(err.code, details, 10)
+            send(ws_pid, {:binary, error_msg})
+            {:noreply, state}
+        end
 
       _ ->
-        error_msg = ThrowErrorScheme.error(401, "Invalid Request", 10)
+        # Catch-all for invalid payload type
+        details = %{description: "Invalid Request", field: "payload"}
+        error_msg = ThrowErrorScheme.error(401, details, 10)
         send(ws_pid, {:binary, error_msg})
         send(ws_pid, :terminate_socket)
         {:noreply, state}
     end
   end
 
+
   def handle_cast({:ping_pong, eid, device_id, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
     msg = Bimip.MessageScheme.decode(data)
 
     case msg.payload do
       {:ping_pong, %PingPong{} = ping_pong_msg} ->
-        case PingPongHandler.validate_pingpong(ping_pong_msg) do
+        case PingPongValidator.validate_pingpong(ping_pong_msg) do
           {:ok, valid_msg} ->
             handle_valid_pingpong(valid_msg, state)
 
@@ -126,13 +144,17 @@ defmodule Bimip.Device.Client do
 
       2 ->
         case RegistryHub.request_cross_server_online_state(ping_pong.to.eid) do
+          
           :ok ->
-            IO.inspect("Cross-server PING processed for #{ping_pong.to.eid}")
+
+            pong = ThrowPingPongSchema.others(ping_pong.from.eid, ping_pong.from.connection_resource_id, ping_pong.to.eid, ping_pong.to.connection_resource_id, ping_pong.ping_time)
+            reply_client(ws_pid, pong)
             {:noreply, state}
 
           :error ->
             reply_client(ws_pid, ThrowErrorScheme.error(600, %{description: "Target device disconnected"}, 3))
             {:noreply, state}
+            
         end
 
       _ ->

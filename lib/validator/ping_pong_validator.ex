@@ -1,4 +1,4 @@
-defmodule PingPongHandler do
+defmodule Bimip.Validators.PingPongValidator do
   alias Bimip.PingPong
 
   def validate_pingpong(%PingPong{} = msg) do
