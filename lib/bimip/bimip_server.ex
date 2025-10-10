@@ -6,7 +6,7 @@ defmodule Bimip.Service.Master do
   alias Bimip.SubscriberPresence
   alias Storage.DeviceStateChange
   alias Settings.ServerState
-  alias Route.SelfFanOut
+  alias Route.AwarenessFanOut
   alias ThrowAwareness
 
   require Logger
@@ -90,9 +90,9 @@ defmodule Bimip.Service.Master do
     }
 
     if state.location_sharing do
-      SubscriberPresence.broadcast_awareness(eid, state.awareness, :online, state.lat, state.lng, state.location_sharing)
+      # SubscriberPresence.broadcast_awareness(eid, state.awareness, :online, state.lat, state.lng, state.location_sharing)
     else
-      SubscriberPresence.broadcast_awareness(eid, state.awareness, :online)
+      # SubscriberPresence.broadcast_awareness(eid, state.awareness, :online)
     end
 
     case DeviceStorage.register_device_session(device_id, eid, device_payload) do
@@ -133,9 +133,9 @@ defmodule Bimip.Service.Master do
     case Storage.DeviceStateChange.track_state_change(eid) do
       {:changed, user_status, _online_devices} ->
         if state.location_sharing do
-          SubscriberPresence.broadcast_awareness(eid, awareness, user_status, state.lat, state.lng, state.location_sharing)
+          # SubscriberPresence.broadcast_awareness(eid, awareness, user_status, state.lat, state.lng, state.location_sharing)
         else
-          SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
+          # SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
         end
 
         {:noreply, %{state | force_stale: now}}
@@ -146,9 +146,9 @@ defmodule Bimip.Service.Master do
         if idle_too_long? do
 
           if state.location_sharing do
-            SubscriberPresence.broadcast_awareness(eid, awareness, user_status, state.lat, state.lng, state.location_sharing)
+            # SubscriberPresence.broadcast_awareness(eid, awareness, user_status, state.lat, state.lng, state.location_sharing)
           else
-            SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
+            # SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
           end
 
           {:noreply, %{state | force_stale: now}}
@@ -171,9 +171,9 @@ defmodule Bimip.Service.Master do
 
       false ->
         if state.location_sharing do
-          SubscriberPresence.broadcast_awareness(eid, awareness, :offline, state.lat, state.lng, state.location_sharing)
+          # SubscriberPresence.broadcast_awareness(eid, awareness, :offline, state.lat, state.lng, state.location_sharing)
         else
-          SubscriberPresence.broadcast_awareness(eid, awareness, :offline)
+          # SubscriberPresence.broadcast_awareness(eid, awareness, :offline)
         end
         
         DeviceStateChange.schedule_termination_if_all_offline(state)
@@ -200,18 +200,14 @@ defmodule Bimip.Service.Master do
     end
   end
 
+  def handle_cast({:route_awareness, from_eid, to_eid, _type,  data}, %{awareness: awareness} = state) do
+    SubscriberPresence.broadcast_awareness(from_eid, data, awareness)
+    {:noreply, state}
+  end
+
   @impl true
-  def handle_info({:awareness_update, %Strucs.Awareness{} = awareness}, %{eid: eid} = state) do
-    publish = ThrowAwareness.awareness(
-      awareness.owner_eid,
-      eid,
-      awareness.intention,
-      awareness.status,
-      awareness.latitude,
-      awareness.longitude,
-      awareness.location_sharing
-    )
-    SelfFanOut.awareness(publish, eid)
+  def handle_info({:awareness_update,  awareness_msg}, %{eid: eid} =  state) do
+    AwarenessFanOut.awareness(awareness_msg, eid)
     {:noreply, state}
   end
 

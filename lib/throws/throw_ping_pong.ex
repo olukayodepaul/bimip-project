@@ -22,7 +22,7 @@ defmodule ThrowPingPongSchema do
       type: 3, # ERROR
       ping_time: System.system_time(:millisecond),
       pong_time: 0,
-      error_reason: description
+      details: description
     }
 
     %Bimip.MessageScheme{

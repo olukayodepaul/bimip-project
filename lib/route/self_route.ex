@@ -1,4 +1,4 @@
-defmodule Route.SelfFanOut do
+defmodule Route.AwarenessFanOut do
 
   alias Storage.DeviceStorage
   alias Settings.ServerState

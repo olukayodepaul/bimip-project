@@ -4,7 +4,7 @@ defmodule ThrowLogouResponseSchema do
   type: 2=RESPONSE, 3=ERROR
   status: 1=DISCONNECT, 2=FAIL, 3=SUCCESS, 4=PENDING
   """
-  def logout(eid, device_id, type \\ 2, status \\ 1, reason \\ nil) do
+  def logout(eid, device_id, type \\ 2, status \\ 1, details \\ nil) do
     logout = %Bimip.Logout{
       to: %Bimip.Identity{
         eid: eid,
@@ -13,11 +13,11 @@ defmodule ThrowLogouResponseSchema do
       type: type,
       status: status,
       timestamp: System.system_time(:millisecond),
-      reason: reason
+      details: details
     }
 
     %Bimip.MessageScheme{
-      route: 10,
+      route: 14,
       payload: {:logout, logout}
     }
     |> Bimip.MessageScheme.encode()

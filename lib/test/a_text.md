@@ -11,14 +11,14 @@ message PingPong {
 
 logout = %Bimip.PingPong {
 to: %Bimip.Identity{
-eid: "a@domain.com",
-connection_resource_id: "aaaaa1",
+eid: "b@domain.com",
+connection_resource_id: "bbbbb1",
 },
 from: %Bimip.Identity{
 eid: "a@domain.com",
 connection_resource_id: "aaaaa1",
 },
-resource: 1,
+resource: 2,
 type: 1,
 ping_time: System.system_time(:millisecond)
 }
@@ -29,4 +29,5 @@ payload: {:ping_pong, logout}
 
 binary = Bimip.MessageScheme.encode(is_logout)
 hex = Base.encode16(binary, case: :upper)
+
 ```

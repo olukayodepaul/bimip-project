@@ -49,6 +49,26 @@ defmodule App.RegistryHub do
     end
   end
 
+  def route_awareness_to_client(eid, device_id, data) do
+    case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:route_awareness, eid, device_id, data})
+        :ok
+      [] ->
+        :error
+    end
+  end
+
+  def route_awareness_to_server(from_eid, to_eid, type, data) do
+    case Horde.Registry.lookup(EidRegistry, from_eid) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:route_awareness, from_eid, to_eid, type, data})
+        :ok
+      [] ->
+        :error
+    end
+  end
+
   def schedule_ping_registry(_device_id, interval) do
     Process.send_after(self(), {:send_ping, interval}, interval)
   end

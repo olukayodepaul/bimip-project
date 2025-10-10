@@ -179,15 +179,11 @@ defmodule Util.Network.AdaptivePingPong do
 
     case DeviceState.track_state_change(attrs, device_state) do
       {:changed, prev_status, new_state} ->
-        IO.inspect({"state change here is my 1", status})
         Logger.info("[#{device_id}] State changed #{prev_status} → #{status}")
-
-      IO.inspect({"state change here is my 2", status, prev_status})
         RegistryHub.send_pong_to_bimip_server_master(device_id, eid, prev_status)
-
         {:chr, new_state}
-
-      {:refresh, prev_status, new_state} ->
+      
+        {:refresh, prev_status, new_state} ->
         Logger.debug("[#{device_id}] State refresh #{prev_status} → #{status}")
         RegistryHub.send_pong_to_bimip_server_master(device_id, eid, prev_status)
         {:chr, new_state}

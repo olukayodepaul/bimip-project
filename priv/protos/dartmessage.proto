@@ -10,17 +10,51 @@ message Identity {
 }
 
 // ---------------- Awareness ----------------
-// Sends a user’s awareness (presence, location, and status) to other users
+//
+// The Awareness stanza communicates real-time user or system states
+// such as presence, activity, or temporary conditions. It serves as a
+// lightweight, fire-and-forget alternative to XMPP presence stanzas,
+// optimized for low latency, binary transmission, and TTL-based expiration.
+//
+// ──────────────────────────────────────────────
+// Awareness Mapping:
+//   • User Awareness → status: 1=ONLINE, 2=OFFLINE, 3=AWAY, 4=BUSY, 5=DND
+//   • System Awareness → status: 6=TYPING, 7=RECORDING
+//
+// Location Sharing Policy:
+//   • 1 = ENABLED   → user shares real-time location
+//   • 2 = DISABLED  → user hides location coordinates
+//
+// Behavioral Characteristics:
+//   • Fire-and-forget — no acknowledgment or response required.
+//   • Transient — each stanza has a limited lifespan controlled by ttl.
+//   • Auto-expiry — servers and clients must discard awareness after (timestamp + ttl).
+//   • Delay protection — servers verify TTL before broadcasting to avoid stale events.
+//   • No START/STOP actions — TTL expiration implicitly ends the awareness lifecycle.
+//   • Suitable for real-time systems, mobile devices, and edge networks.
+//
+// Lifecycle Example:
+//   → User starts typing: send status=6 (TYPING), ttl=5
+//   → If user keeps typing: client periodically refreshes stanza
+//   → If user stops: no further messages; awareness expires naturally
+//
+// This unified model simplifies the protocol compared to XMPP’s multiple presence
+// and activity stanzas, reduces network overhead, and ensures consistency across
+// unreliable or high-latency environments.
+
 message Awareness {
-  string from = 1;                 // Sender (uses eid only)
-  string to = 2;                   // Recipient (uses eid only)
-  int32 status = 3;                  // Presence state: 1=ONLINE, 2=OFFLINE, 3=AWAY, 4=BUSY, 5=DND, 6=INVISIBLE, 7=IDLE, 8=UNKNOWN
-  bool location_sharing = 4;
-  double latitude = 5;               // Latitude
-  double longitude = 6;              // Longitude
-  int32 intention = 7;     // Broadcast control: 1=DO_NOT_BROADCAST, 2=BROADCAST
-  int64 timestamp = 8; 
-}
+  Identity from = 1; // Sender's identity (user or device)
+  Identity to = 2; // Target identity (used if resource = OTHERS)
+  int32 type = 3; // 1=REQUEST, 2=RESPONSE, 3=ERROR
+  int32 status = 4; // Awareness state (see mapping above)
+  int32 location_sharing = 5; // 1=ENABLED, 2=DISABLED
+  double latitude = 6; // Latitude (if sharing enabled)
+  double longitude = 7; // Longitude (if sharing enabled)
+  int32 ttl = 8; // Validity duration in seconds before expiration
+  string details = 9; // Additional info (optional)
+  int64 timestamp = 10; // Epoch time in milliseconds (creation time)
+  }
+
 
 // ---------------- ErrorMessage ----------------
 // Represents an error response with code, description, and optional details
@@ -43,15 +77,6 @@ message ErrorMessage {
   int64 timestamp = 4; 
 }
 
-// ---------------- LogoutMessage ----------------
-// Uses both eid and connection_resource_id to log out a specific device
-message Logout {
-  Identity to = 1;        // Target of logout (client or server)
-  int32 type = 2;         // 1=REQUEST, 2=RESPONSE, 3=ERROR
-  int32 status = 3;       // 1=DISCONNECT, 2=FAIL, 3=SUCCESS, 4=PENDING
-  int64 timestamp = 4;    // Unix UTC timestamp (ms)
-  string reason = 5;      // Optional: error or failure description
-}
 
 // ---------------- PingPong ----------------
 // Heartbeat messages from client to server to check connectivity of a specific device (Identity includes both eid and connection_resource_id)
@@ -63,7 +88,7 @@ message PingPong {
   int32 type = 4;                 // 1=PING, 2=PONG, 3=ERROR
   int64 ping_time = 5;            // Unix UTC timestamp (ms)
   int64 pong_time = 6;            // Unix UTC timestamp (ms)
-  string error_reason = 7;        // Optional: only set when type = 3 (ERROR)
+  string details = 7;        // Optional: only set when type = 3 (ERROR)
 }
 
 // ---------------- TokenRevokeRequest ----------------
@@ -74,71 +99,46 @@ message PingPong {
 message TokenRevoke {
   Identity to = 1;          // Target entity (server or client)
   string token = 2;         // Token to revoke (used only in REQUEST)
-  int32 phase = 3;          // 1=REQUEST, 2=RESULT, 3=ERROR
+  int32 type = 3;          // 1=REQUEST, 2=RESULT, 3=ERROR
   int64 timestamp = 4;      // Unix UTC timestamp (ms)
-  string reason = 5;        // Optional explanation (LOGOUT, COMPROMISED, INVALID_TOKEN, etc.)
+  string details = 5;        // Optional explanation (LOGOUT, COMPROMISED, INVALID_TOKEN, etc.)
 }
 
 message TokenRefresh {
   Identity to = 1;             // The target server or client
   string refresh_token = 2;    // Used only in SUBMIT phase
-  int32 phase = 3;             // 1=REQUEST, 2=SUBMIT, 3=RESULT, 4=ERROR
+  int32 type = 3;             // 1=REQUEST, 2=SUBMIT, 3=RESULT, 4=ERROR
   int64 timestamp = 4;         // Unix UTC timestamp (ms)
+  string details = 5;        // Optional explanation (LOGOUT, COMPROMISED, INVALID_TOKEN, etc.)
 }
 
-
-
-// ---------------- SubscribeRequest ----------------
-// A user (from) requests to connect with another user (to).
-// The `subscription_id` uniquely identifies this subscription attempt.
-// Note: Only `eid` is needed in Identity for subscription.
-// Default behavior is **two-way mutual subscription**.
-// If `one_way=true`, only the sender will see the target's updates; target won't automatically see sender's updates.
-message SubscribeRequest {
-  Identity from = 1;           // Request sender (A)
-  Identity to = 2;             // Target user (B)
-  string subscription_id = 3;  // Unique ID for this subscription (UUID or client-generated)
-  bool one_way = 4;            // Optional: true = one-way subscription; default=false (two-way)
-  int64 timestamp = 5;         // When the request was sent
+message AwarenessSubscribe {
+  Identity from = 1;          // Sender of the subscription request
+  Identity to = 2;            // Target user
+  string tracking_id = 3;     // Correlation ID to match request ↔ response/deny/error
+  bool one_way = 4;           // Optional: true = one-way subscription; default=false (two-way)
+  int32 type = 5;             // 1=SUBSCRIBE, 2=SUBSCRIBED, 3=DENY, 4=ERROR
+  int64 timestamp = 6;        // Unix UTC timestamp (ms)
+  string details = 7;        // Optional explanation (LOGOUT, COMPROMISED, INVALID_TOKEN, etc.)
 }
 
-// ---------------- SubscribeResponse ----------------
-// The target user (to) accepts or rejects a subscription request.
-// Linked to the original request via `subscription_id`.
-// `one_way` echoes the subscription type chosen by the requester.
-message SubscribeResponse {
-  Identity from = 1;           // The responder (B)
-  Identity to = 2;             // Original requester (A)
-  int32 status = 3;            // 1=ACCEPTED, 2=REJECTED
-  string message = 4;          // Optional reason (e.g., "User rejected request")
-  string subscription_id = 5;  // Matches SubscribeRequest.subscription_id
-  bool one_way = 6;            // True if subscription is one-way, false if two-way (default)
-  int64 timestamp = 7;         // Response time
+message AwarenessUnsubscribe {
+  Identity from = 1;
+  Identity to = 2;
+  string tracking_id = 3;   // Correlates request ↔ response/error
+  int32 type = 4;           // 1=UNSUBSCRIBE, 2=UNSUBSCRIBED, 3=ERROR
+  int64 timestamp = 5;
+  string details = 6;        // Optional explanation (LOGOUT, COMPROMISED, INVALID_TOKEN, etc.)
 }
 
-// ---------------- UnsubscribeRequest ----------------
-// Used when a user (`from`) unsubscribes from another user (`to`) to stop receiving updates.
-// For two-way subscriptions, removal can be mutual by default.
-// NOTE: `from` and `to` MUST only use `eid`.
-// The `connection_resource_id` MUST be nil (not set).
-message UnsubscribeRequest {
-  Identity from = 1;                 // The user initiating the unsubscribe (eid only)
-  Identity to = 2;                   // The user being unsubscribed from (eid only)
-  int64 timestamp = 3;               // Time the request was created
-  bool force_two_way_removal = 4;    // Optional: true to remove both sides even if one-way subscription
-}
-
-// ---------------- UnsubscribeResponse ----------------
-// Sent back to confirm whether the unsubscribe succeeded or failed.
-// NOTE: `from` and `to` MUST only use `eid`.
-// The `connection_resource_id` MUST be nil (not set).
-message UnsubscribeResponse {
-  Identity from = 1;          // The requester (eid only)
-  Identity to = 2;            // The target being unsubscribed from (eid only)
-  int32 status = 3;           // 1=SUCCESS, 2=FAILED
-  string message = 4;         // Human-readable status info
-  int64 timestamp = 5;        // Time the response was generated
-  bool two_way_removed = 6;   // True if both sides were removed; false if only initiator side removed
+// ---------------- LogoutMessage ----------------
+// Uses both eid and connection_resource_id to log out a specific device
+message Logout {
+  Identity to = 1;        // Target of logout (client or server)
+  int32 type = 2;         // 1=REQUEST, 2=RESPONSE, 3=ERROR
+  int32 status = 3;       // 1=DISCONNECT, 2=FAIL, 3=SUCCESS, 4=PENDING
+  int64 timestamp = 4;    // Unix UTC timestamp (ms)
+  string details = 5;      // Optional: error or failure description
 }
 
 
@@ -152,11 +152,11 @@ message MessageScheme {
     PingPong ping_pong                            = 3;
     TokenRevoke token_revoke                      = 4;
     TokenRefresh token_refresh                    = 5;
-    SubscribeRequest subscribe_request            = 6;
-    SubscribeResponse subscribe_response          = 7;
-    UnsubscribeRequest unsubscribe_request        = 8;
-    UnsubscribeResponse unsubscribe_response      = 9;
-    Logout logout                                 = 10; // Logout message
-    ErrorMessage error                            = 11; // Error message
+    AwarenessSubscribe awareness_subscribe        = 6;
+    AwarenessUnsubscribe awareness_unsubscribe    = 7;
+    Logout logout                                 = 14; // Logout message
+    ErrorMessage error                            = 15; // Error message
   }
 }
+
+//

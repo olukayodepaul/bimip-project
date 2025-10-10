@@ -68,6 +68,72 @@ defmodule Bimip.Device.Client do
     {:stop, :normal, state}
   end
 
+  def handle_cast(
+        {:route_awareness, _eid, _device_id, data},
+        %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state
+      ) do
+
+    msg = Bimip.MessageScheme.decode(data)
+
+    case msg.payload do
+      {:awareness, %Bimip.Awareness{} = awareness_msg} ->
+        # Validate the Awareness message
+        case Bimip.Validators.AwarenessValidator.validate_awareness(awareness_msg) do
+          :ok ->
+
+            awareness_type =
+              case awareness_msg.status do
+                s when s in 1..5 -> :user  # User Awareness → broadcast to subscribers
+                s when s in 6..7 -> :system  # System Awareness → per-to-per
+              end
+
+          # ✅ Validation passed → prepare internal data
+            encoded_message = ThrowAwarenessSchema.success(
+              awareness_msg.from.eid,
+              awareness_msg.from.connection_resource_id,
+              awareness_msg.to.eid,
+              awareness_msg.to.connection_resource_id,
+              awareness_msg.status,
+              awareness_msg.location_sharing,
+              awareness_msg.latitude,
+              awareness_msg.longitude,
+              awareness_msg.ttl,
+              awareness_msg.details
+            )
+
+            # Inspect or forward internally
+            
+            RegistryHub.route_awareness_to_server(
+              awareness_msg.from.eid, 
+              awareness_msg.to.eid, 
+              awareness_type,
+              encoded_message
+            )
+
+            {:noreply, state}
+
+          {:error, err} ->
+  
+            reason = "Field '#{err.field}' → #{err.description}"
+
+            error_binary = ThrowAwarenessSchema.error(
+              awareness_msg.from.eid,
+              awareness_msg.from.connection_resource_id,
+              reason
+            )
+
+            send(ws_pid, {:binary, error_binary})
+            {:noreply, state}
+        end
+
+      _ ->
+        reason = "Invalid payload: expected Awareness message"
+        error_binary = ThrowAwarenessSchema.error(eid, device_id, reason)
+        send(ws_pid, {:binary, error_binary})
+        {:noreply, state}
+    end
+  end
+
   def handle_cast({:logout, _eid, _device_id, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
     msg = Bimip.MessageScheme.decode(data)
 
@@ -126,6 +192,7 @@ defmodule Bimip.Device.Client do
 
 
   defp handle_valid_pingpong(%PingPong{type: 1} = ping_pong, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
+    #update  last_activity, 
     case ping_pong.resource do
       1 ->
         pong = ThrowPingPongSchema.same(eid, device_id, ping_pong.ping_time)
@@ -167,10 +234,23 @@ defmodule Bimip.Device.Client do
     {:noreply, state}
   end
 
-
   defp reply_client(ws_pid, binary) do
     send(ws_pid, {:binary, binary})
   end
+
+  #during activity reset this state
+  # defp on_activit_update_device_state(state)do
+  #     {:noreply,
+  #       %{
+  #         state | 
+  #         state.device_state | 
+  #         %{
+  #         last_change_at: DateTime.utc_now(),
+  #         last_seen: DateTime.utc_now(),
+  #         last_activity: DateTime.utc_now()
+  #       }
+  #     }}
+  # end
 
 end
 

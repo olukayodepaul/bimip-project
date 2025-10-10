@@ -75,8 +75,9 @@ defmodule Bimip.Socket do
 
     defp dispatch_map do
       %{
+        2 => &handle_awareness/2,
         3 => &handle_ping_pong/2,
-        10 => &handle_logout/2
+        14 => &handle_logout/2
       }
     end
 
@@ -90,9 +91,21 @@ defmodule Bimip.Socket do
       {:ok, state}
     end
 
-    defp handle_logout(state, data) do
-      IO.inspect("log_out_route")
-      case RegistryHub.route_same_ping(state.eid, state.device_id, data) do
+    defp handle_awareness(state, data) do
+      case RegistryHub.route_awareness_to_client(state.eid, state.device_id, data) do
+        :ok -> {:ok, state}
+        :error ->
+        
+        error_msg =
+        ThrowErrorScheme.error(503, "Service temporarily unavailable", 2)
+
+        send(self(), {:binary, error_msg})
+        {:ok, state}
+      end
+    end
+
+    defp handle_ping_pong(state, data) do
+      case RegistryHub.route_others_ping(state.eid, state.device_id, data) do
         :ok -> {:ok, state}
         :error ->
         
@@ -104,8 +117,9 @@ defmodule Bimip.Socket do
       end
     end
 
-    defp handle_ping_pong(state, data) do
-      case RegistryHub.route_others_ping(state.eid, state.device_id, data) do
+    defp handle_logout(state, data) do
+      IO.inspect("log_out_route")
+      case RegistryHub.route_same_ping(state.eid, state.device_id, data) do
         :ok -> {:ok, state}
         :error ->
         

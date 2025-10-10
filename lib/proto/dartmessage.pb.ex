@@ -16,14 +16,16 @@ defmodule Bimip.Awareness do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :from, 1, type: :string
-  field :to, 2, type: :string
-  field :status, 3, type: :int32
-  field :location_sharing, 4, type: :bool, json_name: "locationSharing"
-  field :latitude, 5, type: :double
-  field :longitude, 6, type: :double
-  field :intention, 7, type: :int32
-  field :timestamp, 8, type: :int64
+  field :from, 1, type: Bimip.Identity
+  field :to, 2, type: Bimip.Identity
+  field :type, 3, type: :int32
+  field :status, 4, type: :int32
+  field :location_sharing, 5, type: :int32, json_name: "locationSharing"
+  field :latitude, 6, type: :double
+  field :longitude, 7, type: :double
+  field :ttl, 8, type: :int32
+  field :details, 9, type: :string
+  field :timestamp, 10, type: :int64
 end
 
 defmodule Bimip.ErrorMessage do
@@ -37,18 +39,6 @@ defmodule Bimip.ErrorMessage do
   field :timestamp, 4, type: :int64
 end
 
-defmodule Bimip.Logout do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :to, 1, type: Bimip.Identity
-  field :type, 2, type: :int32
-  field :status, 3, type: :int32
-  field :timestamp, 4, type: :int64
-  field :reason, 5, type: :string
-end
-
 defmodule Bimip.PingPong do
   @moduledoc false
 
@@ -60,7 +50,7 @@ defmodule Bimip.PingPong do
   field :type, 4, type: :int32
   field :ping_time, 5, type: :int64, json_name: "pingTime"
   field :pong_time, 6, type: :int64, json_name: "pongTime"
-  field :error_reason, 7, type: :string, json_name: "errorReason"
+  field :details, 7, type: :string
 end
 
 defmodule Bimip.TokenRevoke do
@@ -70,9 +60,9 @@ defmodule Bimip.TokenRevoke do
 
   field :to, 1, type: Bimip.Identity
   field :token, 2, type: :string
-  field :phase, 3, type: :int32
+  field :type, 3, type: :int32
   field :timestamp, 4, type: :int64
-  field :reason, 5, type: :string
+  field :details, 5, type: :string
 end
 
 defmodule Bimip.TokenRefresh do
@@ -82,58 +72,48 @@ defmodule Bimip.TokenRefresh do
 
   field :to, 1, type: Bimip.Identity
   field :refresh_token, 2, type: :string, json_name: "refreshToken"
-  field :phase, 3, type: :int32
+  field :type, 3, type: :int32
   field :timestamp, 4, type: :int64
+  field :details, 5, type: :string
 end
 
-defmodule Bimip.SubscribeRequest do
+defmodule Bimip.AwarenessSubscribe do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
   field :from, 1, type: Bimip.Identity
   field :to, 2, type: Bimip.Identity
-  field :subscription_id, 3, type: :string, json_name: "subscriptionId"
+  field :tracking_id, 3, type: :string, json_name: "trackingId"
   field :one_way, 4, type: :bool, json_name: "oneWay"
+  field :type, 5, type: :int32
+  field :timestamp, 6, type: :int64
+  field :details, 7, type: :string
+end
+
+defmodule Bimip.AwarenessUnsubscribe do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :from, 1, type: Bimip.Identity
+  field :to, 2, type: Bimip.Identity
+  field :tracking_id, 3, type: :string, json_name: "trackingId"
+  field :type, 4, type: :int32
   field :timestamp, 5, type: :int64
+  field :details, 6, type: :string
 end
 
-defmodule Bimip.SubscribeResponse do
+defmodule Bimip.Logout do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :from, 1, type: Bimip.Identity
-  field :to, 2, type: Bimip.Identity
+  field :to, 1, type: Bimip.Identity
+  field :type, 2, type: :int32
   field :status, 3, type: :int32
-  field :message, 4, type: :string
-  field :subscription_id, 5, type: :string, json_name: "subscriptionId"
-  field :one_way, 6, type: :bool, json_name: "oneWay"
-  field :timestamp, 7, type: :int64
-end
-
-defmodule Bimip.UnsubscribeRequest do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :from, 1, type: Bimip.Identity
-  field :to, 2, type: Bimip.Identity
-  field :timestamp, 3, type: :int64
-  field :force_two_way_removal, 4, type: :bool, json_name: "forceTwoWayRemoval"
-end
-
-defmodule Bimip.UnsubscribeResponse do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :from, 1, type: Bimip.Identity
-  field :to, 2, type: Bimip.Identity
-  field :status, 3, type: :int32
-  field :message, 4, type: :string
-  field :timestamp, 5, type: :int64
-  field :two_way_removed, 6, type: :bool, json_name: "twoWayRemoved"
+  field :timestamp, 4, type: :int64
+  field :details, 5, type: :string
 end
 
 defmodule Bimip.MessageScheme do
@@ -149,26 +129,16 @@ defmodule Bimip.MessageScheme do
   field :token_revoke, 4, type: Bimip.TokenRevoke, json_name: "tokenRevoke", oneof: 0
   field :token_refresh, 5, type: Bimip.TokenRefresh, json_name: "tokenRefresh", oneof: 0
 
-  field :subscribe_request, 6,
-    type: Bimip.SubscribeRequest,
-    json_name: "subscribeRequest",
+  field :awareness_subscribe, 6,
+    type: Bimip.AwarenessSubscribe,
+    json_name: "awarenessSubscribe",
     oneof: 0
 
-  field :subscribe_response, 7,
-    type: Bimip.SubscribeResponse,
-    json_name: "subscribeResponse",
+  field :awareness_unsubscribe, 7,
+    type: Bimip.AwarenessUnsubscribe,
+    json_name: "awarenessUnsubscribe",
     oneof: 0
 
-  field :unsubscribe_request, 8,
-    type: Bimip.UnsubscribeRequest,
-    json_name: "unsubscribeRequest",
-    oneof: 0
-
-  field :unsubscribe_response, 9,
-    type: Bimip.UnsubscribeResponse,
-    json_name: "unsubscribeResponse",
-    oneof: 0
-
-  field :logout, 10, type: Bimip.Logout, oneof: 0
-  field :error, 11, type: Bimip.ErrorMessage, oneof: 0
+  field :logout, 14, type: Bimip.Logout, oneof: 0
+  field :error, 15, type: Bimip.ErrorMessage, oneof: 0
 end
