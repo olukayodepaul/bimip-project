@@ -87,7 +87,6 @@ defmodule Bimip.Device.Client do
                 s when s in 6..7 -> :system  # System Awareness → per-to-per
               end
 
-          # ✅ Validation passed → prepare internal data
             encoded_message = ThrowAwarenessSchema.success(
               awareness_msg.from.eid,
               awareness_msg.from.connection_resource_id,
@@ -100,8 +99,6 @@ defmodule Bimip.Device.Client do
               awareness_msg.ttl,
               awareness_msg.details
             )
-
-            # Inspect or forward internally
             
             RegistryHub.route_awareness_to_server(
               awareness_msg.from.eid, 

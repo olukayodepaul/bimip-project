@@ -200,8 +200,13 @@ defmodule Bimip.Service.Master do
     end
   end
 
-  def handle_cast({:route_awareness, from_eid, to_eid, _type,  data}, %{awareness: awareness} = state) do
-    SubscriberPresence.broadcast_awareness(from_eid, data, awareness)
+  def handle_cast({:route_awareness, from_eid, to_eid, type,  data}, %{awareness: awareness} = state) do
+    case type do
+      :user -> 
+        SubscriberPresence.broadcast_awareness(from_eid, data, awareness)
+      :system ->
+        SubscriberPresence.per_to_per_broadcast_awareness(to_eid, data, awareness)
+    end
     {:noreply, state}
   end
 

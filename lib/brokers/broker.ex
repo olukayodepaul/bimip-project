@@ -54,18 +54,15 @@ defmodule Bimip.SubscriberPresence do
     Phoenix.PubSub.broadcast(@pubsub, topic, {:awareness_update, awareness_msg})
   end
 
-  # ------------------------------
-  # Broadcast the owner's awareness to all subscribers/friends
-  # ------------------------------
-  def per_to_per_broadcast_awareness(%Bimip.Awareness{} = awareness_msg, intention \\ 2) do
-    owner_eid = awareness_msg.to.eid
+  def per_to_per_broadcast_awareness(from_eid, awareness_msg, intention \\ 2) do
+    owner_eid = from_eid
     topic = "SINGLE:#{owner_eid}"
 
     Logger.info(
-      "[Awareness] Broadcasting owner=#{owner_eid} status=#{awareness_msg.status} to topic=#{topic}"
+      "[Awareness] Broadcasting owner=#{owner_eid}  to topic=#{topic}"
     )
-
-    # Phoenix.PubSub.broadcast(@pubsub, topic, {:awareness_update, awareness_msg})
+    IO.inspect({from_eid, awareness_msg, intention})
+    Phoenix.PubSub.broadcast(@pubsub, topic, {:awareness_update, awareness_msg})
   end
 
   # ------------------------------
