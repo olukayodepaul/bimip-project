@@ -57,3 +57,143 @@ This table can serve as a **reference for implementation, testing, and future sc
 If you want, I can **draw a visual diagram today** showing **all these tables and the flow between them**, which will complement this table.
 
 Do you want me to do that?
+
+Perfect! Let’s use concrete data to illustrate **how fetch, next_offset, and ack work together** for multiple devices sharing the same partition.
+
+---
+
+### **Setup**
+
+User: `"paul@id"`
+Partition: `"chat_a"`
+Sender: `"paul@id"`
+Devices: `device_1`, `device_2`
+
+Messages in queue (initially):
+
+| offset | partition_id | from    | to       | payload                 | acknowledged |
+| ------ | ------------ | ------- | -------- | ----------------------- | ------------ |
+| 0      | chat_a       | paul@id | device_1 | Hello from device_1 - 1 | false        |
+| 1      | chat_a       | paul@id | device_1 | Hello from device_1 - 2 | false        |
+| 2      | chat_a       | paul@id | device_2 | Hello from device_2 - 1 | false        |
+| 3      | chat_a       | paul@id | device_3 | Hello from device_3 - 1 | false        |
+
+Initial **index** (shared per partition and sender):
+
+| partition_id | from    | next_offset |
+| ------------ | ------- | ----------- |
+| chat_a       | paul@id | 4           |
+
+---
+
+### **Step 1: Device fetch**
+
+Device 1 fetches messages starting from offset 0:
+
+```elixir
+{:ok, messages, next_offset} = BimipQueue.fetch_unack("paul@id", "chat_a", "paul@id", "device_1", 10, 0)
+```
+
+**Resulting messages for device_1:**
+
+| offset | payload                 | acknowledged |
+| ------ | ----------------------- | ------------ |
+| 0      | Hello from device_1 - 1 | false        |
+| 1      | Hello from device_1 - 2 | false        |
+
+**`next_offset` returned**: 2
+
+- You can now **update the index next_offset** if you want the next fetch to start from 2.
+
+---
+
+### **Step 2: Device 2 fetches**
+
+Device 2 fetches messages starting from offset 0 (shared index not yet updated):
+
+```elixir
+{:ok, messages, next_offset} = BimipQueue.fetch_unack("paul@id", "chat_a", "paul@id", "device_2", 10, 0)
+```
+
+**Resulting messages for device_2:**
+
+| offset | payload                 | acknowledged |
+| ------ | ----------------------- | ------------ |
+| 2      | Hello from device_2 - 1 | false        |
+
+**`next_offset` returned**: 3
+
+- Again, **index next_offset can be updated to 3** for shared tracking.
+
+---
+
+### **Step 3: Device 1 acknowledges message**
+
+Device 1 acknowledges message at offset 0:
+
+```elixir
+BimipQueue.ack("paul@id", "chat_a", "paul@id", "device_1", 0)
+```
+
+Queue now looks like this:
+
+| offset | payload                 | acknowledged |
+| ------ | ----------------------- | ------------ |
+| 0      | Hello from device_1 - 1 | true         |
+| 1      | Hello from device_1 - 2 | false        |
+| 2      | Hello from device_2 - 1 | false        |
+| 3      | Hello from device_3 - 1 | false        |
+
+**Important:** `next_offset` in the index is **unchanged**.
+
+- Fetch offset only moves when a device fetches.
+- Ack only changes message state.
+
+---
+
+### **Step 4: Device 2 fetches again**
+
+Device 2 fetches from `next_offset = 3` (index updated after its last fetch):
+
+```elixir
+{:ok, messages, next_offset} = BimipQueue.fetch_unack("paul@id", "chat_a", "paul@id", "device_2", 10, 3)
+```
+
+**Resulting messages for device_2:**
+
+| offset | payload                 | acknowledged |
+| ------ | ----------------------- | ------------ |
+| 3      | Hello from device_3 - 1 | false        |
+
+- Device 2 did **not see offset 0** because it’s already acknowledged by device 1 and offset 0 < 3.
+- `next_offset` becomes 4 (end of queue).
+
+---
+
+### **Key Takeaways for Implementation**
+
+1. **Shared next_offset per partition**:
+
+   - Keeps track of the “fetch cursor” for all devices.
+   - Prevents duplicate fetching across devices.
+
+2. **Ack is separate**:
+
+   - Only marks messages as acknowledged.
+   - Does not move the fetch cursor.
+
+3. **Device fetch flow**:
+
+   - Fetch from `next_offset` stored in index.
+   - Update `next_offset` in index after fetch if needed.
+
+4. **Device ack flow**:
+
+   - Ack messages individually or in batch.
+   - Messages remain in queue for other devices until all relevant devices have acked (optional fan-out logic).
+
+---
+
+If you want, I can **draw a timeline diagram with offsets, fetch, and ack for three devices** so you can paste directly in documentation.
+
+Do you want me to do that?

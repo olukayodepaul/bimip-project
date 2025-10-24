@@ -221,327 +221,186 @@
 
 # ---
 
-# If you want, I can **draw a simple diagram showing v1, v2, and v3 flow**, so you can visually see how users, prefixes, nodes, and replicas relate.
-
-# Do you want me to do that?
 
 
-defmodule BimipQueue do
-  @moduledoc """
-  Per-user file-based message queue with numeric monotonic offsets shared across devices.
 
-  Folder structure (with prefix sharding):
-    data/bimip/<prefix>/<user>/
-      - bimip_queue_<user>.dat
-      - bimip_queue_index_<user>.dat
 
-  The prefix is derived from a hash of the username (00–ff), 
-  distributing users evenly across 256 folders.
-
-  All devices of the same sender share the same offset sequence per partition.
-  """
-
+defmodule BimipQueueOptimized do
   @base_dir "data/bimip"
 
-  # ==============================
-  # Prefix-based sharding helpers
-  # ==============================
-
-  defp user_prefix(user) do
-    user
-    |> :erlang.phash2(256)
-    |> Integer.to_string(16)
-    |> String.pad_leading(2, "0")
-  end
-
-  defp user_dir(user) do
-    prefix = user_prefix(user)
-    Path.join([@base_dir, prefix, user])
-  end
-
-  defp queue_file(user), do: Path.join(user_dir(user), "bimip_queue_#{user}.dat")
-  defp index_file(user), do: Path.join(user_dir(user), "bimip_queue_index_#{user}.dat")
-
-  # ==============================
+  # ----------------------
   # File helpers
-  # ==============================
-
-  defp ensure_files_exist!(user) do
-    dir = user_dir(user)
-    File.mkdir_p!(dir)
-
-    qf = queue_file(user)
-    ix = index_file(user)
-
-    unless File.exists?(qf), do: File.write!(qf, "")
-    unless File.exists?(ix), do: File.write!(ix, encode_term([]))
-  end
+  # ----------------------
+  defp user_dir(user), do: Path.join([@base_dir, user])
+  defp queue_file(user), do: Path.join(user_dir(user), "bimip_queue_#{user}.dat")
+  defp index_file(user), do: Path.join(user_dir(user), "bimip_index_#{user}.dat")
+  defp device_offset_file(user), do: Path.join(user_dir(user), "bimip_device_offset_#{user}.dat")
 
   defp encode_term(term), do: term |> :erlang.term_to_binary() |> Base.encode64()
   defp decode_term(str), do: str |> Base.decode64!() |> :erlang.binary_to_term()
 
-  # ==============================
-  # Index helpers
-  # ==============================
+  defp ensure_files_exist!(user) do
+    File.mkdir_p!(user_dir(user))
+    unless File.exists?(queue_file(user)), do: File.write!(queue_file(user), "")
+    unless File.exists?(index_file(user)), do: File.write!(index_file(user), encode_term(%{}))
+    unless File.exists?(device_offset_file(user)), do: File.write!(device_offset_file(user), encode_term(%{}))
+  end
 
+  # ----------------------
+  # Index helpers
+  # ----------------------
   defp read_index(user) do
     ensure_files_exist!(user)
-
-    case File.read(index_file(user)) do
-      {:ok, ""} -> []
-      {:ok, content} -> decode_term(content)
-      _ -> []
-    end
+    File.read!(index_file(user)) |> decode_term()
   end
 
-  defp write_index(user, indexes),
-    do: File.write!(index_file(user), encode_term(indexes))
+  defp write_index(user, index), do: File.write!(index_file(user), encode_term(index))
 
-  # Only partition_id and from matter for offset
-  defp next_offset_for(user, partition_id, from) do
-    indexes = read_index(user)
-
-    case Enum.find(indexes, fn i ->
-           i.partition_id == partition_id and i.from == from
-         end) do
-      nil -> 0
-      %{next_offset: n} -> n
-    end
+  # ----------------------
+  # Device offset helpers
+  # ----------------------
+  defp read_device_offsets(user) do
+    ensure_files_exist!(user)
+    File.read!(device_offset_file(user)) |> decode_term()
   end
 
-  defp update_index(user, partition_id, from, next_offset) do
-    indexes = read_index(user)
+  defp write_device_offsets(user, offsets), do: File.write!(device_offset_file(user), encode_term(offsets))
 
-    new_indexes =
-      case Enum.find_index(indexes, fn i ->
-            i.partition_id == partition_id and i.from == from
-          end) do
-        nil ->
-          [%{partition_id: partition_id, from: from, next_offset: next_offset} | indexes]
-
-        idx ->
-          List.update_at(indexes, idx, fn i -> %{i | next_offset: next_offset} end)
-      end
-
-    write_index(user, new_indexes)
+  defp get_device_offset(user, device_id, partition) do
+    read_device_offsets(user) |> Map.get({device_id, partition}, 0)
   end
 
-  # ==============================
-  # Public API
-  # ==============================
+  defp update_device_offset(user, device_id, partition, offset) do
+    offsets = read_device_offsets(user)
+    new_offsets = Map.put(offsets, {device_id, partition}, offset)
+    write_device_offsets(user, new_offsets)
+  end
 
-  @doc """
-  Writes a new message to the queue.
-  All devices for the same sender share the same offset per partition.
-  Returns {:ok, offset}.
-  """
+  # ----------------------
+  # Write message
+  # ----------------------
   def write(user, partition_id, from, to, payload) do
     ensure_files_exist!(user)
+    {:ok, queue_fd} = File.open(queue_file(user), [:append, :binary])
+    {:ok, pos} = :file.position(queue_fd, :eof)
 
-    offset = next_offset_for(user, partition_id, from)
+    # Read current index
+    index = read_index(user)
+
+    # Compute global monotonic offset
+    all_offsets =
+      index
+      |> Map.values()
+      |> Enum.flat_map(&Map.keys/1)
+
+    offset = (Enum.max(all_offsets, fn -> 0 end)) + 1
+
     timestamp = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
+    record = %{offset: offset, partition_id: partition_id, from: from, to: to, payload: payload, ack: false, timestamp: timestamp}
 
-    record = %{
-      offset: offset,
-      partition_id: partition_id,
-      from: from,
-      to: to,
-      payload: payload,
-      timestamp: timestamp,
-      acknowledged: false
-    }
+    # Write to queue
+    IO.binwrite(queue_fd, encode_term(record) <> "\n")
+    File.close(queue_fd)
 
-    File.write!(queue_file(user), encode_term(record) <> "\n", [:append])
-    update_index(user, partition_id, from, offset + 1)
+    # Update partition index as map
+    partition_index = Map.get(index, partition_id, %{})
+    new_partition_index = Map.put(partition_index, offset, pos)
+    new_index = Map.put(index, partition_id, new_partition_index)
+    write_index(user, new_index)
 
     {:ok, offset}
   end
 
-  # ==============================
-  # Fetch helpers
-  # ==============================
 
-  @doc """
-  Fetch all messages (backward-compatible)
-  """
-  def fetch(user, partition_id, from, to, limit \\ 10, offset \\ 0) do
-    fetch_by_ack_status(user, partition_id, from, to, limit, offset, :all)
-  end
-
-  @doc """
-  Fetch only unacknowledged messages.
-  """
-  def fetch_unack(user, partition_id, from, to, limit \\ 10, offset \\ 0) do
-    fetch_by_ack_status(user, partition_id, from, to, limit, offset, false)
-  end
-
-  @doc """
-  Fetch only acknowledged messages.
-  """
-  def fetch_ack(user, partition_id, from, to, limit \\ 10, offset \\ 0) do
-    fetch_by_ack_status(user, partition_id, from, to, limit, offset, true)
-  end
-
-  defp fetch_by_ack_status(user, partition_id, from, to, limit, offset, ack_status) do
+  # ----------------------
+  # Fetch messages
+  # ----------------------
+  def fetch(user, device_id, partition_id, to, limit \\ 10) do
     ensure_files_exist!(user)
-    {:ok, content} = File.read(queue_file(user))
 
-    messages =
-      content
-      |> String.split("\n", trim: true)
-      |> Enum.map(&decode_term/1)
-      |> Enum.filter(fn rec ->
-        rec.partition_id == partition_id and rec.from == from and rec.to == to and
-          rec.offset >= offset and
-          (ack_status == :all or rec.acknowledged == ack_status)
-      end)
-      |> Enum.sort_by(& &1.offset)
+    # Device's last read offset
+    last_offset = get_device_offset(user, device_id, partition_id)
+
+    # Get partition index (offset => pos)
+    partition_index = Map.get(read_index(user), partition_id, %{})
+
+    # Select offsets > last_offset in sorted order
+    offsets_to_fetch =
+      partition_index
+      |> Enum.filter(fn {off, _pos} -> off > last_offset end)
+      |> Enum.sort_by(fn {off, _pos} -> off end)
       |> Enum.take(limit)
 
-    next_offset =
-      case List.last(messages) do
-        nil -> offset
-        last -> last.offset + 1
-      end
+    {:ok, queue_fd} = File.open(queue_file(user), [:read, :binary])
 
-    {:ok, messages, next_offset}
-  end
-
-  # ==============================
-  # Ack
-  # ==============================
-
-  @doc """
-  Marks all messages up to a given offset as acknowledged.
-  """
-  def ack(user, partition_id, from, to, last_offset) do
-    ensure_files_exist!(user)
-    {:ok, content} = File.read(queue_file(user))
-
-    updated =
-      content
-      |> String.split("\n", trim: true)
-      |> Enum.map(fn line ->
-        rec = decode_term(line)
-
-        if rec.partition_id == partition_id and rec.from == from and rec.to == to and
-            rec.offset <= last_offset do
-          %{rec | acknowledged: true}
-        else
-          rec
-        end
+    messages =
+      Enum.map(offsets_to_fetch, fn {_off, pos} ->
+        :file.position(queue_fd, pos)
+        line = IO.read(queue_fd, :line)
+        decode_term(String.trim(line))
       end)
-      |> Enum.map(&encode_term/1)
-      |> Enum.join("\n")
 
-    File.write!(queue_file(user), updated <> "\n")
-    :ok
-  end
+    File.close(queue_fd)
 
-
-  @doc """
-  Update the last offset for a user and partition.
-
-  All devices for the same sender share the same offset per partition.
-  """
-  def update_last_offset(user, partition_id, from, next_offset) do
-    ensure_files_exist!(user)
-
-    indexes = read_index(user)
-
-    new_indexes =
-      case Enum.find_index(indexes, fn i ->
-            i.partition_id == partition_id and i.from == from
-          end) do
-        nil ->
-          [%{partition_id: partition_id, from: from, next_offset: next_offset} | indexes]
-
-        idx ->
-          List.update_at(indexes, idx, fn i -> %{i | next_offset: next_offset} end)
+    # Update device's last offset
+    new_last_offset =
+      case List.last(messages) do
+        nil -> last_offset
+        last -> last.offset
       end
 
-    write_index(user, new_indexes)
-    :ok
+    update_device_offset(user, device_id, partition_id, new_last_offset)
+
+    {:ok, messages, new_last_offset}
   end
 
+  # # ----------------------
+  # # Optional: acknowledge messages (no file rewrite needed)
+  # # ----------------------
+  # def ack(_user, _partition_id, _from, _to, _last_offset), do: :ok
 
-  @doc """
-  Returns all index entries for debugging.
-  """
-  def list_indexes(user), do: read_index(user)
+  # ----------------------
+  # Debug helpers
+  # ----------------------
+  def list_index(user), do: read_index(user)
+  def list_device_offsets(user), do: read_device_offsets(user)
+
+
+  # See the raw queue contents for a user
+  def view_queue(user) do
+    ensure_files_exist!(user)
+
+    File.read!(queue_file(user))
+    |> String.split("\n", trim: true)
+    |> Enum.map(&decode_term/1)
+  end
+
+  # See the index (partition → list of %{offset, pos})
+  def view_index(user) do
+    read_index(user)
+  end
+
+  # See device offsets
+  def view_device_offsets(user) do
+    read_device_offsets(user)
+  end
+
 end
 
 
-
-# # iex -S mix
-
-# BimipQueue.write("user_1", "partition_a", "user_1", "user_2", %{msg: "Hello world"})
-# BimipQueue.fetch("user_1", "partition_a", "user_1", "user_2", 10, 0)
-# BimipQueue.write("user_1", "partition_a", "user_1", "user_2", %{msg: "Hello world"})
-
-# # Only unacknowledged messages
-# BimipQueue.fetch_unack("user_1", "partition_a", "user_1", "user_2", 10, 0)
-
-# # Only acknowledged messages
-# BimipQueue.fetch_ack("user_1", "partition_a", "user_1", "user_2", 10, 0)
-
-# # All messages
-# BimipQueue.fetch("user_1", "partition_a", "user_1", "user_2", 10, 1)
-
-# BimipQueue.ack("user_1", "partition_a", "user_1", "user_2", 0)
+# BimipQueueOptimized.view_queue("user1")
+# BimipQueueOptimized.view_device_offsets("user1")
+# BimipQueueOptimized.view_index("user1")
 
 
 
+BimipQueueOptimized.write("user1",1,"alice", "bob", "Hello Bob!")
+BimipQueueOptimized.write("user1",1,"alice", "bob", "Hello Bob!")
 
-# Assume BimipQueue module is compiled and loaded
+BimipQueueOptimized.write("user1",1,"alice_2", "bob", "Hello Bob!")
+BimipQueueOptimized.write("user1",1,"alice_2", "bob", "Hello Bob!")
 
-# user = "paul@id"
-# partition = "chat_a"
-# from = "paul@id"
+BimipQueueOptimized.write("user1",2,"alice", "bob", "Hello Bob!")
+BimipQueueOptimized.write("user1",2,"alice", "bob", "Hello Bob!")
 
-# # ---------------------------
-# # Write messages for device_1
-# # ---------------------------
-# {:ok, offset1} = BimipQueue.write(user, partition, from, "device_1", %{msg: "Hello from device_1 - 1"})
-# {:ok, offset2} = BimipQueue.write(user, partition, from, "device_1", %{msg: "Hello from device_1 - 2"})
-
-# # ---------------------------
-# # Write messages for device_2
-# # ---------------------------
-# {:ok, offset3} = BimipQueue.write(user, partition, from, "device_2", %{msg: "Hello from device_2 - 1"})
-
-# # ---------------------------
-# # Write messages for device_3
-# # ---------------------------
-# {:ok, offset4} = BimipQueue.write(user, partition, from, "device_3", %{msg: "Hello from device_3 - 1"})
-
-# # ---------------------------
-# # Fetch unacknowledged messages for device_1
-# # ---------------------------
-# {:ok, messages_d1, next_offset_d1} = BimipQueue.fetch_unack(user, partition, from, "device_1", 10, 0)
-# IO.inspect(messages_d1, label: "Device 1 - Unacknowledged messages")
-# IO.puts("Next offset: #{next_offset_d1}")
-
-# # ---------------------------
-# # Acknowledge the first message for device_1
-# # ---------------------------
-# BimipQueue.ack(user, partition, from, "device_1", offset1)
-# {:ok, messages_d1_post_ack, _} = BimipQueue.fetch_unack(user, partition, from, "device_1", 10, 0)
-# IO.inspect(messages_d1_post_ack, label: "Device 1 - After ack offset1")
-
-# # ---------------------------
-# # Fetch acknowledged messages for device_1
-# # ---------------------------
-# {:ok, acked_d1, _} = BimipQueue.fetch_ack(user, partition, from, "device_1", 10, 0)
-# IO.inspect(acked_d1, label: "Device 1 - Acknowledged messages")
-
-# # ---------------------------
-# # Fetch all messages for device_2
-# # ---------------------------
-# {:ok, all_d2, _} = BimipQueue.fetch(user, partition, from, "device_2", 10, 0)
-# IO.inspect(all_d2, label: "Device 2 - All messages")
-
-
-
-# BimipQueue.ack(user, partition, from, "device_3", 2) 
-# BimipQueue.fetch_by_ack_status(user, partition, from, "device_3", 10, 2, true)
+BimipQueueOptimized.fetch("user1", "alice_2", 1, "bob")
