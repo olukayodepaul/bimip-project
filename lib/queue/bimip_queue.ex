@@ -223,9 +223,11 @@
 
 
 
-
-
 defmodule BimipQueueOptimized do
+  @moduledoc """
+  Optimized queue system using :array for partition indexes.
+  """
+
   @base_dir "data/bimip"
 
   # ----------------------
@@ -281,68 +283,73 @@ defmodule BimipQueueOptimized do
   # ----------------------
   def write(user, partition_id, from, to, payload) do
     ensure_files_exist!(user)
+
     {:ok, queue_fd} = File.open(queue_file(user), [:append, :binary])
     {:ok, pos} = :file.position(queue_fd, :eof)
 
-    # Read current index
     index = read_index(user)
 
-    # Compute global monotonic offset
-    all_offsets =
-      index
-      |> Map.values()
-      |> Enum.flat_map(&Map.keys/1)
+    # Get or initialize partition array
+    partition_index = Map.get(index, partition_id, :array.new())
 
-    offset = (Enum.max(all_offsets, fn -> 0 end)) + 1
+    # Compute next offset
+    offset =
+      case :array.size(partition_index) do
+        0 -> 1
+        size ->
+          {last_off, _} = :array.get(size - 1, partition_index)
+          last_off + 1
+      end
 
     timestamp = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
     record = %{offset: offset, partition_id: partition_id, from: from, to: to, payload: payload, ack: false, timestamp: timestamp}
 
-    # Write to queue
     IO.binwrite(queue_fd, encode_term(record) <> "\n")
     File.close(queue_fd)
 
-    # Update partition index as map
-    partition_index = Map.get(index, partition_id, %{})
-    new_partition_index = Map.put(partition_index, offset, pos)
+    # Insert into array
+    new_partition_index = :array.set(:array.size(partition_index), {offset, pos}, partition_index)
     new_index = Map.put(index, partition_id, new_partition_index)
     write_index(user, new_index)
 
     {:ok, offset}
   end
 
-
   # ----------------------
   # Fetch messages
   # ----------------------
-  def fetch(user, device_id, partition_id, to, limit \\ 10) do
-    ensure_files_exist!(user)
+def fetch(user, device_id, partition_id, _to, limit \\ 10) do
+  ensure_files_exist!(user)
 
-    # Device's last read offset
-    last_offset = get_device_offset(user, device_id, partition_id)
+  last_offset = get_device_offset(user, device_id, partition_id)
+  partition_index = Map.get(read_index(user), partition_id, :array.new())
+  total = :array.size(partition_index)
 
-    # Get partition index (offset => pos)
-    partition_index = Map.get(read_index(user), partition_id, %{})
+  # Binary search for first offset > last_offset
+  start_idx = binary_search(partition_index, last_offset, 0, total - 1)
 
-    # Select offsets > last_offset in sorted order
-    offsets_to_fetch =
-      partition_index
-      |> Enum.filter(fn {off, _pos} -> off > last_offset end)
-      |> Enum.sort_by(fn {off, _pos} -> off end)
-      |> Enum.take(limit)
-
+  # Nothing to fetch
+  if start_idx >= total do
+    {:ok, [], last_offset}
+  else
+    end_idx = min(start_idx + limit - 1, total - 1)
     {:ok, queue_fd} = File.open(queue_file(user), [:read, :binary])
 
     messages =
-      Enum.map(offsets_to_fetch, fn {_off, pos} ->
-        :file.position(queue_fd, pos)
-        line = IO.read(queue_fd, :line)
-        decode_term(String.trim(line))
-      end)
+      for i <- start_idx..end_idx do
+        case :array.get(i, partition_index) do
+          :undefined -> nil
+          {off, pos} ->
+            :file.position(queue_fd, pos)
+            line = IO.read(queue_fd, :line)
+            decode_term(String.trim(line))
+        end
+      end
+      |> Enum.reject(&is_nil/1)
 
     File.close(queue_fd)
 
-    # Update device's last offset
+    # Update device offset
     new_last_offset =
       case List.last(messages) do
         nil -> last_offset
@@ -350,41 +357,43 @@ defmodule BimipQueueOptimized do
       end
 
     update_device_offset(user, device_id, partition_id, new_last_offset)
-
     {:ok, messages, new_last_offset}
   end
+end
 
-  # # ----------------------
-  # # Optional: acknowledge messages (no file rewrite needed)
-  # # ----------------------
-  # def ack(_user, _partition_id, _from, _to, _last_offset), do: :ok
+
+  # ----------------------
+  # Binary search helper
+  # ----------------------
+  defp binary_search(arr, last_offset, low, high) when low > high, do: low
+
+  defp binary_search(arr, last_offset, low, high) do
+    mid = div(low + high, 2)
+    {off, _pos} = :array.get(mid, arr)
+
+    cond do
+      off <= last_offset -> binary_search(arr, last_offset, mid + 1, high)
+      off > last_offset -> binary_search(arr, last_offset, low, mid - 1)
+    end
+  end
 
   # ----------------------
   # Debug helpers
   # ----------------------
-  def list_index(user), do: read_index(user)
-  def list_device_offsets(user), do: read_device_offsets(user)
-
-
-  # See the raw queue contents for a user
   def view_queue(user) do
     ensure_files_exist!(user)
-
     File.read!(queue_file(user))
     |> String.split("\n", trim: true)
     |> Enum.map(&decode_term/1)
   end
 
-  # See the index (partition → list of %{offset, pos})
   def view_index(user) do
     read_index(user)
+    |> Enum.map(fn {k, arr} -> {k, :array.to_list(arr)} end)
+    |> Enum.into(%{})
   end
 
-  # See device offsets
-  def view_device_offsets(user) do
-    read_device_offsets(user)
-  end
-
+  def view_device_offsets(user), do: read_device_offsets(user)
 end
 
 
@@ -392,15 +401,10 @@ end
 # BimipQueueOptimized.view_device_offsets("user1")
 # BimipQueueOptimized.view_index("user1")
 
-
-
-BimipQueueOptimized.write("user1",1,"alice", "bob", "Hello Bob!")
-BimipQueueOptimized.write("user1",1,"alice", "bob", "Hello Bob!")
-
-BimipQueueOptimized.write("user1",1,"alice_2", "bob", "Hello Bob!")
-BimipQueueOptimized.write("user1",1,"alice_2", "bob", "Hello Bob!")
-
-BimipQueueOptimized.write("user1",2,"alice", "bob", "Hello Bob!")
-BimipQueueOptimized.write("user1",2,"alice", "bob", "Hello Bob!")
-
-BimipQueueOptimized.fetch("user1", "alice_2", 1, "bob")
+# BimipQueueOptimized.write("user1",1,"alice", "bob", "Hello Bob!")
+# BimipQueueOptimized.write("user1",1,"alice", "bob", "Hello Bob!")
+# BimipQueueOptimized.write("user1",1,"alice_2", "bob", "Hello Bob!")
+# BimipQueueOptimized.write("user1",1,"alice_2", "bob", "Hello Bob!")
+# BimipQueueOptimized.write("user1",2,"alice", "bob", "Hello Bob!")
+# BimipQueueOptimized.write("user1",2,"alice", "bob", "Hello Bob!")
+# BimipQueueOptimized.fetch("user1", "alice", 2, "bob")
