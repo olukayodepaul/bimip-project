@@ -14,7 +14,7 @@ defmodule ThrowAwarenessSchema do
   # ------------------------------------------------------------------------
   # SUCCESS / NORMAL STANZAS
   # ------------------------------------------------------------------------
-  def success(from_eid, from_device_id, to_eid, to_device_id, status, location_sharing, latitude, longitude, ttl, details \\ "") do
+  def success(from_eid, from_device_id, to_eid \\ "", to_device_id \\ "", status \\ 1, location_sharing \\ 2, latitude \\ 0.0 , longitude \\ 0.0 , ttl \\ 0, details \\ "") do
     # Override latitude/longitude if sharing is disabled
     latitudes = if location_sharing == 1, do: latitude, else: 0.0
     longitudes = if location_sharing == 1, do: longitude, else: 0.0

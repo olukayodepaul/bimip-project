@@ -6,7 +6,7 @@ defmodule Storage.Subscriber do
     - key
     - owner_eid
     - subscriber_eid
-    - status (:online / :offline)
+    - status (1: online / 2: offline)
     - blocked (true / false)
     - inserted_at (timestamp)
     - last_seen (timestamp)
@@ -58,30 +58,27 @@ defmodule Storage.Subscriber do
     end
   end
 
-
-  def update_subscriber(owner_eid, subscriber_eid, updates, blocked \\ false) do
+  def update_subscriber(owner_eid, subscriber_eid, new_status, blocked \\ false) do
     key = {owner_eid, subscriber_eid}
+    now = DateTime.utc_now()
 
-    :mnesia.transaction(fn ->
-      case :mnesia.read({@subscriber_table, key}) do
-        [] ->
-          {:error, :not_found}
+    case Storage.Subscriber.get_subscriber(owner_eid, subscriber_eid) do
+      nil ->
+        {:error, :not_found}
 
-        [{@subscriber_table, ^key, owner, sub, status, _blocked, inserted_at, last_seen}] ->
-          new_status     = Map.get(updates, :status, status)
-          new_inserted   = Map.get(updates, :inserted_at, inserted_at)
-          new_last_seen  = Map.get(updates, :last_seen, last_seen)
+      {:subscriber, ^key, owner, sub, _old_status, _old_blocked, _inserted_at, _last_seen} ->
+        record = {@subscriber_table, key, owner, sub, new_status, blocked, now, now}
 
-          record = {@subscriber_table, key, owner, sub, new_status, blocked, new_inserted, new_last_seen}
+        :mnesia.transaction(fn ->
           :mnesia.write(record)
-          {:ok, record}
-      end
-    end)
-    |> case do
-      {:atomic, result} -> result
-      {:aborted, reason} -> {:error, reason}
+        end)
+        |> case do
+          {:atomic, _} -> {:ok, record}
+          {:aborted, reason} -> {:error, reason}
+        end
     end
   end
+
 
 
   @doc """
@@ -140,5 +137,7 @@ end
 
 
 
+# Storage.Subscriber.fetch_subscribers_by_owner("a@domain.com")
 # Storage.Subscriber.fetch_subscriber_ids_by_owner_all_arrays("a@domain.com")
+# Storage.Subscriber.get_subscriber("b@domain.com", "a@domain.com") 
 # Storage.Subscriber.get_subscriber("a@domain.com", "b@domain.com") 

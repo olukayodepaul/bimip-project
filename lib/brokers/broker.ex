@@ -44,13 +44,13 @@ defmodule Bimip.SubscriberPresence do
   end
 
   def broadcast_awareness(from_eid, awareness_msg, intention \\ 2) do
+    IO.inspect("bshb SD HSBCJAs cb hadsjcdhsbc hdsacudsacbvdyicahos dsjia dsyao xxxxxx")
     owner_eid = from_eid
     topic = "GENERAL:#{owner_eid}"
 
     Logger.info(
       "[Awareness] Broadcasting owner=#{owner_eid}  to topic=#{topic}"
     )
-    IO.inspect({from_eid, awareness_msg, intention})
     Phoenix.PubSub.broadcast(@pubsub, topic, {:awareness_update, awareness_msg})
   end
 

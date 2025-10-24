@@ -4,6 +4,8 @@ defmodule Storage.DeviceStateChange do
   respecting awareness_intention and last_seen thresholds.
   """
 
+  
+
   alias Storage.DeviceStorage
   alias Settings.ServerState
   require Logger
@@ -18,6 +20,7 @@ defmodule Storage.DeviceStateChange do
     now = DateTime.utc_now()
     devices = DeviceStorage.fetch_devices_by_eid(owner_eid)
 
+    # Awareness override takes precedence
     owner_override? =
       Enum.any?(devices, fn d -> d.awareness_intention == 1 end)
 
@@ -35,41 +38,46 @@ defmodule Storage.DeviceStateChange do
 
     user_status =
       cond do
-        owner_override? -> :offline
-        online_devices != [] -> :online
-        true -> :offline
+        owner_override? -> "OFFLINE"
+        online_devices != [] -> "ONLINE"
+        true -> "OFFLINE"
       end
 
     {user_status, online_devices}
   end
 
-  defp device_ids(devices), do: Enum.map(devices, & &1.device_id) |> Enum.sort()
+
+  defp device_ids(devices) do
+    devices |> Enum.map(& &1.device_id) |> Enum.sort()
+  end
 
   # -----------------------------
   # Mnesia state updates
   # -----------------------------
-  defp update_state(eid, status, devices, now) do
+
+  defp update_state(eid, user_status, devices, now) do
     :mnesia.transaction(fn ->
-      :mnesia.write({@user_state_table, eid, %{
-        user_status: status,
-        online_devices: devices,
-        last_change_at: now,
-        last_seen: now
-      }})
+      :mnesia.write({@user_state_table, eid, %{user_status: user_status, online_devices: devices, last_seen: now}})
     end)
   end
 
-  defp bump_idle_time(eid, prev_state, now) do
+defp bump_idle_time(eid, prev_state, now) do
     :mnesia.transaction(fn ->
       :mnesia.write({@user_state_table, eid, %{prev_state | last_seen: now}})
     end)
   end
 
+
   defp read_state(eid) do
-    case :mnesia.transaction(fn -> :mnesia.read({@user_state_table, eid}) end) do
-      {:atomic, [{@user_state_table, ^eid, state}]} -> state
-      {:atomic, []} -> nil
-      {:aborted, reason} -> {:error, reason}
+    :mnesia.transaction(fn ->
+      case :mnesia.read({@user_state_table, eid}) do
+        [] -> nil
+        [{@user_state_table, ^eid, state}] -> state
+      end
+    end)
+    |> case do
+      {:atomic, state} -> state
+      _ -> nil
     end
   end
 
@@ -82,24 +90,38 @@ defmodule Storage.DeviceStateChange do
     prev_state = read_state(owner_eid)
 
     cond do
+      # 1️⃣ First-time entry: treat as changed
       prev_state == nil ->
         update_state(owner_eid, user_status, online_devices, now)
         {:changed, user_status, online_devices}
 
       true ->
         prev_status = prev_state.user_status
-        prev_ids    = device_ids(prev_state.online_devices)
-        curr_ids    = device_ids(online_devices)
+        prev_ids = device_ids(prev_state.online_devices)
+        curr_ids = device_ids(online_devices)
 
         cond do
-          prev_status != user_status ->
-            update_state(owner_eid, user_status, online_devices, now)
-            {:changed, user_status, online_devices}
+          # 2️⃣ All devices disappeared → OFFLINE
+          online_devices == [] and prev_status != "OFFLINE" ->
+            update_state(owner_eid, "OFFLINE", [], now)
+            {:changed, "OFFLINE", []}
 
-          user_status == prev_status and prev_ids != curr_ids ->
+          # 3️⃣ Still offline, nothing new
+          online_devices == [] and prev_status == "OFFLINE" ->
             bump_idle_time(owner_eid, prev_state, now)
-            {:unchanged, user_status, online_devices}
+            {:unchanged, "OFFLINE", []}
 
+          # 4️⃣ Devices appeared → ONLINE
+          online_devices != [] and prev_status != "ONLINE" ->
+            update_state(owner_eid, "ONLINE", online_devices, now)
+            {:changed, "ONLINE", online_devices}
+
+          # 5️⃣ Device list changed but still online
+          online_devices != [] and prev_ids != curr_ids ->
+            update_state(owner_eid, "ONLINE", online_devices, now)
+            {:changed, "ONLINE", online_devices}
+
+          # 6️⃣ No meaningful change
           true ->
             bump_idle_time(owner_eid, prev_state, now)
             {:unchanged, user_status, online_devices}
@@ -168,9 +190,15 @@ defmodule Storage.DeviceStateChange do
       _ -> true
     end
   end
+
+
+
+
+
+  
   
 end
 
 # Storage.DeviceStateChange.remaining_active_devices?("a@domain.com")
-# Storage.DeviceStorage.get_device("a@domain.com", "aaaaa2")
+# Storage.DeviceStateChange.track_state_change("a@domain.com")
 # Storage.DeviceStorage.delete_device("aaaaa2", "a@domain.com")

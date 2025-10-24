@@ -18,8 +18,11 @@ message Identity {
 //
 // ──────────────────────────────────────────────
 // Awareness Mapping:
-//   • User Awareness → status: 1=ONLINE, 2=OFFLINE, 3=AWAY, 4=BUSY, 5=DND
-//   • System Awareness → status: 6=TYPING, 7=RECORDING
+//   • User Device State → status: 1=ONLINE, 2=OFFLINE
+//   • UserIntentStatus → status: 3=AWAY, 4=BUSY, 5=DND
+//       → Tracks user’s intentional presence for notifications
+//       → Does not affect reachability, fan-out only
+//   • System Awareness → status: 6=TYPING, 7=RECORDING, 8=RESUME
 //
 // Location Sharing Policy:
 //   • 1 = ENABLED   → user shares real-time location

@@ -18,7 +18,7 @@ defmodule Bimip.Device.Client do
 
   @impl true
   def init({eid, device_id, exp, ws_pid}) do
-    RegistryHub.register_device_in_server({device_id, eid, ws_pid}) # pass
+    
     AdaptivePingPong.schedule_ping(device_id)
 
     {:ok,
@@ -28,15 +28,14 @@ defmodule Bimip.Device.Client do
         timer: DateTime.utc_now(),
         eid: eid,
         device_id: device_id,
-        exp_time: exp,
-        token_state: :active,
+        exp_time: exp, #token expiration time
+        token_state: :active, # token state...
         ws_pid: ws_pid,
         last_rtt: nil,
         max_missed_pongs_adaptive: AdaptiveNetwork.initial_max_missed_pings(),
         last_send_ping: nil,
         last_state_change: DateTime.utc_now(),
         
-
         # nested device state (replacement for ETS)
         device_state: %{
           device_status: "ONLINE",  # pick one as default
@@ -84,7 +83,7 @@ defmodule Bimip.Device.Client do
             awareness_type =
               case awareness_msg.status do
                 s when s in 1..5 -> :user  # User Awareness → broadcast to subscribers
-                s when s in 6..7 -> :system  # System Awareness → per-to-per
+                s when s in 6..8 -> :system  # System Awareness → per-to-per
               end
 
             encoded_message = ThrowAwarenessSchema.success(
@@ -106,8 +105,18 @@ defmodule Bimip.Device.Client do
               awareness_type,
               encoded_message
             )
-
-            {:noreply, state}
+            
+            {:noreply,
+              %{
+                state
+                | device_state: %{
+                    state.device_state
+                    | last_seen: DateTime.utc_now(),
+                      last_activity: DateTime.utc_now(),
+                      last_change_at: DateTime.utc_now()
+                  }
+              }
+            }
 
           {:error, err} ->
   
@@ -121,13 +130,16 @@ defmodule Bimip.Device.Client do
 
             send(ws_pid, {:binary, error_binary})
             {:noreply, state}
+
         end
 
       _ ->
+
         reason = "Invalid payload: expected Awareness message"
         error_binary = ThrowAwarenessSchema.error(eid, device_id, reason)
         send(ws_pid, {:binary, error_binary})
         {:noreply, state}
+        
     end
   end
 
@@ -235,20 +247,7 @@ defmodule Bimip.Device.Client do
     send(ws_pid, {:binary, binary})
   end
 
-  #during activity reset this state
-  # defp on_activit_update_device_state(state)do
-  #     {:noreply,
-  #       %{
-  #         state | 
-  #         state.device_state | 
-  #         %{
-  #         last_change_at: DateTime.utc_now(),
-  #         last_seen: DateTime.utc_now(),
-  #         last_activity: DateTime.utc_now()
-  #       }
-  #     }}
-  # end
-
 end
 
 # Bimip.Device.Client.get_state("aaaaa2")
+

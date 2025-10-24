@@ -29,5 +29,11 @@ defmodule Storage.SubscriberSeeder do
   end
 end
 
+
+#  {:attributes, [:key, :owner_eid, :subscriber_eid, :status, :blocked, :inserted_at, :last_seen]},
+# [
+#   {:subscriber, {"a@domain.com", "b@domain.com"}, "a@domain.com","b@domain.com", :online, false, ~U[2025-10-10 13:14:53Z], ~U[2025-10-10 13:14:53Z]},
+# ]
+
 # c("lib/test/simu.exs")
 # Storage.SubscriberSeeder.seed_subscribers()

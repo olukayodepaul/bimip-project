@@ -82,13 +82,13 @@ defmodule App.RegistryHub do
     end
   end
 
-  def register_device_in_server({device_id, eid, ws_pid}) do
+  def register_device_in_server({device_id, eid, exp, ws_pid}) do
     case Horde.Registry.lookup(EidRegistry, eid) do
       [{pid, _}] ->
-        GenServer.cast(pid, {:persist_device_state, %{device_id: device_id, eid: eid, ws_pid: ws_pid}})
+        GenServer.cast(pid, {:start_device, {eid, device_id, exp, ws_pid}})
         :ok
       []->
-        Logger.warning("5 No registry entry for #{device_id}, cannot maybe_start_mother")
+        Logger.warning("No registry entry for #{device_id}, cannot maybe_start_mother")
         {:error}
     end
   end

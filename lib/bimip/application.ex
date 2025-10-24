@@ -96,7 +96,7 @@ defmodule Bimip.Application do
   # Device table
   defp ensure_user_awareness_table do
     ensure_table(:user_awareness_table, [
-      {:attributes, [:key, :awareness, :lat, :lng,  :status_broadcast, :timestamp]},
+      {:attributes, [:key, :awareness, :timestamp]},
       {:disc_copies, [node()]},
       {:type, :set}
     ])

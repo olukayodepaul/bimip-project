@@ -56,7 +56,7 @@ connection_resource_id: "bbbbb1",
 },
 
 type: 1,
-status: 1,
+status: 3,
 location_sharing: 2,
 latitude: 1.0,
 longitude: 3.0,

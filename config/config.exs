@@ -18,7 +18,7 @@ config :bimip, :jwt,
 config :bimip, :adaptive_network_ping_pong,
   default_ping_interval_ms: 10_000,     # Ping every 10s → light but responsive
   max_allowed_delay_seconds: 60 * 2,    # Allow up to 45s delay before forcing check
-  max_pong_retries: 3,                  # Refresh ONLINE every ~30s (3 × 10s)
+  max_pong_retries: 5,                  # Refresh ONLINE every ~30s (3 × 10s)
   initial_max_missed_pings: 6,          # 6 misses = ~60s silence → OFFLINE
 
   # Adaptive tuning

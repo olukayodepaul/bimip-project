@@ -13,6 +13,22 @@ defmodule Bimip.MixProject do
     ]
   end
 
+#   def project do
+#   [
+#     app: :bimip,
+#     version: "0.1.0",
+#     elixir: "~> 1.18",
+#     start_permanent: Mix.env() == :prod,
+#     deps: deps(),
+#     releases: [
+#       bimip: [
+#         include_executables_for: [:unix],
+#         applications: [bimip: :permanent]
+#       ]
+#     ]
+#   ]
+# end
+
   # Run "mix help compile.app" to learn about applications.
   def application do
     [

@@ -8,62 +8,60 @@ defmodule Bimip.Service.Master do
   alias Settings.ServerState
   alias Route.AwarenessFanOut
   alias ThrowAwareness
-
+  alias Storage.Subscriber
+  alias ThrowAwarenessSchema
+  alias Util.StatusMapper
   require Logger
+  
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
 
-  def start_link(eid) do
-    GenServer.start(__MODULE__, eid, name: Registry.via_monitor_registry(eid))
+  def start_link(%{eid: eid, device_id: device_id, exp: exp, ws_pid: ws_pid} = state) do
+    GenServer.start_link(__MODULE__, state,
+      name: Registry.via_monitor_registry(eid)
+    )
   end
 
   @impl true
-  def init(eid) do
-    SubscriberPresence.presence_subscriber(eid)
+  def init(%{eid: eid, device_id: device_id, exp: exp, ws_pid: ws_pid} = state) do
 
-    {level, lat, lng, location_sharing} =
+    level =
       case DeviceStorage.fetch_user_awareness(eid) do
-        {:ok, level, lat, lng, status_broadcast} ->
-          {level, lat, lng, status_broadcast}
+        {:ok, level} ->
+          level
 
         {:error, :not_found} ->
           default_awareness = 2
           DeviceStorage.insert_awareness(eid)
-          result = {2, 0.0, 0.0, true}
-          result
+          2
         {:error, reason} ->
           Logger.error("Error fetching awareness for #{eid}: #{inspect(reason)}")
-          result = {2, 0.0, 0.0, true}
-          result
-
+          2
       end
+
+      GenServer.cast(self(), {:start_device, {eid, device_id, exp, ws_pid}})
 
     {:ok,
       %{
         eid: eid,
         awareness: level,
-        lat: lat,
-        lng: lng,
-        location_sharing: location_sharing,
         current_timer: nil,
         force_stale: DateTime.utc_now(),
         devices: %{}
       }}
   end
 
-  def start_device(eid, {eid, device_id, exp, ws_pid}) do
-    GenServer.call(Registry.via_monitor_registry(eid), {:start_device, {eid, device_id, exp, ws_pid}})
-  end
-
   @impl true
-  def handle_call({:start_device, {eid, device_id, exp, ws_pid}}, _from, state) do
+  def handle_cast({:start_device, {eid, device_id, exp, ws_pid}}, state) do
     case Supervisor.start_session({eid, device_id, exp, ws_pid}) do
       {:ok, pid} ->
         devices = Map.put(state.devices, device_id, pid)
-        {:reply, {:ok, pid}, %{state | devices: devices}}
+        GenServer.cast(self(), {:persist_device_state, %{eid: eid, device_id: device_id, ws_pid: ws_pid}})
+        {:noreply, %{state | devices: devices}}
 
       {:error, reason} ->
-        {:reply, {:error, reason}, state}
+        Logger.error("Failed to start device #{device_id} for #{eid}: #{inspect(reason)}")
+        {:noreply, state}
     end
   end
 
@@ -71,7 +69,7 @@ defmodule Bimip.Service.Master do
   def handle_cast({:persist_device_state, %{device_id: device_id, eid: eid, ws_pid: ws_pid}}, state) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    device_payload = %{
+    payload = %{
       device_id: device_id,
       eid: eid,
       last_seen: now,
@@ -88,68 +86,42 @@ defmodule Bimip.Service.Master do
       awareness_intention: state.awareness,
       inserted_at: now
     }
+    
+    # Register in storage
+    DeviceStorage.register_device_session(device_id, eid, payload)
 
-    if state.location_sharing do
-      # SubscriberPresence.broadcast_awareness(eid, state.awareness, :online, state.lat, state.lng, state.location_sharing)
-    else
-      # SubscriberPresence.broadcast_awareness(eid, state.awareness, :online)
-    end
+    # Broadcast awareness to subscribers
+    SubscriberPresence.broadcast_awareness(
+      eid,
+      ThrowAwarenessSchema.success(eid, device_id),
+      state.awareness
+    )
 
-    case DeviceStorage.register_device_session(device_id, eid, device_payload) do
-      {:ok, awareness} ->
-        case Storage.DeviceStateChange.track_state_change(eid) do
-          {:changed, user_status, _online_devices} ->
-            Logger.info("""
-            [LOGIN] 2 hdjsdacsdacadgs changed eid=#{eid} device_id=#{device_id} awareness=#{awareness}
-            → user_status CHANGED to #{user_status}
-            """)
+    {:noreply, state}
 
-            
-            {:noreply, state}
-
-          {:unchanged, user_status, _online_devices} ->
-            Logger.debug("""
-            [LOGIN] 3 hdjsdacsdacadgs changed eid=#{eid} device_id=#{device_id} awareness=#{awareness}
-            → user_status remains #{user_status}
-            """)
-            {:noreply, state}
-        end
-
-      {:error, reason} ->
-        Logger.error("""
-        [LOGIN-FAILED] eid=#{eid} device_id=#{device_id}
-        → failed to save device, reason=#{inspect(reason)}
-        """)
-        {:noreply, state}
-    end
   end
 
   def handle_cast({:client_send_pong, {eid, device_id, status}}, %{force_stale: force_stale, awareness: awareness} = state) do
     
-    IO.inspect({"Terminate ", device_id})
     now = DateTime.utc_now()
     DeviceStorage.update_device_status(device_id, eid, "PONG", status)
 
     case Storage.DeviceStateChange.track_state_change(eid) do
       {:changed, user_status, _online_devices} ->
-        if state.location_sharing do
-          # SubscriberPresence.broadcast_awareness(eid, awareness, user_status, state.lat, state.lng, state.location_sharing)
-        else
-          # SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
-        end
+
+        
+        awareness_response = ThrowAwarenessSchema.success(eid, device_id, "", "", StatusMapper.map_status_to_code(status), 2 )
+        SubscriberPresence.broadcast_awareness(eid, awareness_response, awareness)
 
         {:noreply, %{state | force_stale: now}}
 
       {:unchanged, user_status, _online_devices} ->
-        idle_too_long? = DateTime.diff(now, force_stale) >= @stale_threshold_seconds
 
+        idle_too_long? = DateTime.diff(now, force_stale) >= @stale_threshold_seconds
         if idle_too_long? do
 
-          if state.location_sharing do
-            # SubscriberPresence.broadcast_awareness(eid, awareness, user_status, state.lat, state.lng, state.location_sharing)
-          else
-            # SubscriberPresence.broadcast_awareness(eid, awareness, user_status)
-          end
+          awareness_response = ThrowAwarenessSchema.success(eid, device_id, "", "", StatusMapper.map_status_to_code(status), 2 )
+          SubscriberPresence.broadcast_awareness(eid, awareness_response, awareness)
 
           {:noreply, %{state | force_stale: now}}
         else
@@ -170,11 +142,11 @@ defmodule Bimip.Service.Master do
         {:noreply, state}
 
       false ->
-        if state.location_sharing do
-          # SubscriberPresence.broadcast_awareness(eid, awareness, :offline, state.lat, state.lng, state.location_sharing)
-        else
-          # SubscriberPresence.broadcast_awareness(eid, awareness, :offline)
-        end
+        # if state.location_sharing do
+        #   # SubscriberPresence.broadcast_awareness(eid, awareness, :offline, state.lat, state.lng, state.location_sharing)
+        # else
+        #   # SubscriberPresence.broadcast_awareness(eid, awareness, :offline)
+        # end
         
         DeviceStateChange.schedule_termination_if_all_offline(state)
         {:noreply, state}
@@ -211,9 +183,27 @@ defmodule Bimip.Service.Master do
   end
 
   @impl true
-  def handle_info({:awareness_update,  awareness_msg}, %{eid: eid} =  state) do
-    AwarenessFanOut.awareness(awareness_msg, eid)
-    {:noreply, state}
+  def handle_info({:awareness_update, awareness_msg}, %{eid: eid} =  state) do
+
+    msg = Bimip.MessageScheme.decode(awareness_msg)
+
+    case msg.payload do
+
+      {:awareness, %Bimip.Awareness{} = awareness_msg_response} ->
+        
+        if awareness_msg_response.status in [1, 2] do
+          Subscriber.update_subscriber(awareness_msg_response.to.eid, awareness_msg_response.from.eid, awareness_msg_response.status)
+        end
+
+        AwarenessFanOut.awareness(awareness_msg, eid)
+        {:noreply, state}
+
+      {:error, reason} ->
+
+        Logger.error("Failed to decode awareness payload: #{inspect(reason)}")
+        {:noreply, state}
+
+    end
   end
 
   @impl true
@@ -229,3 +219,6 @@ defmodule Bimip.Service.Master do
     end
   end
 end
+
+
+# 

@@ -29,11 +29,21 @@ defmodule Bimip.Socket do
       end
     end
 
-    def websocket_init(%{ eid: eid, device_id: device_id, exp: exp} = state) do
-      Orchestrator.start_mother(eid)
-      Master.start_device(eid, {eid, device_id, exp, self()})
+    def websocket_init(%{eid: eid, device_id: device_id, exp: exp} = state) do
+      state_with_ws = Map.put(state, :ws_pid, self())
+
+        case Horde.Registry.lookup(EidRegistry, eid) do
+          [{pid, _value}] -> pid
+              RegistryHub.register_device_in_server({device_id, eid, exp, self()})
+          [] ->
+            Orchestrator.start_mother(state_with_ws)
+            Logger.error("Mother process for #{eid} not found in Registry")
+            nil
+          end
+
       {:ok, state}
     end
+
 
     def websocket_info(:send_ping, state) do
       {:reply, :ping, state}
@@ -93,14 +103,13 @@ defmodule Bimip.Socket do
 
     defp handle_awareness(state, data) do
       case RegistryHub.route_awareness_to_client(state.eid, state.device_id, data) do
-        :ok -> {:ok, state}
+        :ok -> 
+          {:ok, state}
         :error ->
-        
-        error_msg =
-        ThrowErrorScheme.error(503, "Service temporarily unavailable", 2)
-
-        send(self(), {:binary, error_msg})
-        {:ok, state}
+          error_msg =
+          ThrowErrorScheme.error(503, "Service temporarily unavailable", 2)
+          send(self(), {:binary, error_msg})
+          {:ok, state}
       end
     end
 
