@@ -15,6 +15,11 @@ defmodule Bimip.Application do
     :mnesia.start() 
     ensure_device_table()
     ensure_device_index()
+
+    ensure_next_offsets_table()
+    ensure_device_offsets_table()
+
+
     ensure_user_state_table()
     ensure_subscriber_table()
     ensure_subscriber_index()
@@ -147,6 +152,37 @@ defmodule Bimip.Application do
       {:atomic, :ok} -> Logger.info("✅ Subscriber index table created")
       {:aborted, {:already_exists, _}} -> :ok
       other -> Logger.error("⚠️ Failed to create subscriber index table: #{inspect(other)}")
+    end
+  end
+
+
+   # ----------------------
+  # Table for next offsets per {user, partition_id}
+  # ----------------------
+  defp ensure_next_offsets_table do
+    case :mnesia.create_table(:next_offsets, [
+           {:attributes, [:user, :partition_id, :offset]},
+           {:disc_copies, [node()]},
+           {:type, :set}
+         ]) do
+      {:atomic, :ok} -> Logger.info("✅ Next offsets table created")
+      {:aborted, {:already_exists, _}} -> :ok
+      other -> Logger.error("⚠️ Failed to create next_offsets table: #{inspect(other)}")
+    end
+  end
+
+  # ----------------------
+  # Table for last consumed offset per {user, device_id, partition_id}
+  # ----------------------
+  defp ensure_device_offsets_table do
+    case :mnesia.create_table(:device_offsets, [
+           {:attributes, [:user, :device_id, :partition_id, :offset]},
+           {:disc_copies, [node()]},
+           {:type, :set}
+         ]) do
+      {:atomic, :ok} -> Logger.info("✅ Device offsets table created")
+      {:aborted, {:already_exists, _}} -> :ok
+      other -> Logger.error("⚠️ Failed to create device_offsets table: #{inspect(other)}")
     end
   end
 
