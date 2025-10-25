@@ -15,9 +15,12 @@ defmodule Bimip.Application do
     :mnesia.start() 
     ensure_device_table()
     ensure_device_index()
+    
 
+    first_segment()
     ensure_next_offsets_table()
     ensure_device_offsets_table()
+    ensure_current_segment_table()
 
 
     ensure_user_state_table()
@@ -156,6 +159,31 @@ defmodule Bimip.Application do
   end
 
 
+  def first_segment do
+    case :mnesia.create_table(:first_segment, [
+        {:attributes, [:key, :user, :partition_id, :segment]},
+        {:disc_copies, [node()]},
+        {:type, :set}
+        ]) do
+      {:atomic, :ok} -> Logger.info("✅ first_segment index table created")
+      {:aborted, {:already_exists, _}} -> :ok
+      other -> Logger.error("⚠️ Failed to create subscriber index table: #{inspect(other)}")
+    end
+  end
+
+  defp ensure_current_segment_table do
+    case :mnesia.create_table(:current_segment, [
+          {:attributes, [:user, :partition_id, :segment]},
+          {:disc_copies, [node()]},
+          {:type, :set}
+        ]) do
+      {:atomic, :ok} -> Logger.info("✅ Current segment table created")
+      {:aborted, {:already_exists, _}} -> :ok
+      other -> Logger.error("⚠️ Failed to create current_segment table: #{inspect(other)}")
+    end
+  end
+
+
    # ----------------------
   # Table for next offsets per {user, partition_id}
   # ----------------------
@@ -176,10 +204,10 @@ defmodule Bimip.Application do
   # ----------------------
   defp ensure_device_offsets_table do
     case :mnesia.create_table(:device_offsets, [
-           {:attributes, [:user, :device_id, :partition_id, :offset]},
-           {:disc_copies, [node()]},
-           {:type, :set}
-         ]) do
+          {:attributes, [:key, :user, :device_id, :partition_id, :offset]},
+          {:disc_copies, [node()]},
+          {:type, :set}
+        ]) do
       {:atomic, :ok} -> Logger.info("✅ Device offsets table created")
       {:aborted, {:already_exists, _}} -> :ok
       other -> Logger.error("⚠️ Failed to create device_offsets table: #{inspect(other)}")
