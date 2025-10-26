@@ -59,10 +59,10 @@ defmodule App.RegistryHub do
     end
   end
 
-  def route_awareness_to_server(from_eid, to_eid, type, data) do
+  def route_awareness_to_server(from_eid, from_device_id, to_eid, to_device_id, type, data) do
     case Horde.Registry.lookup(EidRegistry, from_eid) do
       [{pid, _}] ->
-        GenServer.cast(pid, {:route_awareness, from_eid, to_eid, type, data})
+        GenServer.cast(pid, {:route_awareness, from_eid, from_device_id, to_eid, to_device_id, type, data})
         :ok
       [] ->
         :error

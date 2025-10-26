@@ -80,12 +80,6 @@ defmodule Bimip.Device.Client do
         case Bimip.Validators.AwarenessValidator.validate_awareness(awareness_msg) do
           :ok ->
 
-            awareness_type =
-              case awareness_msg.status do
-                s when s in 1..5 -> :user  # User Awareness → broadcast to subscribers
-                s when s in 6..8 -> :system  # System Awareness → per-to-per
-              end
-
             encoded_message = ThrowAwarenessSchema.success(
               awareness_msg.from.eid,
               awareness_msg.from.connection_resource_id,
@@ -101,8 +95,10 @@ defmodule Bimip.Device.Client do
             
             RegistryHub.route_awareness_to_server(
               awareness_msg.from.eid, 
+              awareness_msg.from.connection_resource_id,
               awareness_msg.to.eid, 
-              awareness_type,
+              awareness_msg.to.connection_resource_id,
+              awareness_msg.status,
               encoded_message
             )
             

@@ -10,7 +10,6 @@ defmodule Storage.DeviceStorage do
 
   @device_table :device
   @device_index_table :device_index
-  @device_index_table :device_index
   @user_awareness_table :user_awareness_table
   @doc """
   Save a device payload and update secondary index.
@@ -245,6 +244,6 @@ defmodule Storage.DeviceStorage do
 end
 
 # Storage.DeviceStorage.fetch_devices_by_eid("a@domain.com")
-# Storage.DeviceStorage.get_device("a@domain.com", "aaaaa2")
+# Storage.DeviceStorage.get_device("a@domain.com", "aaaaa1")
 # Storage.DeviceStorage.check_index_by_eid("a@domain.com")
 # Storage.DeviceStorage.delete_device("aaaaa1", "a@domain.com")

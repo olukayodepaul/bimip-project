@@ -10,6 +10,24 @@ defmodule Util.StatusMapper do
       _ -> 0  # Unknown or unsupported
     end
   end
+  
+  def status_name(code) do
+    case code do
+      1 -> "ONLINE"
+      2 -> "OFFLINE"
+      3 -> "AWAY"
+      4 -> "BUSY"
+      5 -> "DND"
+      6 -> "TYPING"
+      7 -> "RECORDING"
+      8 -> "RESUME"
+      _ -> "UNKNOWN"
+    end
+  end
 
 end
+
+
+
+
 

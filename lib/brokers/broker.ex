@@ -1,4 +1,4 @@
-defmodule Bimip.SubscriberPresence do
+defmodule Bimip.Broker do
   @moduledoc """
   Handles user presence and awareness.
   Fetches subscriber/friend list dynamically from `Storage.Subscriber`.
@@ -43,7 +43,7 @@ defmodule Bimip.SubscriberPresence do
     :ok
   end
 
-  def broadcast_awareness(from_eid, awareness_msg, intention \\ 2) do
+  def group(from_eid, awareness_msg, intention \\ 2) do
     IO.inspect("bshb SD HSBCJAs cb hadsjcdhsbc hdsacudsacbvdyicahos dsjia dsyao xxxxxx")
     owner_eid = from_eid
     topic = "GENERAL:#{owner_eid}"
@@ -54,7 +54,7 @@ defmodule Bimip.SubscriberPresence do
     Phoenix.PubSub.broadcast(@pubsub, topic, {:awareness_update, awareness_msg})
   end
 
-  def per_to_per_broadcast_awareness(from_eid, awareness_msg, intention \\ 2) do
+  def peer(from_eid, awareness_msg, intention \\ 2) do
     owner_eid = from_eid
     topic = "SINGLE:#{owner_eid}"
 

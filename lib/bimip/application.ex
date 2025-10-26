@@ -1,28 +1,22 @@
 defmodule Bimip.Application do
-  #bimip
-
   use Application
   alias Settings.Connections
   require Logger
 
-
   @impl true
   def start(_type, _args) do
-    
     :mnesia.stop()
     # :mnesia.delete_schema([node()])
     :mnesia.create_schema([node()])
-    :mnesia.start() 
+    :mnesia.start()
+
+    # Tables
     ensure_device_table()
     ensure_device_index()
-    
-
     first_segment()
     ensure_next_offsets_table()
     ensure_device_offsets_table()
     ensure_current_segment_table()
-
-
     ensure_user_state_table()
     ensure_subscriber_table()
     ensure_subscriber_index()
@@ -30,28 +24,20 @@ defmodule Bimip.Application do
     ensure_queue()
     ensure_queuing_index()
 
+    # TCP / HTTP
     tcp_connection =
       if Connections.secure_tls?() do
         %{
           id: :https,
-          start:
-            {:cowboy, :start_tls,
-              [
-                :https,
-                [
-                  port: Connections.port(),
-                  certfile: Connections.cert_file(),
-                  keyfile: Connections.key_file()
-                ],
-                %{env: %{dispatch: dispatch()}}
-              ]}
+          start: {:cowboy, :start_tls,
+                  [:https,
+                   [port: Connections.port(), certfile: Connections.cert_file(), keyfile: Connections.key_file()],
+                   %{env: %{dispatch: dispatch()}}]}
         }
       else
         %{
           id: :http,
-          start:
-            {:cowboy, :start_clear,
-              [:http, [port: Connections.port()], %{env: %{dispatch: dispatch()}}]}
+          start: {:cowboy, :start_clear, [:http, [port: Connections.port()], %{env: %{dispatch: dispatch()}}]}
         }
       end
 
@@ -62,7 +48,7 @@ defmodule Bimip.Application do
       {Horde.Registry, name: DeviceIdRegistry, keys: :unique, members: :auto},
       {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},
       {Bimip.Supervisor.Orchestrator, []},
-      {Bimip.Device.Supervisor, []},
+      {Bimip.Device.Supervisor, []}
     ]
 
     opts = [strategy: :one_for_one, name: Bimip.Supervisor]
@@ -71,28 +57,24 @@ defmodule Bimip.Application do
 
   defp dispatch do
     :cowboy_router.compile([
-      {:_,
-        [
-          {Connections.resource_path(), Bimip.Socket, []}
-        ]}
+      {:_, [{Connections.resource_path(), Bimip.Socket, []}]}
     ])
   end
 
-  # Create table safely
+  # ----------------------
+  # Generic table creator
+  # ----------------------
   defp ensure_table(table, opts) do
     case :mnesia.create_table(table, opts) do
-      {:atomic, :ok} ->
-        Logger.info("✅ InMemory table #{inspect(table)} created")
-
-      {:aborted, {:already_exists, ^table}} ->
-        Logger.info("ℹ️ InMemory table #{inspect(table)} already exists")
-
-      other ->
-        Logger.error("⚠️ Failed to create table #{inspect(table)}: #{inspect(other)}")
+      {:atomic, :ok} -> Logger.info("✅ Table #{inspect(table)} created")
+      {:aborted, {:already_exists, ^table}} -> Logger.info("ℹ️ Table #{inspect(table)} already exists")
+      other -> Logger.error("⚠️ Failed to create table #{inspect(table)}: #{inspect(other)}")
     end
   end
 
-  # Device table
+  # ----------------------
+  # Device & Index tables
+  # ----------------------
   defp ensure_device_table do
     ensure_table(:device, [
       {:attributes, [:key, :payload, :last_offset, :timestamp]},
@@ -101,7 +83,14 @@ defmodule Bimip.Application do
     ])
   end
 
-  # Device table
+  defp ensure_device_index do
+    ensure_table(:device_index, [
+      {:attributes, [:eid, :device_id]},
+      {:disc_copies, [node()]},
+      {:type, :bag} # multiple devices per eid
+    ])
+  end
+
   defp ensure_user_awareness_table do
     ensure_table(:user_awareness_table, [
       {:attributes, [:key, :awareness, :timestamp]},
@@ -110,169 +99,90 @@ defmodule Bimip.Application do
     ])
   end
 
-  # Device index table
-  defp ensure_device_index do
-    ensure_table(:device_index, [
-      {:attributes, [:eid, :device_id]}, # use :eid as the first field
+  defp ensure_user_state_table do
+    ensure_table(:track_eid_state, [
+      {:attributes, [:eid, :state]},
       {:disc_copies, [node()]},
-      {:type, :bag} # allows multiple device_ids per eid
+      {:type, :set}
     ])
   end
 
-  def ensure_user_state_table do
-    case :mnesia.create_table(:track_eid_state, [
-            {:attributes, [:eid, :state]},
-            {:disc_copies, [node()]},
-            {:type, :set}
-          ]) do
-      {:atomic, :ok} -> Logger.info("✅ User state table created")
-      {:aborted, {:already_exists, _}} -> :ok
-      other -> Logger.error("⚠️ Failed to create table: #{inspect(other)}")
-    end
+  # ----------------------
+  # Subscriber tables
+  # ----------------------
+  defp ensure_subscriber_table do
+    ensure_table(:subscriber, [
+      {:attributes, [:key, :owner_eid, :subscriber_eid, :status, :blocked, :inserted_at, :last_seen]},
+      {:disc_copies, [node()]},
+      {:type, :set}
+    ])
   end
 
-  # -----------------------------
-  # Table creation
-  # -----------------------------
-  def ensure_subscriber_table do
-    case :mnesia.create_table(:subscriber, [
-          {:attributes, [:key, :owner_eid, :subscriber_eid, :status, :blocked, :inserted_at, :last_seen]},
-          {:disc_copies, [node()]},
-          {:type, :set}
-        ]) do
-      {:atomic, :ok} -> Logger.info("✅ Subscriber table created")
-      {:aborted, {:already_exists, _}} -> :ok
-      other -> Logger.error("⚠️ Failed to create subscriber table: #{inspect(other)}")
-    end
+  defp ensure_subscriber_index do
+    ensure_table(:subscriber_index, [
+      {:attributes, [:owner_eid, :subscriber_eid]},
+      {:disc_copies, [node()]},
+      {:type, :bag}
+    ])
   end
 
-  def ensure_subscriber_index do
-    case :mnesia.create_table(:subscriber_index, [
-          {:attributes, [:owner_eid, :subscriber_eid]},
-          {:disc_copies, [node()]},
-          {:type, :bag} # multiple owners can have same subscriber
-        ]) do
-      {:atomic, :ok} -> Logger.info("✅ Subscriber index table created")
-      {:aborted, {:already_exists, _}} -> :ok
-      other -> Logger.error("⚠️ Failed to create subscriber index table: #{inspect(other)}")
-    end
-  end
-
-
-  def first_segment do
-    case :mnesia.create_table(:first_segment, [
-        {:attributes, [:key, :user, :partition_id, :segment]},
-        {:disc_copies, [node()]},
-        {:type, :set}
-        ]) do
-      {:atomic, :ok} -> Logger.info("✅ first_segment index table created")
-      {:aborted, {:already_exists, _}} -> :ok
-      other -> Logger.error("⚠️ Failed to create subscriber index table: #{inspect(other)}")
-    end
+  # ----------------------
+  # First / Current segment tables
+  # ----------------------
+  defp first_segment do
+    ensure_table(:first_segment, [
+      {:attributes, [:key, :segment]}, # key = {user, partition_id}
+      {:disc_copies, [node()]},
+      {:type, :set}
+    ])
   end
 
   defp ensure_current_segment_table do
-    case :mnesia.create_table(:current_segment, [
-          {:attributes, [:user, :partition_id, :segment]},
-          {:disc_copies, [node()]},
-          {:type, :set}
-        ]) do
-      {:atomic, :ok} -> Logger.info("✅ Current segment table created")
-      {:aborted, {:already_exists, _}} -> :ok
-      other -> Logger.error("⚠️ Failed to create current_segment table: #{inspect(other)}")
-    end
+    ensure_table(:current_segment, [
+      {:attributes, [:key, :segment]}, # key = {user, partition_id}
+      {:disc_copies, [node()]},
+      {:type, :set}
+    ])
   end
 
-
-   # ----------------------
-  # Table for next offsets per {user, partition_id}
+  # ----------------------
+  # Next offsets (per user + partition)
   # ----------------------
   defp ensure_next_offsets_table do
-    case :mnesia.create_table(:next_offsets, [
-           {:attributes, [:user, :partition_id, :offset]},
-           {:disc_copies, [node()]},
-           {:type, :set}
-         ]) do
-      {:atomic, :ok} -> Logger.info("✅ Next offsets table created")
-      {:aborted, {:already_exists, _}} -> :ok
-      other -> Logger.error("⚠️ Failed to create next_offsets table: #{inspect(other)}")
-    end
+    ensure_table(:next_offsets, [
+      {:attributes, [:key, :offset]}, # key = {user, partition_id}
+      {:disc_copies, [node()]},
+      {:type, :set}
+    ])
   end
 
   # ----------------------
-  # Table for last consumed offset per {user, device_id, partition_id}
+  # Device offsets (per user + device + partition)
   # ----------------------
   defp ensure_device_offsets_table do
-    case :mnesia.create_table(:device_offsets, [
-          {:attributes, [:key, :user, :device_id, :partition_id, :offset]},
-          {:disc_copies, [node()]},
-          {:type, :set}
-        ]) do
-      {:atomic, :ok} -> Logger.info("✅ Device offsets table created")
-      {:aborted, {:already_exists, _}} -> :ok
-      other -> Logger.error("⚠️ Failed to create device_offsets table: #{inspect(other)}")
-    end
+    ensure_table(:device_offsets, [
+      {:attributes, [:key, :offset]}, # key = {user, device_id, partition_id}
+      {:disc_copies, [node()]},
+      {:type, :set}
+    ])
   end
 
-
-  @doc """
-  Ensures the queuing_index table exists.
-  - eid: Entity ID (owner of the queue)
-  - channel: Queue channel (:sub, :block_sub, etc.)
-  - max_id: Highest message id assigned so far
-  - last_offset: Last consumed offset for FIFO tracking
-  """
-  def ensure_queuing_index do
-    case :mnesia.create_table(:queuing_index, [
-          {:attributes, [:eid, :max_id, :last_offset]},
-          {:disc_copies, [node()]},
-          {:type, :set}
-        ]) do
-      {:atomic, :ok} ->
-        Logger.info("✅ queuing_index table created")
-
-      {:aborted, {:already_exists, _}} ->
-        :ok
-
-      other ->
-        Logger.error("⚠️ Failed to create queuing_index table: #{inspect(other)}")
-    end
+  # ----------------------
+  # Queue & Queue index tables
+  # ----------------------
+  defp ensure_queue do
+    ensure_table(:queue, [
+      {:attributes, [:key, :payload, :timestamp]},
+      {:disc_copies, [node()]},
+      {:type, :set}
+    ])
   end
 
-  @doc """
-  Ensures the queue table exists.
-  - eid: Entity ID (owner of the queue)
-  - msg_id: Sequential message id
-  - payload: Message content
-  - timestamp: Insert time
-  """
-  def ensure_queue do
-    case :mnesia.create_table(:queue, [
-          {:attributes, [:key, :payload, :timestamp]},
-          {:disc_copies, [node()]},
-          {:type, :set}
-        ]) do
-      {:atomic, :ok} ->
-        Logger.info("✅ queue table created")
-
-      {:aborted, {:already_exists, _}} ->
-        :ok
-
-      other ->
-        Logger.error("⚠️ Failed to create queue table: #{inspect(other)}")
-    end
+  defp ensure_queuing_index do
+    ensure_table(:queuing_index, [
+      {:attributes, [:eid, :max_id, :last_offset]},
+      {:disc_copies, [node()]},
+      {:type, :set}
+    ])
   end
-
 end
-
-
-
-
-
-
-
-
-
-
-
-
