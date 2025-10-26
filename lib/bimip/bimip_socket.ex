@@ -86,8 +86,8 @@ defmodule Bimip.Socket do
     defp dispatch_map do
       %{
         2 => &handle_awareness/2,
-        3 => &handle_ping_pong/2,
-        14 => &handle_logout/2
+        # 3 => &handle_ping_pong/2,
+        # 14 => &handle_logout/2
       }
     end
 
@@ -102,6 +102,7 @@ defmodule Bimip.Socket do
     end
 
     defp handle_awareness(state, data) do
+      
       case RegistryHub.route_awareness_to_client(state.eid, state.device_id, data) do
         :ok -> 
           {:ok, state}

@@ -90,7 +90,8 @@ defmodule Bimip.Device.Client do
               awareness_msg.latitude,
               awareness_msg.longitude,
               awareness_msg.ttl,
-              awareness_msg.details
+              awareness_msg.details,
+              awareness_msg.id
             )
             
             RegistryHub.route_awareness_to_server(
@@ -117,7 +118,7 @@ defmodule Bimip.Device.Client do
           {:error, err} ->
   
             reason = "Field '#{err.field}' → #{err.description}"
-
+            
             error_binary = ThrowAwarenessSchema.error(
               awareness_msg.from.eid,
               awareness_msg.from.connection_resource_id,

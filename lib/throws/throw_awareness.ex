@@ -14,7 +14,7 @@ defmodule ThrowAwarenessSchema do
   # ------------------------------------------------------------------------
   # SUCCESS / NORMAL STANZAS
   # ------------------------------------------------------------------------
-  def success(from_eid, from_device_id, to_eid \\ "", to_device_id \\ "", status \\ 1, location_sharing \\ 2, latitude \\ 0.0 , longitude \\ 0.0 , ttl \\ 0, details \\ "") do
+  def success( from_eid, from_device_id, to_eid \\ "", to_device_id \\ "", status \\ 1, location_sharing \\ 2, latitude \\ 0.0 , longitude \\ 0.0 , ttl \\ 0, details \\ "", id \\ "") do
     # Override latitude/longitude if sharing is disabled
     latitudes = if location_sharing == 1, do: latitude, else: 0.0
     longitudes = if location_sharing == 1, do: longitude, else: 0.0
@@ -22,6 +22,7 @@ defmodule ThrowAwarenessSchema do
     awareness = %Bimip.Awareness{
       from: %Bimip.Identity{eid: from_eid, connection_resource_id: from_device_id},
       to: %Bimip.Identity{eid: to_eid, connection_resource_id: to_device_id},
+      id: id,
       type: @type_response,
       status: status,
       location_sharing: location_sharing,

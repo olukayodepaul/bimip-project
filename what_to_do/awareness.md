@@ -163,7 +163,29 @@ message Awareness {
 ```
 
 ```
+BimipLog.write(user, partition_id, from, to, payload)
+BimipLog.fetch(user, device_id, partition_id, limit)
+
+```
+
+| Parameter      | Type                       | Description                                                                                                              |
+| -------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `user`         | `String.t()`               | The unique identifier of the log owner (e.g., `"a@domain.com"`). Each user has their own isolated log directory.         |
+| `partition_id` | `integer()`                | Numeric partition identifier for the user’s log (e.g., `1`). Each partition represents a separate file stream (segment). |
+| `from`         | `String.t()`               | The sender identifier (e.g., `"alice"`). Used for metadata and correlation in delivery fan-out.                          |
+| `to`           | `String.t()`               | The receiver identifier (e.g., `"bob"`). Determines routing and awareness linkage.                                       |
+| `payload`      | `binary()` or `String.t()` | The actual message data stored in the log. Serialized and length-prefixed for safe binary storage.                       |
+
+| Arg              | Type        | Meaning                                                              |
+| ---------------- | ----------- | -------------------------------------------------------------------- |
+| **user**         | `string()`  | The log owner (same as in `write/5`).                                |
+| **device_id**    | `string()`  | Unique ID of the device reading messages (used for tracking offset). |
+| **partition_id** | `integer()` | Which partition to read from (same one used in `write/5`).           |
+| **limit**        | `integer()` | How many messages to fetch at once (batch size).                     |
+
+```
 request = %Bimip.Awareness{
+  to: "1",
   from: %Bimip.Identity{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa1"
@@ -173,7 +195,7 @@ request = %Bimip.Awareness{
     connection_resource_id: "bbbbb1"
   },
   type: 1,
-  status: 6,
+  status: 1,
   location_sharing: 2,
   ttl: 5,
   timestamp: System.system_time(:second)
@@ -185,7 +207,12 @@ msg_request = %Bimip.MessageScheme{
 }
 
 binary = Bimip.MessageScheme.encode(msg_request)
-hex    = Base.encode16(binary, case: :upper)
+
+
+
+BimipLog.write("a@domain.com", 1, "a@domain.com", "b@domain.com", hex)
+
+BimipLog.fetch("a@domain.com", "aaaaa1", 1, 2)
 
 0802123E0A160A0C6140646F6D61696E2E636F6D120661616161613112160A0C6240646F6D61696E2E636F6D12066262626262311801200228024005509ECDF7C706
 
@@ -193,4 +220,87 @@ hex    = Base.encode16(binary, case: :upper)
 typing
 0802123E0A160A0C6140646F6D61696E2E636F6D120661616161613112160A0C6240646F6D61696E2E636F6D1206626262626231180120062802400550CF8EF8C706
 
+
+BimipLog.write("a@domain.com", 1, "alice", "bob", "payload1")
+BimipLog.fetch("a@domain.com", 1, "alice", "bob", "payload1")
+
+BimipLog.fetch("a@domain.com", "aaaaa1", 1, 2)
+
+BimipLog.write("a@domain.com", 1, "a@domain.com", "b@domain.com", hex)
+
+
+BimipLog.write("a@domain.com", 1, "a@domain.com", "b@domain.com", 0802123E0A160A0C6140646F6D61696E2E636F6D120661616161613112160A0C6240646F6D61696E2E636F6D1206626262626231180120062802400550CF8EF8C706)
+
+
+# GenServer.cast(self(), {:log_user_message, 1, "a@domain.com", "b@domain.com", "hex_payload"})
 ```
+
+msg_request = %Bimip.MessageScheme{
+route: 10,
+payload: {:body, [
+list of itemis
+]}
+}
+
+request = %Bimip.Awareness{
+from: %Bimip.Identity{
+eid: "a@domain.com",
+connection_resource_id: "aaaaa1"
+},
+to: %Bimip.Identity{
+eid: "b@domain.com",
+connection_resource_id: "bbbbb1"
+},
+type: 1,
+status: 1,
+location_sharing: 2,
+ttl: 5,
+timestamp: System.system_time(:second)
+}
+
+msg_request = %Bimip.MessageScheme{
+route: 10,
+payload: {:body, [
+request, request
+]}
+}
+
+body route = 20
+message Body {
+array body = 1;
+}
+
+%Bimip.MessageScheme{
+route: 10,
+payload: {:body, %Bimip.Body{
+route: 1001,
+awareness_list: [...]
+...
+}}
+}
+
+%Bimip.MessageScheme{
+route: 10,
+payload: {:body, %Bimip.Body{
+route: 1001,
+awareness_list: [...]
+...
+}}
+}
+
+awareness_struct = %Bimip.Awareness{
+from: %Bimip.Identity{eid: "alice"},
+to: %Bimip.Identity{eid: "bob"},
+status: 1,
+ttl: 5,
+timestamp: 1_761_488_000_000
+}
+
+message = %Bimip.MessageScheme{
+route: 10,
+payload: {:body, %Bimip.Body{
+route: 1001,
+awareness_list: [awareness_struct],
+timestamp: awareness_struct.timestamp
+}}
+}

@@ -41,11 +41,10 @@ defmodule Bimip.Service.Master do
           2
       end
 
-    # Start initial device
+    # # Start initial device
     GenServer.cast(self(), {:start_device, {eid, device_id, exp, ws_pid}})
 
-    # Start fetch loop
-    schedule_fetch()
+
 
     {:ok,
       %{
@@ -105,13 +104,7 @@ defmodule Bimip.Service.Master do
       state.awareness
     )
 
-    # --- ACTION: Call the dedicated logging handler ---
-    # We call the log handler immediately after a key state change (successful device login).
-    # This uses the Master's own log handler, which then delegates the write to BimipLog.write.
-    login_payload = %{type: :login, device_id: device_id, status: "ONLINE"}
-    GenServer.cast(self(), {:log_user_message, 1, "SYSTEM", eid, login_payload})
-    # --------------------------------------------------
-
+  
     {:noreply, state}
   end
 
@@ -124,14 +117,14 @@ defmodule Bimip.Service.Master do
 
     case Storage.DeviceStateChange.track_state_change(eid) do
       {:changed, _user_status, _online_devices} ->
-        awareness_response = ThrowAwarenessSchema.success(eid, device_id, "", "", StatusMapper.map_status_to_code(status), 2)
-        Broker.group(eid, awareness_response, awareness)
+        # awareness_response = ThrowAwarenessSchema.success(eid, device_id, "", "", StatusMapper.map_status_to_code(status), 2)
+        # Broker.group(eid, awareness_response, awareness)
         {:noreply, %{state | force_stale: now}}
       {:unchanged, _user_status, _online_devices} ->
         idle_too_long? = DateTime.diff(now, force_stale) >= @stale_threshold_seconds
         if idle_too_long? do
-          awareness_response = ThrowAwarenessSchema.success(eid, device_id, "", "", StatusMapper.map_status_to_code(status), 2)
-          Broker.group(eid, awareness_response, awareness)
+          # awareness_response = ThrowAwarenessSchema.success(eid, device_id, "", "", StatusMapper.map_status_to_code(status), 2)
+          # Broker.group(eid, awareness_response, awareness)
           {:noreply, %{state | force_stale: now}}
         else
           {:noreply, state}
@@ -169,38 +162,38 @@ defmodule Bimip.Service.Master do
   # ----------------------
   def handle_cast({:route_awareness, from_eid, from_device_id, to_eid, to_device_id, type, data}, %{awareness: awareness} = state) do
 
-    DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
-    
     case type do
-      s when s in 1..5 ->
+      1 -> 
+        
+        DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
+        GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
+        GenServer.cast(self(), {:fetch_batch_notification, from_eid, from_device_id} )
+        Broker.group(from_eid, data, awareness)
+      
+      s when s in 2..5 ->
+
         # User Awareness
-        # 1..5 → ONLINE, OFFLINE, AWAY, BUSY, DND
+        # 1..5 →  OFFLINE, AWAY, BUSY, DND
         # Send to all subscribers (group awareness)
         # Also send chat/notification messages to sender
         # send_group_awareness(from, to, s)
         # send_chat_notification(from, to, s)
+        DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
         Broker.group(from_eid, data, awareness)
-
-      s when s in 6..7 ->
+ 
+      s when s in 6..11 ->
         # System Awareness
-        # 6..7 → TYPING, RECORDING
+        # 6..10 → TYPING, RECORDING
         # Send pair-to-pair awareness only
         # send_pair_awareness(from, to, s)
         # send_chat_notification(from, to, s)
+        DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(1))
+        GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
         Broker.peer(to_eid, data, awareness)
-
-      8 ->
-        # System Awareness (RESUME)
-        # Send pair-to-pair awareness
-        # Only fan out pending chat messages (no notifications)
-        # send_pair_awareness(from, to, 8)
-        # fan_out_pending_chats(from, to)
-        Broker.peer(to_eid, data, awareness)
-
+        
       _ ->
         Logger.warning("Unknown awareness type: #{inspect(type)}")
     end
-
 
     {:noreply, state}
   end
@@ -233,44 +226,43 @@ defmodule Bimip.Service.Master do
   to handle the necessary GenServer delegation to ensure concurrency safety.
   """
   def handle_cast({:log_user_message, partition_id, from, to, payload}, %{eid: eid} = state) do
-    # Partition ID 1 is assumed for the main log.
-    # case BimipLog.write(eid, partition_id, from, to, payload) do
-    #   {:ok, offset} ->
-    #     Logger.info("Message logged successfully for #{eid}/#{partition_id} at offset #{offset}")
-    #   {:error, reason} ->
-    #     Logger.error("CRITICAL: Failed to write message for #{eid}: #{inspect(reason)}")
-    # end
+    # synchronous effect still executed in the genserver process
+    case BimipLog.write(eid, partition_id, from, to, payload) do
+      {:ok, offset} ->
+        Logger.info("[LOG] eid=#{eid} partition=#{partition_id} offset=#{offset} from=#{from} to=#{to}")
+      {:error, reason} ->
+        Logger.error("[LOG] failed write eid=#{eid} partition=#{partition_id} reason=#{inspect(reason)}")
+    end
 
     {:noreply, state}
   end
 
-  # ----------------------
-  # Fetch messages loop
-  # ----------------------
   @impl true
-  def handle_info(:fetch_batch, %{eid: eid, devices: devices} = state) do
-    # Enum.each(devices, fn {device_id, pid} ->
-    #   # NOTE: Fetching from partition 1 (hardcoded, assume main partition)
-    #   case BimipLog.fetch(eid, device_id, 1, 1000) do
-    #     {:ok, messages, _next_offset} ->
-    #       Enum.each(messages, fn msg -> send(pid, {:deliver_message, msg}) end)
-    #     {:error, reason} ->
-    #       Logger.error("Failed to fetch messages for #{eid}/#{device_id}: #{inspect(reason)}")
-    #   end
-    # end)
+  def handle_cast({:fetch_batch_chat, eid, devices},  state) do
+    # fan out from here
+    case BimipLog.fetch(eid, devices, 1) do
+      {_, _, {:ok, %{messages: messages}}} ->
+        Enum.each(messages, fn msg ->
+          IO.inspect(msg)
+        end)
 
-    # # Reschedule next fetch only if there are active devices
-    # if map_size(devices) > 0 do
-    #   schedule_fetch()
-    # end
-
+      other ->
+        IO.puts("Unexpected response: #{inspect(other)}")
+    end
     {:noreply, state}
   end
 
-  # ----------------------
-  # Private helpers
-  # ----------------------
-  defp schedule_fetch() do
-    Process.send_after(self(), :fetch_batch, @fetch_interval)
+  def handle_cast({:fetch_batch_notification, eid, devices},  state) do
+    # fan out from here
+    case BimipLog.fetch(eid, devices, 2) do
+      {_, _, {:ok, %{messages: messages}}} ->
+        Enum.each(messages, fn msg ->
+          IO.inspect(msg)
+        end)
+      other ->
+        IO.puts("Unexpected response: #{inspect(other)}")
+    end
+    {:noreply, state}
   end
+
 end

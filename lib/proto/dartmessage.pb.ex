@@ -11,21 +11,83 @@ defmodule Bimip.Identity do
     json_name: "connectionResourceId"
 end
 
+defmodule Bimip.Media do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :type, 1, type: :string
+  field :url, 2, type: :string
+  field :thumbnail, 3, type: :string
+  field :size, 4, type: :int64
+end
+
+defmodule Bimip.Payload.DataEntry do
+  @moduledoc false
+
+  use Protobuf, map: true, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :key, 1, type: :string
+  field :value, 2, type: :string
+end
+
+defmodule Bimip.Payload do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :data, 1, repeated: true, type: Bimip.Payload.DataEntry, map: true
+  field :media, 2, repeated: true, type: Bimip.Media
+end
+
+defmodule Bimip.Metadata do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :encrypted, 1, type: :string
+  field :signature, 2, type: :string
+end
+
+defmodule Bimip.Ack do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :status, 1, repeated: true, type: :int32
+end
+
 defmodule Bimip.Awareness do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :from, 1, type: Bimip.Identity
-  field :to, 2, type: Bimip.Identity
-  field :type, 3, type: :int32
-  field :status, 4, type: :int32
-  field :location_sharing, 5, type: :int32, json_name: "locationSharing"
-  field :latitude, 6, type: :double
-  field :longitude, 7, type: :double
-  field :ttl, 8, type: :int32
-  field :details, 9, type: :string
-  field :timestamp, 10, type: :int64
+  field :id, 1, type: :string
+  field :from, 2, type: Bimip.Identity
+  field :to, 3, type: Bimip.Identity
+  field :type, 4, type: :int32
+  field :status, 5, type: :int32
+  field :location_sharing, 6, type: :int32, json_name: "locationSharing"
+  field :latitude, 7, type: :double
+  field :longitude, 8, type: :double
+  field :ttl, 9, type: :int32
+  field :details, 10, type: :string
+  field :timestamp, 11, type: :int64
+end
+
+defmodule Bimip.Message do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :id, 1, type: :string
+  field :from, 2, type: :string
+  field :to, 3, type: :string
+  field :type, 4, type: :string
+  field :timestamp, 5, type: :int64
+  field :payload, 6, type: Bimip.Payload
+  field :ack, 7, type: Bimip.Ack
+  field :metadata, 8, type: Bimip.Metadata
 end
 
 defmodule Bimip.ErrorMessage do
@@ -116,6 +178,16 @@ defmodule Bimip.Logout do
   field :details, 5, type: :string
 end
 
+defmodule Bimip.Body do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :route, 1, type: :int64
+  field :awareness_list, 2, repeated: true, type: Bimip.Awareness, json_name: "awarenessList"
+  field :timestamp, 3, type: :int64
+end
+
 defmodule Bimip.MessageScheme do
   @moduledoc false
 
@@ -139,6 +211,8 @@ defmodule Bimip.MessageScheme do
     json_name: "awarenessUnsubscribe",
     oneof: 0
 
-  field :logout, 14, type: Bimip.Logout, oneof: 0
-  field :error, 15, type: Bimip.ErrorMessage, oneof: 0
+  field :logout, 8, type: Bimip.Logout, oneof: 0
+  field :error, 9, type: Bimip.ErrorMessage, oneof: 0
+  field :body, 10, type: Bimip.Body, oneof: 0
+  field :chat_message, 11, type: Bimip.Message, json_name: "chatMessage", oneof: 0
 end
