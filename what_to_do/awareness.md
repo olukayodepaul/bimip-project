@@ -185,7 +185,7 @@ BimipLog.fetch(user, device_id, partition_id, limit)
 
 ```
 request = %Bimip.Awareness{
-  to: "1",
+  id: "1",
   from: %Bimip.Identity{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa1"
@@ -207,8 +207,7 @@ msg_request = %Bimip.MessageScheme{
 }
 
 binary = Bimip.MessageScheme.encode(msg_request)
-
-
+hex    = Base.encode16(binary, case: :upper)
 
 BimipLog.write("a@domain.com", 1, "a@domain.com", "b@domain.com", hex)
 
@@ -252,7 +251,7 @@ eid: "b@domain.com",
 connection_resource_id: "bbbbb1"
 },
 type: 1,
-status: 1,
+status: 6,
 location_sharing: 2,
 ttl: 5,
 timestamp: System.system_time(:second)

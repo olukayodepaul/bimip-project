@@ -174,74 +174,66 @@ defmodule Bimip.Device.Client do
     end
   end
 
-  def handle_cast({:ping_pong, eid, device_id, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
+  def handle_cast(
+      {:ping_pong, _eid, _device_id, data},
+      %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state
+    ) do
+  
     msg = Bimip.MessageScheme.decode(data)
 
     case msg.payload do
-      {:ping_pong, %PingPong{} = ping_pong_msg} ->
-        case PingPongValidator.validate_pingpong(ping_pong_msg, eid, device_id) do
+      {:ping_pong, %Bimip.PingPong{} = pingpong_msg} ->
+        # ✅ Validate PingPong message
+        case Bimip.Validators.PingPongValidator.validate_pingpong(pingpong_msg, eid, device_id) do
           :ok ->
-            handle_valid_pingpong(ping_pong_msg, state)
+
+            pong = ThrowPingPongSchema.success(
+              pingpong_msg.to.eid,
+              pingpong_msg.to.connection_resource_id,
+              pingpong_msg.id,
+              2
+            )
+
+            send(ws_pid, {:binary, pong})
+
+            RegistryHub.route_ping_pong_to_server(
+              pingpong_msg.to.eid,
+              pingpong_msg.to.connection_resource_id
+            )
+
+            {:noreply,
+              %{
+                state
+                | device_state: %{
+                    state.device_state
+                    | last_seen: DateTime.utc_now(),
+                      last_activity: DateTime.utc_now(),
+                      last_change_at: DateTime.utc_now()
+                  }
+              }
+            }
 
           {:error, err} ->
-            fail = ThrowPingPongSchema.error(eid, device_id, err.description)
-            reply_client(ws_pid, fail)
+
+            reason = "Field '#{err.field}' → #{err.description}"
+
+            error_binary = ThrowPingPongSchema.error(
+              pingpong_msg.to.eid,
+              device_id,
+              pingpong_msg.id,
+              reason
+            )
+
+            send(ws_pid, {:binary, error_binary})
             {:noreply, state}
         end
 
       _ ->
-        fail = ThrowPingPongSchema.error(eid, device_id, "Invalid Request. Expected valid ping_pong payload")
-        reply_client(ws_pid, fail)
+        reason = "Invalid payload: expected PingPong message"
+        error_binary = ThrowPingPongSchema.error(eid, device_id, 0, reason)
+        send(ws_pid, {:binary, error_binary})
         {:noreply, state}
     end
-  end
-
-
-  defp handle_valid_pingpong(%PingPong{type: 1} = ping_pong, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
-    #update  last_activity, 
-    case ping_pong.resource do
-      1 ->
-        pong = ThrowPingPongSchema.same(eid, device_id, ping_pong.ping_time)
-        reply_client(ws_pid, pong)
-        {:noreply, state}
-
-      2 ->
-        case RegistryHub.request_cross_server_online_state(ping_pong.to.eid) do
-          :ok ->
-            pong =
-              ThrowPingPongSchema.others(
-                ping_pong.from.eid,
-                ping_pong.from.connection_resource_id,
-                ping_pong.to.eid,
-                ping_pong.to.connection_resource_id,
-                ping_pong.ping_time
-              )
-
-            reply_client(ws_pid, pong)
-            {:noreply, state}
-
-          :error ->
-            fail = ThrowPingPongSchema.error(eid, device_id, "Target device disconnected")
-            reply_client(ws_pid, fail)
-            {:noreply, state}
-        end
-
-      _ ->
-        fail = ThrowPingPongSchema.error(eid, device_id, "Invalid resource value")
-        reply_client(ws_pid, fail)
-        {:noreply, state}
-    end
-  end
-
-
-  defp handle_valid_pingpong(%PingPong{type: 2}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
-    fail = ThrowPingPongSchema.error(eid, device_id, "Client cannot send PONG; only PING is allowed")
-    reply_client(ws_pid, fail)
-    {:noreply, state}
-  end
-
-  defp reply_client(ws_pid, binary) do
-    send(ws_pid, {:binary, binary})
   end
 
 end

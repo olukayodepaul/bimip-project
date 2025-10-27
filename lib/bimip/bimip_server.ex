@@ -169,22 +169,10 @@ defmodule Bimip.Service.Master do
         Broker.group(from_eid, data, awareness)
       
       s when s in 2..5 ->
-
-        # User Awareness
-        # 1..5 →  OFFLINE, AWAY, BUSY, DND
-        # Send to all subscribers (group awareness)
-        # Also send chat/notification messages to sender
-        # send_group_awareness(from, to, s)
-        # send_chat_notification(from, to, s)
         DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
         Broker.group(from_eid, data, awareness)
  
       s when s in 6..11 ->
-        # System Awareness
-        # 6..11 → TYPING, RECORDING
-        # Send pair-to-pair awareness only
-        # send_pair_awareness(from, to, s)
-        # send_chat_notification(from, to, s)
         DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(1))
         # GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
         Broker.peer(to_eid, data, awareness)
@@ -196,38 +184,49 @@ defmodule Bimip.Service.Master do
     {:noreply, state}
   end
 
+  def handle_cast({:route_ping_pong, eid, device_id}, %{awareness: awareness} = state) do
+    IO.inspect({ eid, device_id})
+    DeviceStorage.update_device_status(device_id, eid, "PING_PONG", StatusMapper.status_name(1))
+    Broker.group(
+      eid,
+      ThrowAwarenessSchema.success(eid, device_id, "", "", 12),
+      state.awareness
+    )
+    {:noreply, state}
+  end
+
   @impl true
-  def handle_info({:awareness_update, awareness_msg}, %{eid: eid} = state) do
-    msg = Bimip.MessageScheme.decode(awareness_msg)
+  def handle_info({:awareness_update, encoded_msg}, %{eid: eid} = state) do
+    with %Bimip.MessageScheme{payload: {:awareness, %Bimip.Awareness{} = awareness}} <- Bimip.MessageScheme.decode(encoded_msg) do
+      from_eid = awareness.from.eid
+      status = awareness.status
 
-    case msg.payload do
-      {:awareness, %Bimip.Awareness{} = awareness_msg_response} ->
-        
-        case awareness_msg_response.status do
-          s when s in 1..2 ->
-            Storage.Subscriber.update_subscriber(
-              eid,
-              awareness_msg_response.from.eid,
-              StatusMapper.status_name(s)
-            )
+      case status do
+        # Regular online/offline awareness
+        s when s in 1..2 ->
+          Storage.Subscriber.update_subscriber(eid, from_eid, StatusMapper.status_name(s))
+          AwarenessFanOut.awareness(encoded_msg, eid)
 
-          s when s in 6..11 ->
-            Storage.Subscriber.update_subscriber(
-              eid,
-              awareness_msg_response.from.eid,
-              "ONLINE"
-            )
+        # Extended presence codes (6–12)
+        s when s in 6..11 ->
+          Storage.Subscriber.update_subscriber(eid, from_eid, "ONLINE")
+          AwarenessFanOut.awareness(encoded_msg, eid)
 
-          # ✅ Catch-all for unexpected or new status codes
-          other ->
-        end
+        # 🔹 Status 12 → only update subscriber locally (no fan-out)
+        12 ->
+          IO.inspect("svhbd jknlmdcnsjfb")
+          Storage.Subscriber.update_subscriber(eid, from_eid, "ONLINE")
 
-        AwarenessFanOut.awareness(awareness_msg, eid)
-        {:noreply, state}
+        # Catch-all
+        other ->
+          Logger.warning("Unknown awareness status: #{inspect(other)} from #{from_eid}")
+      end
+    else
       {:error, reason} ->
         Logger.error("Failed to decode awareness payload: #{inspect(reason)}")
-        {:noreply, state}
     end
+
+    {:noreply, state}
   end
 
   # ----------------------

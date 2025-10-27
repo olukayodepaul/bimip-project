@@ -130,15 +130,9 @@ end
 
 
 
-# Enum.each(Storage.Subscriber.fetch_subscriber_ids_by_owner("a@domain.com"), fn sub_id ->
-#   Phoenix.PubSub.broadcast(MyApp.PubSub, "TOPIC:#{sub_id}", {:message, "Hello!"})
-# end)
-
 # Storage.Subscriber.fetch_subscribers_by_owner("a@domain.com")
 # Storage.Subscriber.fetch_subscriber_ids_by_owner_all_arrays("a@domain.com")
 # Storage.Subscriber.get_subscriber("b@domain.com", "a@domain.com") 
 # Storage.Subscriber.get_subscriber("a@domain.com", "b@domain.com") 
 # Storage.Subscriber.fetch_all_subscribers("b@domain.com")
-
-
 # Storage.Subscriber.update_subscriber("a@domain.com", "b@domain.com", "ONLINE")

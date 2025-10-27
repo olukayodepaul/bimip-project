@@ -84,6 +84,10 @@ message Awareness {
     int32 ttl = 9;                  // Validity duration in seconds before expiration
     string details = 10;            // Additional info (optional)
     int64 timestamp = 11;           // Epoch time in milliseconds
+    int64 node = 12;                // Send sender system node to receiver should in case of chat 
+                                    // implemented in version two
+                                    // perform selective awareness online to node that is online
+                                    //:rpc.call(:"bimip@node1", Bimip.Server, :deliver_message, [to, payload])
 }
 
 // ---------------- Message ----------------
@@ -115,16 +119,16 @@ message ErrorMessage {
 }
 
 // ---------------- PingPong ----------------
-// Heartbeat messages from client to server to check connectivity of a specific device.
-// Client sends PING (type=1); Server responds with PONG (type=2).
+// Heartbeat messages exchanged between client and server
+// to maintain connectivity and track device session activity.
+// Client sends PING (type = 1); Server responds with PONG (type = 2).
+
 message PingPong {
-    Identity from = 1;
-    Identity to = 2;
-    int32 resource = 3;             // 1=SAME (server ping), 2=OTHERS (user-to-user ping)
-    int32 type = 4;                 // 1=PING, 2=PONG, 3=ERROR
-    int64 ping_time = 5;            // Unix UTC timestamp (ms)
-    int64 pong_time = 6;            // Unix UTC timestamp (ms)
-    string details = 7;             // Optional: only set when type = 3 (ERROR)
+    string id = 1;                 // Unique message or request ID (UUID or sequence)
+    Identity to = 2;               // Target identity (usually the client's own Identity)
+    int32 type = 3;                // 1 = PING, 2 = PONG, 3 = ERROR
+    int64 timestamp = 4;           // Unix UTC timestamp in milliseconds
+    string details = 5;            // Optional: used only when type = 3 (ERROR)
 }
 
 // ---------------- TokenRevoke ----------------

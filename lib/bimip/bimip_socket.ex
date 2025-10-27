@@ -86,7 +86,7 @@ defmodule Bimip.Socket do
     defp dispatch_map do
       %{
         2 => &handle_awareness/2,
-        # 3 => &handle_ping_pong/2,
+        3 => &handle_ping_pong/2,
         # 14 => &handle_logout/2
       }
     end

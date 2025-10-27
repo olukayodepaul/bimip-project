@@ -32,9 +32,10 @@ defmodule App.RegistryHub do
     end
   end
 
-  def request_cross_server_online_state(eid) do
+  def route_ping_pong_to_server(eid, device_id) do
     case Horde.Registry.lookup(EidRegistry, eid) do
-      [{_pid, _}] -> :ok
+      [{pid, _}] -> 
+        GenServer.cast(pid, {:route_ping_pong, eid, device_id})
       [] -> :error
     end
   end
