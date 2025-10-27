@@ -15,6 +15,7 @@ defmodule Bimip.Application do
     ensure_device_table()
     ensure_device_index()
     first_segment()
+    ensure_commit_offsets_table()
     ensure_ack_table()
     ensure_next_offsets_table()
     ensure_device_offsets_table()
@@ -168,10 +169,17 @@ defmodule Bimip.Application do
     ])
   end
 
-
   defp ensure_ack_table do
     ensure_table(:ack_table, [
       {:attributes, [:key, :last_ack]}, # key = {user, device_id, partition_id}
+      {:disc_copies, [node()]},
+      {:type, :set}
+    ])
+  end
+
+  defp ensure_commit_offsets_table do
+    ensure_table(:commit_offsets, [
+      {:attributes, [:key, :offset]}, # key = {user, device_id, partition_id}
       {:disc_copies, [node()]},
       {:type, :set}
     ])

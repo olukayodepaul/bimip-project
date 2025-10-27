@@ -52,7 +52,7 @@ defmodule BimipLog do
     ensure_files_exist!(user, partition_id)
     ensure_device_files_exist!(user, device_id, partition_id)
 
-    last_offset = get_device_offset(user, device_id, partition_id)
+    last_offset = get_commit_offset(user, device_id, partition_id)
     target_offset = last_offset + 1
 
     current_seg = get_current_segment(user, partition_id)
@@ -88,9 +88,7 @@ defmodule BimipLog do
       {:atomic, []} ->
         :mnesia.transaction(fn -> :mnesia.write({:current_segment, key, 1}) end)
         1
-      {:aborted, reason} ->
-        Logger.error("Failed reading current_segment: #{inspect(reason)}")
-        1
+      {:aborted, _} -> 1
     end
   end
 
@@ -212,30 +210,6 @@ defmodule BimipLog do
     end
   end
 
-  # ----------------------
-  # Next offsets per {user, partition_id} (Mnesia)
-  # ----------------------
-  defp get_next_offset(user, partition_id) do
-    key = {user, partition_id}
-    case :mnesia.transaction(fn -> :mnesia.read(:next_offsets, key) end) do
-      {:atomic, [{:next_offsets, ^key, offset}]} -> offset
-      {:atomic, []} ->
-        :mnesia.transaction(fn -> :mnesia.write({:next_offsets, key, 1}) end)
-        1
-      {:aborted, reason} ->
-        Logger.error("get_next_offset aborted: #{inspect(reason)}")
-        1
-    end
-  end
-
-  defp update_next_offset(user, partition_id, offset) do
-    key = {user, partition_id}
-    :mnesia.transaction(fn -> :mnesia.write({:next_offsets, key, offset}) end)
-  end
-
-  # ----------------------
-  # Segment reader
-  # ----------------------
   defp read_segment(qfile, target_offset, acc, last, limit) do
     {:ok, fd} = File.open(qfile, [:read, :binary])
     try do
@@ -265,19 +239,31 @@ defmodule BimipLog do
   end
 
   # ----------------------
-  # ACK table (Mnesia)
+  # Next offsets per {user, partition_id} (Mnesia)
   # ----------------------
-  def ensure_ack_table do
-    ensure_table(:ack_table, [
-      {:attributes, [:key, :ack]}, # key = {user, device_id, partition_id, offset}
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
+  defp get_next_offset(user, partition_id) do
+    key = {user, partition_id}
+    case :mnesia.transaction(fn -> :mnesia.read(:next_offsets, key) end) do
+      {:atomic, [{:next_offsets, ^key, offset}]} -> offset
+      {:atomic, []} ->
+        :mnesia.transaction(fn -> :mnesia.write({:next_offsets, key, 1}) end)
+        1
+      {:aborted, _} -> 1
+    end
   end
 
+  defp update_next_offset(user, partition_id, offset) do
+    key = {user, partition_id}
+    :mnesia.transaction(fn -> :mnesia.write({:next_offsets, key, offset}) end)
+  end
+
+  # ----------------------
+  # ACK table
+  # ----------------------
   def ack_message(user, device_id, partition_id, offset) do
     key = {user, device_id, partition_id, offset}
     :mnesia.transaction(fn -> :mnesia.write({:ack_table, key, true}) end)
+    commit_ack(user, device_id, partition_id, offset)
   end
 
   def acked?(user, device_id, partition_id, offset) do
@@ -285,6 +271,43 @@ defmodule BimipLog do
     case :mnesia.transaction(fn -> :mnesia.read(:ack_table, key) end) do
       {:atomic, [{:ack_table, ^key, true}]} -> true
       _ -> false
+    end
+  end
+
+  # ----------------------
+  # Commit offsets
+  # ----------------------
+  def get_commit_offset(user, device_id, partition_id) do
+    key = {user, device_id, partition_id}
+    case :mnesia.transaction(fn -> :mnesia.read(:commit_offsets, key) end) do
+      {:atomic, [{:commit_offsets, ^key, offset}]} -> offset
+      {:atomic, []} ->
+        :mnesia.transaction(fn -> :mnesia.write({:commit_offsets, key, 0}) end)
+        0
+      {:aborted, _} -> 0
+    end
+  end
+
+  defp set_commit_offset(user, device_id, partition_id, offset) do
+    key = {user, device_id, partition_id}
+    :mnesia.transaction(fn -> :mnesia.write({:commit_offsets, key, offset}) end)
+  end
+
+  defp commit_ack(user, device_id, partition_id, offset) do
+    last_committed = get_commit_offset(user, device_id, partition_id)
+    next_to_commit = last_committed + 1
+
+    if offset >= next_to_commit do
+      new_offset = advance_commit(user, device_id, partition_id, next_to_commit)
+      set_commit_offset(user, device_id, partition_id, new_offset)
+    end
+  end
+
+  defp advance_commit(user, device_id, partition_id, offset) do
+    if acked?(user, device_id, partition_id, offset) do
+      advance_commit(user, device_id, partition_id, offset + 1)
+    else
+      offset - 1
     end
   end
 
@@ -301,34 +324,71 @@ end
 
 
 
-# # Users / devices
-# user = "user1"
-# device_a1 = "A1"
-# device_a2 = "A2"
-# partition = 1
 
-# # Write messages
-# {:ok, offset1} = BimipLog.write(user, partition, "alice", "bob", "Hello 1")
-# {:ok, offset2} = BimipLog.write(user, partition, "alice", "bob", "Hello 2")
-# {:ok, offset3} = BimipLog.write(user, partition, "alice", "bob", "Hello 3")
 
-# IO.puts("Messages written with offsets: #{offset1}, #{offset2}, #{offset3}")
+# ```elixir
+# {:ok, offset1} = BimipLog.write("alice", 1, "bob", "alice", "Hello 1")
+# {:ok, offset2} = BimipLog.write("alice", 1, "bob", "alice", "Hello 2")
+# {:ok, offset3} = BimipLog.write("alice", 1, "bob", "alice", "Hello 3")
+# IO.inspect({offset1, offset2, offset3})
+# ```
 
-# # Fetch messages for device A1
-# {:ok, res_a1} = BimipLog.fetch(user, device_a1, partition, 10)
-# IO.inspect(res_a1, label: "Device A1 fetched")
+# ---
 
-# # Fetch messages for device A2
-# {:ok, res_a2} = BimipLog.fetch(user, device_a2, partition, 10)
-# IO.inspect(res_a2, label: "Device A2 fetched")
+# ### 3️⃣ Fetch Messages (simulate a device)
 
-# # ACK some messages per device
-# BimipLog.ack_message(user, device_a1, partition, offset1)
-# BimipLog.ack_message(user, device_a2, partition, offset2)
+# ```elixir
+# {:ok, fetch1} = BimipLog.fetch("alice", "device_1", 1, 10)
+# IO.inspect(fetch1)
+# ```
 
-# # Check ACK status
-# IO.puts("Device A1 ack offset1? #{BimipLog.acked?(user, device_a1, partition, offset1)}")
-# IO.puts("Device A1 ack offset2? #{BimipLog.acked?(user, device_a1, partition, offset2)}")
-# IO.puts("Device A2 ack offset1? #{BimipLog.acked?(user, device_a2, partition, offset1)}")
-# IO.puts("Device A2 ack offset2? #{BimipLog.acked?(user, device_a2, partition, offset2)}")
+# * `device_offset` should initially be **0**.
+# * Messages returned should start from offset **1** (committed offset + 1).
+
+# ---
+
+# ### 4️⃣ ACK Messages
+
+# ```elixir
+# BimipLog.ack_message("alice", "device_1", 1, 1)
+# BimipLog.ack_message("alice", "device_1", 1, 2)
+# ```
+
+# * After these, `commit_offsets` should advance to **2**.
+
+# ```elixir
+# BimipLog.get_commit_offset("alice", "device_1", 1)
+# # Should return 2
+# ```
+
+# ---
+
+# ### 5️⃣ Fetch Again (only uncommitted messages)
+
+# ```elixir
+# {:ok, fetch2} = BimipLog.fetch("alice", "device_1", 1, 10)
+# IO.inspect(fetch2)
+# ```
+
+# * Should **skip already committed messages**, returning only **offset 3**.
+
+# ---
+
+# ### 6️⃣ ACK Last Message
+
+# ```elixir
+# BimipLog.ack_message("alice", "device_1", 1, 3)
+# BimipLog.get_commit_offset("alice", "device_1", 1)
+# # Should now return 3
+# ```
+
+# ---
+
+# ### 7️⃣ Verify ACK Table
+
+# ```elixir
+# BimipLog.acked?("alice", "device_1", 1, 1) # true
+# BimipLog.acked?("alice", "device_1", 1, 2) # true
+# BimipLog.acked?("alice", "device_1", 1, 3) # true
+# ```
 
