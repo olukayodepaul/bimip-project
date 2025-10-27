@@ -189,8 +189,8 @@ defmodule Bimip.Service.Master do
         # GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
         Broker.peer(to_eid, data, awareness)
         
-      _ ->
-        Logger.warning("Unknown awareness type: #{inspect(type)}")
+      other ->
+        
     end
 
     {:noreply, state}
@@ -204,13 +204,24 @@ defmodule Bimip.Service.Master do
       {:awareness, %Bimip.Awareness{} = awareness_msg_response} ->
         
         case awareness_msg_response.status do
-          
           s when s in 1..2 ->
-            Storage.Subscriber.update_subscriber( eid, awareness_msg_response.from.eid, StatusMapper.status_name(awareness_msg_response.status))
-          s when s in 6..10 ->
-            Storage.Subscriber.update_subscriber( eid, awareness_msg_response.from.eid, "ONLINE")
+            Storage.Subscriber.update_subscriber(
+              eid,
+              awareness_msg_response.from.eid,
+              StatusMapper.status_name(s)
+            )
+
+          s when s in 6..11 ->
+            Storage.Subscriber.update_subscriber(
+              eid,
+              awareness_msg_response.from.eid,
+              "ONLINE"
+            )
+
+          # ✅ Catch-all for unexpected or new status codes
+          other ->
         end
-        
+
         AwarenessFanOut.awareness(awareness_msg, eid)
         {:noreply, state}
       {:error, reason} ->
