@@ -151,27 +151,16 @@ message TokenRefresh {
     string details = 5;             // Optional explanation
 }
 
-// ---------------- AwarenessSubscribe ----------------
+// ---------------- AwarenessRoster ----------------
 // Client requests to subscribe to another user's Awareness updates.
-message AwarenessSubscribe {
+message AwarenessRoster {
     Identity from = 1;              // Sender of the subscription request
     Identity to = 2;                // Target user
     string tracking_id = 3;         // Correlation ID to match request ↔ response/deny/error
     bool one_way = 4;               // Optional: true = one-way subscription; default=false (two-way)
-    int32 type = 5;                 // 1=SUBSCRIBE, 2=SUBSCRIBED, 3=DENY, 4=ERROR
+    int32 type = 5;                 // 1=SUBSCRIBE, 2=SUBSCRIBED, 3=DENY, 4=UNSUBSCRIBE, 5=UNSUBSCRIBED, 6=ERROR
     int64 timestamp = 6;            // Unix UTC timestamp (ms)
     string details = 7;             // Optional explanation
-}
-
-// ---------------- AwarenessUnsubscribe ----------------
-// Client requests to unsubscribe from another user's Awareness updates.
-message AwarenessUnsubscribe {
-    Identity from = 1;
-    Identity to = 2;
-    string tracking_id = 3;         // Correlates request ↔ response/error
-    int32 type = 4;                 // 1=UNSUBSCRIBE, 2=UNSUBSCRIBED, 3=ERROR
-    int64 timestamp = 5;
-    string details = 6;             // Optional explanation
 }
 
 // ---------------- Logout ----------------
@@ -204,11 +193,10 @@ message MessageScheme {
         PingPong ping_pong                            = 3;
         TokenRevoke token_revoke                      = 4;
         TokenRefresh token_refresh                    = 5;
-        AwarenessSubscribe awareness_subscribe        = 6;
-        AwarenessUnsubscribe awareness_unsubscribe    = 7;
-        Logout logout                                 = 8;
-        ErrorMessage error                            = 9;
-        Body body                                     = 10;  // Body container for batched stanzas
-        Message chat_message                          = 11;  // Chat or notification message
+        AwarenessRoster awareness_roster              = 6;
+        Logout logout                                 = 7;
+        ErrorMessage error                            = 8;
+        Body body                                     = 9;  // Body container for batched stanzas
+        Message chat_message                          = 10;  // Chat or notification message
     }
 }
