@@ -1,53 +1,54 @@
 defmodule Storage.Subscriber do
   @moduledoc """
-  Manage subscribers and their statuses in Mnesia.
+  Manages subscribers and their statuses in Mnesia.
 
-  Subscriber table structure:
-    - key
-    - owner_eid
-    - subscriber_eid
-    - status (1: online / 2: offline)
-    - blocked (true / false)
-    - inserted_at (timestamp)
-    - last_seen (timestamp)
+  Main table (:subscribers)
+    - id            : composite key {owner_id, subscriber_id}
+    - owner_id      : owner identifier
+    - subscriber_id : subscriber identifier
+    - status        : :online / :offline
+    - blocked       : boolean
+    - inserted_at   : timestamp
+    - last_seen     : timestamp
 
-  Secondary index table:
-    - owner_eid
-    - subscriber_eid
+  Index table (:subscriber_index)
+    - owner_id
+    - subscriber_id
   """
 
   require Logger
 
-  @subscriber_table :subscriber
+  @subscriber_table :subscribers
   @subscriber_index_table :subscriber_index
 
+
   # -----------------------------
-  # Insert subscriber
+  # Add subscriber
   # -----------------------------
   def add_subscriber(%{
-        owner_eid: owner,
-        subscriber_eid: sub,
+        owner_id: owner,
+        subscriber_id: sub,
         status: status,
         blocked: blocked,
         inserted_at: inserted,
         last_seen: last_seen
       }) do
-    key = {owner, sub}  # composite key
+    id = {owner, sub}
 
     :mnesia.transaction(fn ->
-      :mnesia.write({@subscriber_table, key, owner, sub, status, blocked, inserted, last_seen})
+      :mnesia.write({@subscriber_table, id, owner, sub, status, blocked, inserted, last_seen})
       :mnesia.write({@subscriber_index_table, owner, sub})
     end)
   end
 
   # -----------------------------
-  # Get subscriber by composite key
+  # Get single subscriber
   # -----------------------------
-  def get_subscriber(owner_eid, subscriber_eid) do
-    key = {owner_eid, subscriber_eid}
+  def get_subscriber(owner_id, subscriber_id) do
+    id = {owner_id, subscriber_id}
 
     :mnesia.transaction(fn ->
-      case :mnesia.read({@subscriber_table, key}) do
+      case :mnesia.read({@subscriber_table, id}) do
         [] -> nil
         [record] -> record
       end
@@ -58,16 +59,17 @@ defmodule Storage.Subscriber do
     end
   end
 
-  def update_subscriber(owner_eid, subscriber_eid, new_status, blocked \\ false) do
-    key = {owner_eid, subscriber_eid}
-    now = DateTime.utc_now()
-
-    case Storage.Subscriber.get_subscriber(owner_eid, subscriber_eid) do
+  # -----------------------------
+  # Update subscriber
+  # -----------------------------
+  def update_subscriber(owner_id, subscriber_id, new_status, blocked \\ false) do
+    case get_subscriber(owner_id, subscriber_id) do
       nil ->
         {:error, :not_found}
 
-      {:subscriber, ^key, owner, sub, _old_status, _old_blocked, _inserted_at, _last_seen} ->
-        record = {@subscriber_table, key, owner, sub, new_status, blocked, now, now}
+      {@subscriber_table, {^owner_id, ^subscriber_id} = id, owner, sub, _old_status, _old_blocked, _inserted, _last_seen} ->
+        now = DateTime.utc_now()
+        record = {@subscriber_table, id, owner, sub, new_status, blocked, now, now}
 
         :mnesia.transaction(fn ->
           :mnesia.write(record)
@@ -79,65 +81,64 @@ defmodule Storage.Subscriber do
     end
   end
 
+  # -----------------------------
+  # Fetch all subscriber IDs for an owner
+  # -----------------------------
+  def fetch_subscriber_ids(owner_id) do
+    match_spec = [{{@subscriber_index_table, owner_id, :"$1"}, [], [:"$1"]}]
 
-
-  @doc """
-  Fetch all subscriber records for a given owner_eid.
-  Uses the subscriber_index table to find all subscriber_eids,
-  then retrieves the full subscriber record from the subscriber table.
-  """
-  def fetch_subscribers_by_owner(owner_eid) do
     :mnesia.transaction(fn ->
-      # Step 1: Get all subscriber_eid values for this owner
-      :mnesia.match_object({@subscriber_index_table, owner_eid, :_})
+      :mnesia.select(@subscriber_index_table, match_spec)
     end)
     |> case do
-      {:atomic, []} ->
-        []
+      {:atomic, ids} -> ids
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
 
-      {:atomic, index_records} ->
-        # index_records = [{:subscriber_index, owner_eid, subscriber_eid}, ...]
-        index_records
-        |> Enum.map(fn {@subscriber_index_table, ^owner_eid, subscriber_eid} ->
-          get_subscriber(owner_eid, subscriber_eid)
+  # -----------------------------
+  # Fetch all subscribers for an owner (full records)
+  # -----------------------------
+  def fetch_all_subscribers(owner_id) do
+    fetch_subscriber_ids(owner_id)
+    |> case do
+      [] -> []
+      ids ->
+        Enum.map(ids, fn sub_id ->
+          get_subscriber(owner_id, sub_id)
         end)
         |> Enum.reject(&is_nil/1)
-
-      {:aborted, reason} ->
-        {:error, reason}
     end
   end
 
-  def fetch_subscriber_ids_by_owner_all_arrays(owner_eid) do
-    :mnesia.transaction(fn ->
-      # Fetch all subscriber_eid values directly from the index
-      :mnesia.match_object({@subscriber_index_table, owner_eid, :_})
-    end)
-    |> case do
-      {:atomic, []} ->
-        []
-
-      {:atomic, index_records} ->
-        # Extract subscriber_eid only
-        Enum.map(index_records, fn {@subscriber_index_table, ^owner_eid, subscriber_eid} ->
-          subscriber_eid
-        end)
-
-      {:aborted, reason} ->
-        {:error, reason}
-    end
+  # -----------------------------
+  # Fetch all subscriber IDs (legacy function name)
+  # -----------------------------
+  def fetch_subscriber_ids_by_owner_all_arrays(owner_id) do
+    fetch_subscriber_ids(owner_id)
   end
+
+  # -----------------------------
+  # Fetch subscribers for an owner (new function)
+  # -----------------------------
+  def fetch_subscribers_by_owner(owner_id) do
+    fetch_all_subscribers(owner_id)
+  end
+
 
 end
+
 
 
 # Enum.each(Storage.Subscriber.fetch_subscriber_ids_by_owner("a@domain.com"), fn sub_id ->
 #   Phoenix.PubSub.broadcast(MyApp.PubSub, "TOPIC:#{sub_id}", {:message, "Hello!"})
 # end)
 
-
-
 # Storage.Subscriber.fetch_subscribers_by_owner("a@domain.com")
 # Storage.Subscriber.fetch_subscriber_ids_by_owner_all_arrays("a@domain.com")
 # Storage.Subscriber.get_subscriber("b@domain.com", "a@domain.com") 
 # Storage.Subscriber.get_subscriber("a@domain.com", "b@domain.com") 
+# Storage.Subscriber.fetch_all_subscribers("b@domain.com")
+
+
+# Storage.Subscriber.update_subscriber("a@domain.com", "b@domain.com", "ONLINE")

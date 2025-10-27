@@ -5,12 +5,12 @@ defmodule Storage.SubscriberSeeder do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     subscribers = [
-      %{owner_eid: "a@domain.com", subscriber_eid: "b@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
-      %{owner_eid: "b@domain.com", subscriber_eid: "a@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
-      %{owner_eid: "a@domain.com", subscriber_eid: "c@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
-      %{owner_eid: "b@domain.com", subscriber_eid: "c@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
-      %{owner_eid: "c@domain.com", subscriber_eid: "a@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
-      %{owner_eid: "c@domain.com", subscriber_eid: "b@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now}
+      %{owner_id: "a@domain.com", subscriber_id: "b@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
+      %{owner_id: "b@domain.com", subscriber_id: "a@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
+      %{owner_id: "a@domain.com", subscriber_id: "c@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
+      %{owner_id: "b@domain.com", subscriber_id: "c@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
+      %{owner_id: "c@domain.com", subscriber_id: "a@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now},
+      %{owner_id: "c@domain.com", subscriber_id: "b@domain.com", status: :online, blocked: false, inserted_at: now, last_seen: now}
     ]
 
     Enum.each(subscribers, &Subscriber.add_subscriber/1)
@@ -19,14 +19,17 @@ defmodule Storage.SubscriberSeeder do
   def test_update do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    # Example: update subscriber b@domain.com of owner a@domain.com
-    Subscriber.update_subscriber(
-      "a@domain.com",
-      "b@domain.com",
-      %{status: :offline, inserted_at: now, last_seen: now},
-      true
-    )
+    # Update subscriber b@domain.com of owner a@domain.com
+    case Subscriber.update_subscriber("a@domain.com", "b@domain.com", :offline, true) do
+      {:ok, updated_record} ->
+        IO.inspect(updated_record, label: "Updated Subscriber")
+
+      {:error, reason} ->
+        IO.puts("Failed to update subscriber: #{inspect(reason)}")
+    end
   end
+
+
 end
 
 

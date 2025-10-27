@@ -44,8 +44,6 @@ defmodule Bimip.Service.Master do
     # # Start initial device
     GenServer.cast(self(), {:start_device, {eid, device_id, exp, ws_pid}})
 
-
-
     {:ok,
       %{
         eid: eid,
@@ -166,8 +164,8 @@ defmodule Bimip.Service.Master do
       1 -> 
         
         DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
-        GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
-        GenServer.cast(self(), {:fetch_batch_notification, from_eid, from_device_id} )
+        # GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
+        # GenServer.cast(self(), {:fetch_batch_notification, from_eid, from_device_id} )
         Broker.group(from_eid, data, awareness)
       
       s when s in 2..5 ->
@@ -183,12 +181,12 @@ defmodule Bimip.Service.Master do
  
       s when s in 6..11 ->
         # System Awareness
-        # 6..10 → TYPING, RECORDING
+        # 6..11 → TYPING, RECORDING
         # Send pair-to-pair awareness only
         # send_pair_awareness(from, to, s)
         # send_chat_notification(from, to, s)
         DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(1))
-        GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
+        # GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
         Broker.peer(to_eid, data, awareness)
         
       _ ->
@@ -204,9 +202,15 @@ defmodule Bimip.Service.Master do
 
     case msg.payload do
       {:awareness, %Bimip.Awareness{} = awareness_msg_response} ->
-        if awareness_msg_response.status in [1, 2] do
-          Subscriber.update_subscriber(awareness_msg_response.to.eid, awareness_msg_response.from.eid, awareness_msg_response.status)
+        
+        case awareness_msg_response.status do
+          
+          s when s in 1..2 ->
+            Storage.Subscriber.update_subscriber( eid, awareness_msg_response.from.eid, StatusMapper.status_name(awareness_msg_response.status))
+          s when s in 6..10 ->
+            Storage.Subscriber.update_subscriber( eid, awareness_msg_response.from.eid, "ONLINE")
         end
+        
         AwarenessFanOut.awareness(awareness_msg, eid)
         {:noreply, state}
       {:error, reason} ->
@@ -238,31 +242,38 @@ defmodule Bimip.Service.Master do
   end
 
   @impl true
-  def handle_cast({:fetch_batch_chat, eid, devices},  state) do
-    # fan out from here
+  def handle_cast({:fetch_batch_chat, eid, devices}, state) do
     case BimipLog.fetch(eid, devices, 1) do
-      {_, _, {:ok, %{messages: messages}}} ->
-        Enum.each(messages, fn msg ->
-          IO.inspect(msg)
-        end)
+      {_, _, {:ok, %{messages: messages}}} when is_list(messages) ->
+        Enum.each(messages, &IO.inspect(&1))
+
+      {_, _, {:ok, %{messages: []}}} ->
+        # no messages to process
+        :ok
 
       other ->
         IO.puts("Unexpected response: #{inspect(other)}")
     end
+
     {:noreply, state}
   end
 
-  def handle_cast({:fetch_batch_notification, eid, devices},  state) do
-    # fan out from here
+  @impl true
+  def handle_cast({:fetch_batch_notification, eid, devices}, state) do
     case BimipLog.fetch(eid, devices, 2) do
-      {_, _, {:ok, %{messages: messages}}} ->
-        Enum.each(messages, fn msg ->
-          IO.inspect(msg)
-        end)
+      {_, _, {:ok, %{messages: messages}}} when is_list(messages) ->
+        Enum.each(messages, &IO.inspect(&1))
+
+      {_, _, {:ok, %{messages: []}}} ->
+        # no messages to process
+        :ok
+
       other ->
         IO.puts("Unexpected response: #{inspect(other)}")
     end
+
     {:noreply, state}
   end
+
 
 end

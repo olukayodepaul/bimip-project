@@ -20,7 +20,10 @@ defmodule Util.StatusMapper do
       5 -> "DND"
       6 -> "TYPING"
       7 -> "RECORDING"
-      8 -> "RESUME"
+      8 -> "FORWARDED"
+      9 -> "DELIVERED"
+      10 -> "READ"
+      11 -> "RESUME"
       _ -> "UNKNOWN"
     end
   end

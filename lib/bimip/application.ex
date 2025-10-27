@@ -11,6 +11,7 @@ defmodule Bimip.Application do
     :mnesia.start()
 
     # Tables
+    ensure_subscriber()
     ensure_device_table()
     ensure_device_index()
     first_segment()
@@ -18,8 +19,8 @@ defmodule Bimip.Application do
     ensure_device_offsets_table()
     ensure_current_segment_table()
     ensure_user_state_table()
-    ensure_subscriber_table()
-    ensure_subscriber_index()
+    
+    
     ensure_user_awareness_table()
     ensure_queue()
     ensure_queuing_index()
@@ -107,24 +108,23 @@ defmodule Bimip.Application do
     ])
   end
 
-  # ----------------------
-  # Subscriber tables
-  # ----------------------
-  defp ensure_subscriber_table do
-    ensure_table(:subscriber, [
-      {:attributes, [:key, :owner_eid, :subscriber_eid, :status, :blocked, :inserted_at, :last_seen]},
-      {:disc_copies, [node()]},
-      {:type, :set}
+  # -----------------------------
+  # Ensure tables exist
+  # -----------------------------
+  def ensure_subscriber do
+    :mnesia.create_table(:subscribers, [
+      {:attributes, [:id, :owner_id, :subscriber_id, :status, :blocked, :inserted_at, :last_seen]},
+      {:type, :set},
+      {:disc_copies, [node()]}
+    ])
+
+    :mnesia.create_table(:subscriber_index, [
+      {:attributes, [:owner_id, :subscriber_id]},
+      {:type, :bag},
+      {:disc_copies, [node()]}
     ])
   end
 
-  defp ensure_subscriber_index do
-    ensure_table(:subscriber_index, [
-      {:attributes, [:owner_eid, :subscriber_eid]},
-      {:disc_copies, [node()]},
-      {:type, :bag}
-    ])
-  end
 
   # ----------------------
   # First / Current segment tables

@@ -60,7 +60,7 @@ message Ack {
 // System Awareness & Message ACK:
 // 6 = TYPING          → User is typing
 // 7 = RECORDING       → User is recording audio/video
-// 11 = FORWARDED      → Message forwarded to another recipient
+// 8 = FORWARDED      → Message forwarded to another recipient
 // 9 = DELIVERED       → Message successfully delivered to recipient
 // 10 = READ           → Message read by recipient
 // 11 = RESUME          → User resumes activity
