@@ -1,18 +1,26 @@
 defmodule BimipLog do
   @moduledoc """
-  Append-only log writer/reader with a sparse index and segment cache for fast seeks.
+  Append-only log writer/reader with sparse index and per-device segment cache.
+
+  - Messages are written to per-user, per-partition log files (segments).
+  - Small metadata (segment pointers, offsets, commit offsets, ack table, segment cache) are stored in Mnesia.
+  - Sparse index entries: <<offset::64, seg::32, pos::64>>
   """
 
   require Logger
 
   @base_dir "data/bimip"
   @index_granularity 1
-  @segment_size_limit 50 # demo; increase in prod
+  @segment_size_limit 50 # demo; increase in production
 
   # ----------------------
   # Public API
   # ----------------------
 
+  @doc """
+  Append a message to the user's partition log.
+  Returns {:ok, offset} or {:error, reason}.
+  """
   @spec write(String.t(), integer(), any(), any(), any()) :: {:ok, non_neg_integer()} | {:error, any()}
   def write(user, partition_id, from, to, payload) do
     with :ok <- ensure_files_exist(user, partition_id),
@@ -33,7 +41,7 @@ defmodule BimipLog do
          :ok <- write_log_entry(fd, record),
          :ok <- File.close(fd) do
 
-      # rollover check
+      # Roll over segment if needed
       case File.stat(qfile) do
         {:ok, stat} when stat.size >= @segment_size_limit ->
           new_seg = seg + 1
@@ -43,7 +51,7 @@ defmodule BimipLog do
         _ -> :ok
       end
 
-      # append to index if needed
+      # Append to sparse index
       if rem(next_offset, @index_granularity) == 0 do
         append_index_file(user, partition_id, seg, next_offset, pos_before)
       end
@@ -60,14 +68,20 @@ defmodule BimipLog do
     end
   end
 
+  @doc """
+  Fetch up to `limit` messages for `device_id` starting at its committed offset + 1.
+  Returns {:ok, %{messages: [...], device_offset: n, ...}} or {:error, reason}
+  """
   @spec fetch(String.t(), String.t(), integer(), non_neg_integer()) :: {:ok, map()} | {:error, any()}
   def fetch(user, device_id, partition_id, limit \\ 10) when limit > 0 do
     with :ok <- ensure_files_exist(user, partition_id),
          :ok <- ensure_device_files_exist(user, device_id, partition_id) do
       last_offset = get_commit_offset(user, device_id, partition_id)
       target_offset = last_offset + 1
+
       current_seg = get_current_segment(user, partition_id)
       first_seg = get_first_segment(user, partition_id)
+
       {_indexed_offset, start_seg, start_pos} = lookup_sparse_index(user, partition_id, target_offset)
 
       {messages, last_offset_read} =
@@ -79,9 +93,23 @@ defmodule BimipLog do
           else
             case File.open(qfile, [:read, :binary]) do
               {:ok, fd} ->
-                result = read_segment_from_fd(fd, target_offset, acc, last, limit, user, partition_id, seg)
+                result =
+                  read_segment_from_fd(
+                    fd,
+                    target_offset,
+                    acc,
+                    last,
+                    limit,
+                    user,
+                    device_id,
+                    partition_id,
+                    seg,
+                    (if seg == start_seg, do: start_pos, else: 0)
+                  )
+
                 File.close(fd)
                 result
+
               {:error, reason} ->
                 Logger.error("Failed to open segment file #{qfile}: #{inspect(reason)}")
                 {:cont, {acc, last}}
@@ -89,7 +117,6 @@ defmodule BimipLog do
           end
         end)
 
-      # persist device offset
       set_device_offset(user, device_id, partition_id, last_offset_read)
 
       {:ok,
@@ -106,27 +133,11 @@ defmodule BimipLog do
   end
 
   # ----------------------
-  # Segment Cache Helpers
+  # Segment read with per-device cache
   # ----------------------
-  defp get_segment_cache(user, partition_id, seg) do
-    key = {user, partition_id, seg}
-    case :mnesia.transaction(fn -> :mnesia.read(:segment_cache, key) end) do
-      {:atomic, [{:segment_cache, ^key, position}]} -> position
-      {:atomic, []} -> 0
-      {:aborted, _} -> 0
-    end
-  end
-
-  defp set_segment_cache(user, partition_id, seg, position) do
-    key = {user, partition_id, seg}
-    :mnesia.transaction(fn -> :mnesia.write({:segment_cache, key, position}) end)
-  end
-
-  # ----------------------
-  # Reading segments
-  # ----------------------
-  defp read_segment_from_fd(fd, target_offset, acc, last, limit, user, partition_id, seg) do
-    start_pos = get_segment_cache(user, partition_id, seg)
+  defp read_segment_from_fd(fd, target_offset, acc, last, limit, user, device_id, partition_id, seg, index_start_pos) do
+    cache_pos = get_segment_cache(user, device_id, partition_id, seg)
+    start_pos = max(index_start_pos, cache_pos)
     :file.position(fd, start_pos)
 
     stream =
@@ -154,9 +165,8 @@ defmodule BimipLog do
         msg -> msg.offset
       end
 
-    # update cache position
     case :file.position(fd, :cur) do
-      {:ok, cur_pos} -> set_segment_cache(user, partition_id, seg, cur_pos)
+      {:ok, cur_pos} -> set_segment_cache(user, device_id, partition_id, seg, cur_pos)
       _ -> :ok
     end
 
@@ -164,110 +174,25 @@ defmodule BimipLog do
   end
 
   # ----------------------
-  # Segment helpers (Mnesia-backed)
+  # Segment cache (per device)
   # ----------------------
-  defp get_current_segment(user, partition_id) do
-    key = {user, partition_id}
-    case :mnesia.transaction(fn -> :mnesia.read(:current_segment, key) end) do
-      {:atomic, [{:current_segment, ^key, seg}]} -> seg
-      {:atomic, []} ->
-        :mnesia.transaction(fn -> :mnesia.write({:current_segment, key, 1}) end)
-        1
-      {:aborted, _} -> 1
-    end
-  end
+  defp get_segment_cache(user, device_id, partition_id, seg) do
+    key = {user, device_id, partition_id, seg}
 
-  defp set_current_segment(user, partition_id, seg) do
-    key = {user, partition_id}
-    :mnesia.transaction(fn -> :mnesia.write({:current_segment, key, seg}) end)
-  end
-
-  defp get_first_segment(user, partition_id) do
-    key = {user, partition_id}
-    case :mnesia.transaction(fn -> :mnesia.read(:first_segment, key) end) do
-      {:atomic, [{:first_segment, ^key, seg}]} -> seg
-      {:atomic, []} -> 1
-      {:aborted, _} -> 1
-    end
-  end
-
-  defp set_first_segment(user, partition_id, seg) do
-    key = {user, partition_id}
-    :mnesia.transaction(fn -> :mnesia.write({:first_segment, key, seg}) end)
-  end
-
-  # ----------------------
-  # Device offsets
-  # ----------------------
-  defp get_device_offset(user, device_id, partition_id) do
-    key = {user, device_id, partition_id}
-    case :mnesia.transaction(fn -> :mnesia.read(:device_offsets, key) end) do
-      {:atomic, [{:device_offsets, ^key, offset}]} -> offset
-      {:atomic, []} ->
-        :mnesia.transaction(fn -> :mnesia.write({:device_offsets, key, 0}) end)
-        0
+    case :mnesia.transaction(fn -> :mnesia.read(:segment_cache, key) end) do
+      {:atomic, [{:segment_cache, ^key, pos}]} -> pos
+      {:atomic, []} -> 0
       {:aborted, _} -> 0
     end
   end
 
-  defp set_device_offset(user, device_id, partition_id, offset) do
-    key = {user, device_id, partition_id}
-    :mnesia.transaction(fn -> :mnesia.write({:device_offsets, key, offset}) end)
+  defp set_segment_cache(user, device_id, partition_id, seg, position) do
+    key = {user, device_id, partition_id, seg}
+    :mnesia.transaction(fn -> :mnesia.write({:segment_cache, key, position}) end)
   end
 
   # ----------------------
-  # Sparse index append & lookup
-  # ----------------------
-  defp append_index_file(user, partition_id, seg, offset, pos) do
-    idx_file = index_file(user, partition_id)
-    case File.open(idx_file, [:append, :binary]) do
-      {:ok, fd} ->
-        :ok = IO.binwrite(fd, <<offset::64, seg::32, pos::64>>)
-        File.close(fd)
-        :ok
-      {:error, reason} ->
-        Logger.error("Failed to append index: #{inspect(reason)}")
-        {:error, reason}
-    end
-  end
-
-  defp lookup_sparse_index(user, partition_id, target_offset) do
-    idx = index_file(user, partition_id)
-    case File.stat(idx) do
-      {:ok, %{size: size}} when size >= 20 ->
-        entries = div(size, 20)
-        case File.open(idx, [:read, :binary]) do
-          {:ok, fd} ->
-            res = binary_search_index_fd(fd, target_offset, 0, entries - 1, {0, 1, 0})
-            File.close(fd)
-            res
-          {:error, _} -> {0, 1, 0}
-        end
-      _ -> {0, 1, 0}
-    end
-  end
-
-  defp binary_search_index_fd(_fd, _target, low, high, best) when low > high, do: best
-  defp binary_search_index_fd(fd, target_offset, low, high, best) do
-    mid = div(low + high, 2)
-    pos = mid * 20
-    case :file.position(fd, pos) do
-      {:ok, _} ->
-        case :file.read(fd, 20) do
-          {:ok, <<offset::64, seg::32, pos64::64>>} ->
-            cond do
-              offset == target_offset -> {offset, seg, pos64}
-              offset < target_offset -> binary_search_index_fd(fd, target_offset, mid + 1, high, {offset, seg, pos64})
-              offset > target_offset -> binary_search_index_fd(fd, target_offset, low, mid - 1, best)
-            end
-          _ -> best
-        end
-      _ -> best
-    end
-  end
-
-  # ----------------------
-  # Log helpers
+  # Log entry read/write
   # ----------------------
   defp write_log_entry(fd, record) do
     encoded = :erlang.term_to_binary(record)
@@ -293,23 +218,70 @@ defmodule BimipLog do
   end
 
   # ----------------------
+  # Sparse index
+  # ----------------------
+  defp append_index_file(user, partition_id, seg, offset, pos) do
+    idx_file = index_file(user, partition_id)
+
+    case File.open(idx_file, [:append, :binary]) do
+      {:ok, fd} ->
+        :ok = IO.binwrite(fd, <<offset::64, seg::32, pos::64>>)
+        File.close(fd)
+        :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp lookup_sparse_index(user, partition_id, target_offset) do
+    idx = index_file(user, partition_id)
+
+    case File.stat(idx) do
+      {:ok, %{size: size}} when size >= 20 ->
+        entries = div(size, 20)
+        case File.open(idx, [:read, :binary]) do
+          {:ok, fd} ->
+            res = binary_search_index_fd(fd, target_offset, 0, entries - 1, {0, 1, 0})
+            File.close(fd)
+            res
+          {:error, _} -> {0, 1, 0}
+        end
+      _ -> {0, 1, 0}
+    end
+  end
+
+  defp binary_search_index_fd(_fd, _target, low, high, best) when low > high, do: best
+
+  defp binary_search_index_fd(fd, target_offset, low, high, best) do
+    mid = div(low + high, 2)
+    pos = mid * 20
+
+    case :file.position(fd, pos) do
+      {:ok, _} ->
+        case :file.read(fd, 20) do
+          {:ok, <<offset::64, seg::32, pos64::64>>} ->
+            cond do
+              offset == target_offset -> {offset, seg, pos64}
+              offset < target_offset -> binary_search_index_fd(fd, target_offset, mid + 1, high, {offset, seg, pos64})
+              offset > target_offset -> binary_search_index_fd(fd, target_offset, low, mid - 1, best)
+            end
+          _ -> best
+        end
+      _ -> best
+    end
+  end
+
+  # ----------------------
   # File helpers
   # ----------------------
   defp user_dir(user), do: Path.join(@base_dir, user)
   defp queue_file(user, partition_id, seg), do: Path.join(user_dir(user), "queue_#{partition_id}_#{seg}.log")
   defp index_file(user, partition_id), do: Path.join(user_dir(user), "index_#{partition_id}.idx")
 
-  defp ensure_files_exist(user, _partition_id) do
-    case File.mkdir_p(user_dir(user)) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp ensure_files_exist(user, _partition_id), do: File.mkdir_p(user_dir(user))
 
   defp ensure_device_files_exist(user, device_id, partition_id) do
     offset_file = device_offset_file(user, device_id, partition_id)
     idx_file = device_index_file(user, device_id, partition_id)
-
     unless File.exists?(offset_file), do: File.write!(offset_file, :erlang.term_to_binary(%{offset: 0}))
     unless File.exists?(idx_file), do: File.write!(idx_file, "")
     :ok
@@ -341,7 +313,62 @@ defmodule BimipLog do
   end
 
   # ----------------------
-  # ACKs & commit offsets
+  # Device offsets
+  # ----------------------
+  defp get_device_offset(user, device_id, partition_id) do
+    key = {user, device_id, partition_id}
+    case :mnesia.transaction(fn -> :mnesia.read(:device_offsets, key) end) do
+      {:atomic, [{:device_offsets, ^key, offset}]} -> offset
+      {:atomic, []} ->
+        :mnesia.transaction(fn -> :mnesia.write({:device_offsets, key, 0}) end)
+        0
+      {:aborted, _} -> 0
+    end
+  end
+
+  defp set_device_offset(user, device_id, partition_id, offset) do
+    key = {user, device_id, partition_id}
+    :mnesia.transaction(fn -> :mnesia.write({:device_offsets, key, offset}) end)
+  end
+
+  # ----------------------
+  # First segment
+  # ----------------------
+  def set_first_segment(user, partition_id, seg) do
+    key = {user, partition_id}
+    :mnesia.transaction(fn -> :mnesia.write({:first_segment, key, seg}) end)
+  end
+
+  def get_first_segment(user, partition_id) do
+    key = {user, partition_id}
+    case :mnesia.transaction(fn -> :mnesia.read(:first_segment, key) end) do
+      {:atomic, [{:first_segment, ^key, seg}]} -> seg
+      {:atomic, []} -> 1
+      {:aborted, _} -> 1
+    end
+  end
+
+  # ----------------------
+  # Current segment
+  # ----------------------
+  defp get_current_segment(user, partition_id) do
+    key = {user, partition_id}
+    case :mnesia.transaction(fn -> :mnesia.read(:current_segment, key) end) do
+      {:atomic, [{:current_segment, ^key, seg}]} -> seg
+      {:atomic, []} ->
+        :mnesia.transaction(fn -> :mnesia.write({:current_segment, key, 1}) end)
+        1
+      {:aborted, _} -> 1
+    end
+  end
+
+  defp set_current_segment(user, partition_id, seg) do
+    key = {user, partition_id}
+    :mnesia.transaction(fn -> :mnesia.write({:current_segment, key, seg}) end)
+  end
+
+  # ----------------------
+  # ACKs and commit offsets
   # ----------------------
   def ack_message(user, device_id, partition_id, offset) do
     commit_ack(user, device_id, partition_id, offset)
@@ -377,9 +404,7 @@ defmodule BimipLog do
     key = {user, device_id, partition_id}
     case :mnesia.transaction(fn -> :mnesia.read(:commit_offsets, key) end) do
       {:atomic, [{:commit_offsets, ^key, offset}]} -> offset
-      {:atomic, []} ->
-        :mnesia.transaction(fn -> :mnesia.write({:commit_offsets, key, 0}) end)
-        0
+      {:atomic, []} -> 0
       {:aborted, _} -> 0
     end
   end
@@ -389,6 +414,7 @@ defmodule BimipLog do
     :mnesia.transaction(fn -> :mnesia.write({:commit_offsets, key, offset}) end)
   end
 end
+
 
 
 # {:ok, offset} = BimipLog.write("user1", 1, "alice", "bob", "Hello World")
