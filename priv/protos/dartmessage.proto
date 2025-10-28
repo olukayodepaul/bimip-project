@@ -151,17 +151,37 @@ message TokenRefresh {
     string details = 5;             // Optional explanation
 }
 
-// ---------------- AwarenessRoster ----------------
-// Client requests to subscribe to another user's Awareness updates.
-message AwarenessRoster {
-    Identity from = 1;              // Sender of the subscription request
-    Identity to = 2;                // Target user
-    string tracking_id = 3;         // Correlation ID to match request ↔ response/deny/error
-    bool one_way = 4;               // Optional: true = one-way subscription; default=false (two-way)
-    int32 type = 5;                 // 1=SUBSCRIBE, 2=SUBSCRIBED, 3=DENY, 4=UNSUBSCRIBE, 5=UNSUBSCRIBED, 6=ERROR
-    int64 timestamp = 6;            // Unix UTC timestamp (ms)
-    string details = 7;             // Optional explanation
+// ---------------- AwarenessContact ----------------
+// Used for both negotiation and stored roster state.
+message AwarenessContact {
+    Identity from = 1;              // Owner of the relationship (list holder)
+    Identity to = 2;                // The contact target
+    string tracking_id = 3;         // For matching responses
+
+    int32 relationship = 4;         // 1 = UNILATERAL, 2 = MUTUAL
+
+    int32 action = 5;               // 1=REQUEST (SUBSCRIBE)
+                                    // 2=ACCEPT (SUBSCRIBED)
+                                    // 3=DENY
+                                    // 4=REMOVE (UNSUBSCRIBE)
+                                    // 5=REMOVED (UNSUBSCRIBED)
+                                    // 6=ERROR
+
+    int64 timestamp = 6;
+    string details = 7;
 }
+
+
+// ---------------- AwarenessVisibility ----------------
+// User toggles whether their own Awareness signals are visible to others.
+// This affects only the sender's broadcast behavior, not roster/subscriptions.
+message AwarenessVisibility {
+    Identity from = 1;        // The user changing their own visibility
+    int32 type = 2;           // 1 = ENABLED, 2 = DISABLED, 3 = ERROR
+    int64 timestamp = 3;      // Unix UTC timestamp (ms)
+    string details = 4;       // Optional reason, explanation, or error description
+}
+
 
 // ---------------- Logout ----------------
 // Uses both eid and connection_resource_id to log out a specific device.
@@ -178,9 +198,9 @@ message Logout {
 // This is used for batching multiple stanzas into a single transport message
 // to reduce network overhead and increase efficiency.
 message Body {
-    int64 route = 1;                // Logical stanza route, e.g., 1001=Awareness
-    repeated Awareness awareness_list = 2; // Only Awareness list for now
-    int64 timestamp = 3;            // Creation time
+    int64 route = 1;                        // Logical stanza route, e.g., 1001=Awareness
+    repeated Awareness awareness_list = 2;  // Only Awareness list for now
+    int64 timestamp = 3;                    // Creation time
 }
 
 // ---------------- MessageScheme ----------------
@@ -193,7 +213,7 @@ message MessageScheme {
         PingPong ping_pong                            = 3;
         TokenRevoke token_revoke                      = 4;
         TokenRefresh token_refresh                    = 5;
-        AwarenessRoster awareness_roster              = 6;
+        AwarenessVisibility awareness_visibility      = 6;
         Logout logout                                 = 7;
         ErrorMessage error                            = 8;
         Body body                                     = 9;  // Body container for batched stanzas

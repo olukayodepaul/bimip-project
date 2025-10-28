@@ -7,26 +7,16 @@ defmodule Bimip.Application do
   def start(_type, _args) do
     :mnesia.stop()
     # :mnesia.delete_schema([node()])
-    :mnesia.create_schema([node()])
+    case :mnesia.create_schema([node()]) do
+      :ok -> Logger.info("Schema created.")
+      {:error, {_, {:already_exists, _}}} -> :ok
+    end
     :mnesia.start()
+    :mnesia.wait_for_tables([], 5000)
 
     # Tables
-    ensure_subscriber()
-    ensure_device_table()
-    ensure_device_index()
-    first_segment()
-    ensure_commit_offsets_table()
-    ensure_ack_table()
-    ensure_next_offsets_table()
-    ensure_device_offsets_table()
-    ensure_current_segment_table()
-    ensure_user_state_table()
-    
-    
-    ensure_user_awareness_table()
-    ensure_queue()
-    ensure_queuing_index()
-
+    create_all_bimip_tables()
+ 
     # TCP / HTTP
     tcp_connection =
       if Connections.secure_tls?() do
@@ -64,144 +54,43 @@ defmodule Bimip.Application do
     ])
   end
 
+  defp create_all_bimip_tables do
+    create(:registration, [:key, :eid,  :awareness_permission, :display_name,  :timestamp], :set)
+    create(:device, [:key, :payload, :last_offset, :timestamp], :set)
+    create(:device_index, [:eid, :device_id], :bag)
+    create(:subscribers, [:id, :owner_id, :subscriber_id, :status, :blocked, :inserted_at, :last_seen], :set)
+    create(:subscriber_index, [:owner_id, :subscriber_id], :bag)
+    
+    create(:first_segment, [:key, :segment], :set)
+    create(:current_segment, [:key, :segment], :set)
+    create(:next_offsets, [:key, :offset], :set)
+    create(:device_offsets, [:key, :offset], :set)
+    create(:ack_table, [:key, :last_ack], :set)
+    create(:commit_offsets, [:key, :offset], :set)
+    create(:segment_cache, [:key, :segment, :position], :set)
+
+    
+  end
+
   # ----------------------
-  # Generic table creator
+  # GENERIC TABLE CREATOR
   # ----------------------
-  defp ensure_table(table, opts) do
-    case :mnesia.create_table(table, opts) do
-      {:atomic, :ok} -> Logger.info("✅ Table #{inspect(table)} created")
-      {:aborted, {:already_exists, ^table}} -> Logger.info("ℹ️ Table #{inspect(table)} already exists")
-      other -> Logger.error("⚠️ Failed to create table #{inspect(table)}: #{inspect(other)}")
+  defp create(table_name, attributes, type) do
+    case :mnesia.create_table(table_name, [
+          {:attributes, attributes},
+          {:disc_copies, [node()]},
+          {:type, type}
+        ]) do
+      {:atomic, :ok} ->
+        Logger.info(" Created table #{inspect(table_name)}")
+
+      {:aborted, {:already_exists, _}} ->
+        Logger.debug("Table #{inspect(table_name)} already exists. Skipping.")
+
+      other ->
+        Logger.error(" Failed creating #{inspect(table_name)}: #{inspect(other)}")
+        other
     end
   end
 
-  # ----------------------
-  # Device & Index tables
-  # ----------------------
-  defp ensure_device_table do
-    ensure_table(:device, [
-      {:attributes, [:key, :payload, :last_offset, :timestamp]},
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-  defp ensure_device_index do
-    ensure_table(:device_index, [
-      {:attributes, [:eid, :device_id]},
-      {:disc_copies, [node()]},
-      {:type, :bag} # multiple devices per eid
-    ])
-  end
-
-  defp ensure_user_awareness_table do
-    ensure_table(:user_awareness_table, [
-      {:attributes, [:key, :awareness, :timestamp]},
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-  defp ensure_user_state_table do
-    ensure_table(:track_eid_state, [
-      {:attributes, [:eid, :state]},
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-  # -----------------------------
-  # Ensure tables exist
-  # -----------------------------
-  def ensure_subscriber do
-    :mnesia.create_table(:subscribers, [
-      {:attributes, [:id, :owner_id, :subscriber_id, :status, :blocked, :inserted_at, :last_seen]},
-      {:type, :set},
-      {:disc_copies, [node()]}
-    ])
-
-    :mnesia.create_table(:subscriber_index, [
-      {:attributes, [:owner_id, :subscriber_id]},
-      {:type, :bag},
-      {:disc_copies, [node()]}
-    ])
-  end
-
-
-  # ----------------------
-  # First / Current segment tables
-  # ----------------------
-  defp first_segment do
-    ensure_table(:first_segment, [
-      {:attributes, [:key, :segment]}, # key = {user, partition_id}
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-  defp ensure_current_segment_table do
-    ensure_table(:current_segment, [
-      {:attributes, [:key, :segment]}, # key = {user, partition_id}
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-  # ----------------------
-  # Next offsets (per user + partition)
-  # ----------------------
-  defp ensure_next_offsets_table do
-    ensure_table(:next_offsets, [
-      {:attributes, [:key, :offset]}, # key = {user, partition_id}
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-  # ----------------------
-  # Device offsets (per user + device + partition)
-  # ----------------------
-  defp ensure_device_offsets_table do
-    ensure_table(:device_offsets, [
-      {:attributes, [:key, :offset]}, # key = {user, device_id, partition_id}
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-  defp ensure_ack_table do
-    ensure_table(:ack_table, [
-      {:attributes, [:key, :last_ack]}, # key = {user, device_id, partition_id}
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-  defp ensure_commit_offsets_table do
-    ensure_table(:commit_offsets, [
-      {:attributes, [:key, :offset]}, # key = {user, device_id, partition_id}
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-
-  # ----------------------
-  # Queue & Queue index tables
-  # ----------------------
-  defp ensure_queue do
-    ensure_table(:queue, [
-      {:attributes, [:key, :payload, :timestamp]},
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
-
-  defp ensure_queuing_index do
-    ensure_table(:queuing_index, [
-      {:attributes, [:eid, :max_id, :last_offset]},
-      {:disc_copies, [node()]},
-      {:type, :set}
-    ])
-  end
 end

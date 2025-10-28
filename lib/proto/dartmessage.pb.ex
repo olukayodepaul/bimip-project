@@ -138,7 +138,7 @@ defmodule Bimip.TokenRefresh do
   field :details, 5, type: :string
 end
 
-defmodule Bimip.AwarenessSubscribe do
+defmodule Bimip.AwarenessContact do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
@@ -146,23 +146,21 @@ defmodule Bimip.AwarenessSubscribe do
   field :from, 1, type: Bimip.Identity
   field :to, 2, type: Bimip.Identity
   field :tracking_id, 3, type: :string, json_name: "trackingId"
-  field :one_way, 4, type: :bool, json_name: "oneWay"
-  field :type, 5, type: :int32
+  field :relationship, 4, type: :int32
+  field :action, 5, type: :int32
   field :timestamp, 6, type: :int64
   field :details, 7, type: :string
 end
 
-defmodule Bimip.AwarenessUnsubscribe do
+defmodule Bimip.AwarenessVisibility do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
   field :from, 1, type: Bimip.Identity
-  field :to, 2, type: Bimip.Identity
-  field :tracking_id, 3, type: :string, json_name: "trackingId"
-  field :type, 4, type: :int32
-  field :timestamp, 5, type: :int64
-  field :details, 6, type: :string
+  field :type, 2, type: :int32
+  field :timestamp, 3, type: :int64
+  field :details, 4, type: :string
 end
 
 defmodule Bimip.Logout do
@@ -200,18 +198,13 @@ defmodule Bimip.MessageScheme do
   field :token_revoke, 4, type: Bimip.TokenRevoke, json_name: "tokenRevoke", oneof: 0
   field :token_refresh, 5, type: Bimip.TokenRefresh, json_name: "tokenRefresh", oneof: 0
 
-  field :awareness_subscribe, 6,
-    type: Bimip.AwarenessSubscribe,
-    json_name: "awarenessSubscribe",
+  field :awareness_visibility, 6,
+    type: Bimip.AwarenessVisibility,
+    json_name: "awarenessVisibility",
     oneof: 0
 
-  field :awareness_unsubscribe, 7,
-    type: Bimip.AwarenessUnsubscribe,
-    json_name: "awarenessUnsubscribe",
-    oneof: 0
-
-  field :logout, 8, type: Bimip.Logout, oneof: 0
-  field :error, 9, type: Bimip.ErrorMessage, oneof: 0
-  field :body, 10, type: Bimip.Body, oneof: 0
-  field :chat_message, 11, type: Bimip.Message, json_name: "chatMessage", oneof: 0
+  field :logout, 7, type: Bimip.Logout, oneof: 0
+  field :error, 8, type: Bimip.ErrorMessage, oneof: 0
+  field :body, 9, type: Bimip.Body, oneof: 0
+  field :chat_message, 10, type: Bimip.Message, json_name: "chatMessage", oneof: 0
 end
