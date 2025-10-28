@@ -3,14 +3,13 @@ defmodule Bimip.Service.Master do
   alias Bimip.Registry
   alias Bimip.Device.Supervisor
   alias Storage.DeviceStorage
-  alias Bimip.Broker
   alias Storage.DeviceStateChange
+  alias Bimip.Broker
   alias Settings.ServerState
   alias Route.AwarenessFanOut
-  alias ThrowAwareness
-  alias Storage.Subscriber
   alias ThrowAwarenessSchema
   alias Util.StatusMapper
+  alias Storage.Subscriber
   alias BimipLog
   require Logger
 
@@ -18,7 +17,7 @@ defmodule Bimip.Service.Master do
   @fetch_interval 100 # milliseconds between fetch batches
 
   # ----------------------
-  # GenServer start
+  # Start
   # ----------------------
   def start_link(%{eid: eid, device_id: device_id, exp: exp, ws_pid: ws_pid} = state) do
     GenServer.start_link(__MODULE__, state,
@@ -28,8 +27,7 @@ defmodule Bimip.Service.Master do
 
   @impl true
   def init(%{eid: eid, device_id: device_id, exp: exp, ws_pid: ws_pid} = state) do
-    # Fetch awareness level for user
-    Broker.presence_subscriber(eid)
+    # Fetch user awareness level
     level =
       case DeviceStorage.fetch_user_awareness(eid) do
         {:ok, level} -> level
@@ -41,7 +39,7 @@ defmodule Bimip.Service.Master do
           2
       end
 
-    # # Start initial device
+    # Start initial device session
     GenServer.cast(self(), {:start_device, {eid, device_id, exp, ws_pid}})
 
     {:ok,
@@ -92,41 +90,25 @@ defmodule Bimip.Service.Master do
       inserted_at: now
     }
 
-    # Register in storage
     DeviceStorage.register_device_session(device_id, eid, payload)
-
-    # Broadcast awareness
-    Broker.group(
-      eid,
-      ThrowAwarenessSchema.success(eid, device_id),
-      state.awareness
-    )
-
-  
+    Broker.group(eid, ThrowAwarenessSchema.success(eid, device_id), state.awareness)
     {:noreply, state}
   end
 
   # ----------------------
   # Client pong handler
   # ----------------------
+  @impl true
   def handle_cast({:client_send_pong, {eid, device_id, status}}, %{force_stale: force_stale, awareness: awareness} = state) do
     now = DateTime.utc_now()
-    DeviceStorage.update_device_status(device_id, eid, "PONG", status)
+    DeviceStorage.update_device_status(device_id, eid, "PONG", StatusMapper.status_name(status))
 
     case Storage.DeviceStateChange.track_state_change(eid) do
       {:changed, _user_status, _online_devices} ->
-        # awareness_response = ThrowAwarenessSchema.success(eid, device_id, "", "", StatusMapper.map_status_to_code(status), 2)
-        # Broker.group(eid, awareness_response, awareness)
         {:noreply, %{state | force_stale: now}}
       {:unchanged, _user_status, _online_devices} ->
         idle_too_long? = DateTime.diff(now, force_stale) >= @stale_threshold_seconds
-        if idle_too_long? do
-          # awareness_response = ThrowAwarenessSchema.success(eid, device_id, "", "", StatusMapper.map_status_to_code(status), 2)
-          # Broker.group(eid, awareness_response, awareness)
-          {:noreply, %{state | force_stale: now}}
-        else
-          {:noreply, state}
-        end
+        if idle_too_long?, do: {:noreply, %{state | force_stale: now}}, else: {:noreply, state}
     end
   end
 
@@ -136,7 +118,7 @@ defmodule Bimip.Service.Master do
   @impl true
   def handle_cast({:send_terminate_signal_to_server, %{device_id: device_id, eid: eid}}, %{current_timer: current_timer} = state) do
     DeviceStorage.delete_device(device_id, eid)
-    if Storage.DeviceStateCchange.remaining_active_devices?(eid) do
+    if Storage.DeviceStateChange.remaining_active_devices?(eid) do
       DeviceStateChange.cancel_termination_if_any_device_are_online(current_timer)
       {:noreply, state}
     else
@@ -159,39 +141,21 @@ defmodule Bimip.Service.Master do
   # Awareness routing
   # ----------------------
   def handle_cast({:route_awareness, from_eid, from_device_id, to_eid, to_device_id, type, data}, %{awareness: awareness} = state) do
+    DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
 
     case type do
-      1 -> 
-        
-        DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
-        # GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
-        # GenServer.cast(self(), {:fetch_batch_notification, from_eid, from_device_id} )
-        Broker.group(from_eid, data, awareness)
-      
-      s when s in 2..5 ->
-        DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
-        Broker.group(from_eid, data, awareness)
- 
-      s when s in 6..11 ->
-        DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(1))
-        # GenServer.cast(self(), {:fetch_batch_chat, from_eid, from_device_id} )
-        Broker.peer(to_eid, data, awareness)
-        
-      other ->
-        
+      1 -> Broker.group(from_eid, data, awareness)
+      s when s in 2..5 -> Broker.group(from_eid, data, awareness)
+      s when s in 6..11 -> Broker.peer(to_eid, data, awareness)
+      _ -> :ok
     end
 
     {:noreply, state}
   end
 
   def handle_cast({:route_ping_pong, eid, device_id}, %{awareness: awareness} = state) do
-    IO.inspect({ eid, device_id})
     DeviceStorage.update_device_status(device_id, eid, "PING_PONG", StatusMapper.status_name(1))
-    Broker.group(
-      eid,
-      ThrowAwarenessSchema.success(eid, device_id, "", "", 12),
-      state.awareness
-    )
+    Broker.group(eid, ThrowAwarenessSchema.success(eid, device_id, "", "", 12), awareness)
     {:noreply, state}
   end
 
@@ -202,88 +166,64 @@ defmodule Bimip.Service.Master do
       status = awareness.status
 
       case status do
-        # Regular online/offline awareness
-        s when s in 1..2 ->
-          Storage.Subscriber.update_subscriber(eid, from_eid, StatusMapper.status_name(s))
+        s when s in 1..2 -> 
+          Subscriber.update_subscriber(eid, from_eid, StatusMapper.status_name(s))
           AwarenessFanOut.awareness(encoded_msg, eid)
-
-        # Extended presence codes (6–12)
-        s when s in 6..11 ->
-          Storage.Subscriber.update_subscriber(eid, from_eid, "ONLINE")
+        s when s in 6..11 -> 
+          Subscriber.update_subscriber(eid, from_eid, "ONLINE")
           AwarenessFanOut.awareness(encoded_msg, eid)
-
-        # 🔹 Status 12 → only update subscriber locally (no fan-out)
-        12 ->
-          IO.inspect("svhbd jknlmdcnsjfb")
-          Storage.Subscriber.update_subscriber(eid, from_eid, "ONLINE")
-
-        # Catch-all
-        other ->
-          Logger.warning("Unknown awareness status: #{inspect(other)} from #{from_eid}")
+        12 -> Subscriber.update_subscriber(eid, from_eid, "ONLINE")
+        _ -> Logger.warning("Unknown awareness status: #{inspect(status)} from #{from_eid}")
       end
     else
-      {:error, reason} ->
-        Logger.error("Failed to decode awareness payload: #{inspect(reason)}")
+      {:error, reason} -> Logger.error("Failed to decode awareness payload: #{inspect(reason)}")
     end
 
     {:noreply, state}
   end
 
   # ----------------------
-  # Message writing
+  # Message logging (via BimipLog GenServer)
   # ----------------------
-  @doc """
-  Handles logging a new message payload by delegating the write to the
-  BimipLog.UserWriter GenServer, which handles serialization and durability.
-
-  Note: The Master process must call BimipLog.write/5, which is already designed
-  to handle the necessary GenServer delegation to ensure concurrency safety.
-  """
+  @impl true
   def handle_cast({:log_user_message, partition_id, from, to, payload}, %{eid: eid} = state) do
-    # synchronous effect still executed in the genserver process
     case BimipLog.write(eid, partition_id, from, to, payload) do
-      {:ok, offset} ->
-        Logger.info("[LOG] eid=#{eid} partition=#{partition_id} offset=#{offset} from=#{from} to=#{to}")
-      {:error, reason} ->
-        Logger.error("[LOG] failed write eid=#{eid} partition=#{partition_id} reason=#{inspect(reason)}")
+      {:ok, offset} -> Logger.info("[LOG] eid=#{eid} partition=#{partition_id} offset=#{offset} from=#{from} to=#{to}")
+      {:error, reason} -> Logger.error("[LOG] failed write eid=#{eid} partition=#{partition_id} reason=#{inspect(reason)}")
+    end
+
+    {:noreply, state}
+  end
+
+  # ----------------------
+  # Fetch messages
+  # ----------------------
+  @impl true
+  def handle_cast({:fetch_batch_chat, eid, device_id}, state) do
+    case BimipLog.fetch(eid, device_id, 1, 10) do
+      {:ok, %{messages: messages}} -> Enum.each(messages, &IO.inspect(&1))
+      {:error, reason} -> Logger.error("[FETCH] failed for eid=#{eid}: #{inspect(reason)}")
     end
 
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:fetch_batch_chat, eid, devices}, state) do
-    case BimipLog.fetch(eid, devices, 1) do
-      {_, _, {:ok, %{messages: messages}}} when is_list(messages) ->
-        Enum.each(messages, &IO.inspect(&1))
-
-      {_, _, {:ok, %{messages: []}}} ->
-        # no messages to process
-        :ok
-
-      other ->
-        IO.puts("Unexpected response: #{inspect(other)}")
+  def handle_cast({:fetch_batch_notification, eid, device_id}, state) do
+    case BimipLog.fetch(eid, device_id, 2, 10) do
+      {:ok, %{messages: messages}} -> Enum.each(messages, &IO.inspect(&1))
+      {:error, reason} -> Logger.error("[FETCH] failed for eid=#{eid}: #{inspect(reason)}")
     end
 
     {:noreply, state}
   end
 
+  # ----------------------
+  # Catch-all for unexpected messages
+  # ----------------------
   @impl true
-  def handle_cast({:fetch_batch_notification, eid, devices}, state) do
-    case BimipLog.fetch(eid, devices, 2) do
-      {_, _, {:ok, %{messages: messages}}} when is_list(messages) ->
-        Enum.each(messages, &IO.inspect(&1))
-
-      {_, _, {:ok, %{messages: []}}} ->
-        # no messages to process
-        :ok
-
-      other ->
-        IO.puts("Unexpected response: #{inspect(other)}")
-    end
-
+  def handle_info(msg, state) do
+    Logger.warning("Unhandled message received in Master GenServer: #{inspect(msg)}")
     {:noreply, state}
   end
-
-
 end
