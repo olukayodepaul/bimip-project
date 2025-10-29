@@ -68,6 +68,8 @@ defmodule Bimip.Application do
     create(:ack_table, [:key, :last_ack], :set)
     create(:commit_offsets, [:key, :offset], :set)
     create(:segment_cache, [:key, :segment, :position], :set)
+    create(:pending_acks, [:key, :offsets], :set)  # <-- new table
+    
 
     
   end
