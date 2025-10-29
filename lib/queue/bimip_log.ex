@@ -3,9 +3,9 @@ defmodule BimipLog do
   BimipLog — append-only per-user/device log with per-device pending ACKs.
 
   Features:
-    - File-backed segments with sparse index
+    - File-backed segments with sparse index (Now correctly implemented for fast seeks)
     - Per-device pending ACKs (MapSet) to avoid full log scans
-    - Commit offsets advanced only when contiguous messages are acknowledged
+    - Commit offsets advanced to the highest acknowledged offset (preserved original behavior)
     - Supports millions of users/devices efficiently
 
   Usage:
@@ -22,7 +22,7 @@ defmodule BimipLog do
   @segment_size_limit 50 # demo size, increase in production
 
   # ----------------------
-  # Public: Ensure tables
+  # Public: Ensure tables (Cleaned up: removed unused :device_offsets table)
   # ----------------------
   def ensure_mnesia_tables do
     :mnesia.start()
@@ -32,7 +32,7 @@ defmodule BimipLog do
       {:first_segment, [:key, :seg]},
       {:next_offsets, [:key, :offset]},
       {:segment_cache, [:key, :pos]},
-      {:device_offsets, [:key, :offset]},
+      # Removed :device_offsets as it was unused.
       {:commit_offsets, [:key, :offset]},
       {:pending_acks, [:key, :set]}
     ]
@@ -101,7 +101,7 @@ defmodule BimipLog do
   Fetch up to `limit` messages for a device starting at its commit_offset + 1
   """
   # ----------------------
-  # Fetch messages
+  # Fetch messages (FIXED: Uses lookup_sparse_index and accounts for segment cache)
   # ----------------------
   def fetch(user, device_id, partition_id, limit \\ 10) when limit > 0 do
     with :ok <- ensure_files_exist(user, partition_id),
@@ -111,7 +111,11 @@ defmodule BimipLog do
          {:ok, first_seg} <- get_first_segment(user, partition_id) do
 
       target_offset = commit_offset + 1
-      {_indexed_offset, start_seg, start_pos} = lookup_sparse_index(user, partition_id, target_offset)
+      # 1. Sparse Index Lookup (Now functional)
+      {_indexed_offset, start_seg_from_idx, start_pos_from_idx} = lookup_sparse_index(user, partition_id, target_offset)
+
+      # Ensure we don't start before the first existing segment
+      start_seg = max(start_seg_from_idx, first_seg)
 
       {messages, last_offset_read} =
         Enum.reduce_while(start_seg..current_seg, {[], commit_offset}, fn seg, {acc, last} ->
@@ -122,9 +126,10 @@ defmodule BimipLog do
           else
             case File.open(qfile, [:read, :binary]) do
               {:ok, fd} ->
-                index_start_pos_for_seg = if seg == start_seg, do: start_pos, else: 0
+                # Pass the index-derived start position for this segment
+                index_start_pos_for_seg = if seg == start_seg, do: start_pos_from_idx, else: 0
 
-                {new_acc, new_last} =
+                result =
                   read_segment_from_fd(
                     fd,
                     target_offset,
@@ -139,12 +144,7 @@ defmodule BimipLog do
                   )
 
                 File.close(fd)
-
-                if length(new_acc) >= limit do
-                  {:halt, {new_acc, new_last}}
-                else
-                  {:cont, {new_acc, new_last}}
-                end
+                result
 
               {:error, reason} ->
                 Logger.error("Failed to open segment file #{qfile}: #{inspect(reason)}")
@@ -216,31 +216,52 @@ defmodule BimipLog do
   end
 
   # ----------------------
-  # Read segment helper
+  # Read segment helper (FIXED: Added segment cache logic for efficiency)
   # ----------------------
-  defp read_segment_from_fd(fd, target_offset, acc, last, limit, _user, _device_id, _partition_id, _seg, start_pos) do
+  defp read_segment_from_fd(fd, target_offset, acc, last, limit, user, device_id, partition_id, seg, index_start_pos) do
+    # 2. Check segment cache for the last read position by this device
+    {:ok, cache_pos} = get_segment_cache(user, device_id, partition_id, seg)
+    # Start at the maximum of the sparse index position (if applicable) or the cached position
+    start_pos = max(index_start_pos, cache_pos)
     :file.position(fd, start_pos)
 
-    Stream.unfold(fd, fn fd_state ->
-      case read_log_entry(fd_state) do
-        :eof -> nil
-        {:corrupt, _} -> nil
-        {:ok, msg} -> {msg, fd_state}
-        _ -> nil
-      end
-    end)
-    |> Stream.filter(fn m -> m.offset >= target_offset end)
-    |> Enum.take(limit - length(acc))
-    |> then(fn msgs ->
-      new_acc = acc ++ msgs
-      new_last =
-        case List.last(msgs) do
-          nil -> last
-          msg -> msg.offset
+    stream =
+      Stream.unfold(fd, fn fd_state ->
+        case read_log_entry(fd_state) do
+          :eof -> nil
+          {:corrupt, _} -> nil # Stop reading segment on corruption
+          {:ok, msg} -> {msg, fd_state}
+          _ -> nil
         end
+      end)
 
-      {new_acc, new_last}
-    end)
+    # Filter messages starting from the target_offset (commit_offset + 1)
+    # and take only enough to fill the limit
+    msgs =
+      stream
+      |> Stream.filter(fn m -> m.offset >= target_offset end)
+      |> Enum.take(limit - length(acc))
+
+    new_acc = acc ++ msgs
+
+    new_last =
+      case List.last(msgs) do
+        nil -> last
+        msg -> msg.offset
+      end
+
+    # 3. Update the segment cache with the current file position
+    case :file.position(fd, :cur) do
+      {:ok, cur_pos} -> set_segment_cache(user, device_id, partition_id, seg, cur_pos)
+      _ -> :ok
+    end
+
+    # Halt or continue reducing the segments
+    if length(new_acc) >= limit do
+      {:halt, {new_acc, new_last}}
+    else
+      {:cont, {new_acc, new_last}}
+    end
   end
 
   # ----------------------
@@ -257,11 +278,7 @@ defmodule BimipLog do
 
   defp set_segment_cache(user, device_id, partition_id, seg, pos) do
     key = {user, device_id, partition_id, seg}
-    case :mnesia.transaction(fn -> :mnesia.write({:segment_cache, key, pos}) end) do
-      {:atomic, :ok} -> {:ok, pos}
-      {:aborted, reason} -> {:error, {:mnesia_aborted, reason}}
-      other -> {:error, {:unexpected_mnesia_result, other}}
-    end
+    :mnesia.transaction(fn -> :mnesia.write({:segment_cache, key, pos}) end)
   end
 
   # ----------------------
@@ -296,7 +313,7 @@ defmodule BimipLog do
   end
 
   # ----------------------
-  # Device offsets / Commit offsets
+  # Commit offsets
   # ----------------------
   defp get_commit_offset(user, device_id, partition_id) do
     key = {user, device_id, partition_id}
@@ -313,7 +330,7 @@ defmodule BimipLog do
   end
 
   # ----------------------
-  # ACK / Commit logic
+  # ACK / Commit logic (Original non-contiguous logic preserved)
   # ----------------------
   @doc "Public ack API"
   def ack_message(user, device_id, partition_id, offset) do
@@ -354,7 +371,7 @@ defmodule BimipLog do
     {:ok, new_commit}
   end
 
-  # Advance commit to highest acked offset
+  # Advance commit to highest acked offset (preserves non-contiguous behavior)
   defp advance_commit_to_max(pending, commit) do
     if MapSet.size(pending) == 0 do
       commit
@@ -389,7 +406,7 @@ defmodule BimipLog do
     end
   end
 
-  # Returns {new_commit, remaining_pending_set}
+  # Returns {new_commit, remaining_pending_set} (Still present but unused, preserving original code)
   defp consume_contiguous(pending_set, commit) do
     next = commit + 1
     if MapSet.member?(pending_set, next) do
@@ -400,7 +417,7 @@ defmodule BimipLog do
   end
 
   # ----------------------
-  # File & sparse index helpers
+  # File & sparse index helpers (FIXED: Sparse index now performs binary search)
   # ----------------------
   defp user_dir(user), do: Path.join(@base_dir, user)
   defp queue_file(user, partition_id, seg), do: Path.join(user_dir(user), "queue_#{partition_id}_#{seg}.log")
@@ -414,6 +431,7 @@ defmodule BimipLog do
     idx_file = index_file(user, partition_id)
     case File.open(idx_file, [:append, :binary]) do
       {:ok, fd} ->
+        # Index record: <<offset::64, seg::32, pos::64>> (20 bytes)
         :ok = IO.binwrite(fd, <<offset::64, seg::32, pos::64>>)
         File.close(fd)
         :ok
@@ -421,7 +439,45 @@ defmodule BimipLog do
     end
   end
 
-  defp lookup_sparse_index(_user, _partition_id, _target_offset), do: {0, 1, 0}
+  # Implements binary search over the sparse index file to find the nearest log position
+  defp lookup_sparse_index(user, partition_id, target_offset) do
+    idx = index_file(user, partition_id)
+    case File.stat(idx) do
+      {:ok, %{size: size}} when size >= 20 ->
+        entries = div(size, 20)
+        case File.open(idx, [:read, :binary]) do
+          {:ok, fd} ->
+            res = binary_search_index_fd(fd, target_offset, 0, entries - 1, {0, 1, 0})
+            File.close(fd)
+            res
+          {:error, _} -> {0, 1, 0}
+        end
+      _ -> {0, 1, 0}
+    end
+  end
+
+  defp binary_search_index_fd(_fd, _target, low, high, best) when low > high, do: best
+  defp binary_search_index_fd(fd, target_offset, low, high, best) do
+    mid = div(low + high, 2)
+    pos = mid * 20
+    case :file.position(fd, pos) do
+      {:ok, _} ->
+        # Read index record: <<offset::64, seg::32, pos::64>>
+        case :file.read(fd, 20) do
+          {:ok, <<offset::64, seg::32, pos64::64>>} ->
+            cond do
+              # Exact match
+              offset == target_offset -> {offset, seg, pos64}
+              # Offset is before the target, so this is the new best starting point
+              offset < target_offset -> binary_search_index_fd(fd, target_offset, mid + 1, high, {offset, seg, pos64})
+              # Offset is after the target, search lower half
+              offset > target_offset -> binary_search_index_fd(fd, target_offset, low, mid - 1, best)
+            end
+          _ -> best
+        end
+      _ -> best
+    end
+  end
 
   # ----------------------
   # Log entry serialization with CRC32
@@ -454,7 +510,6 @@ defmodule BimipLog do
     end
   end
 end
-
 
 
 # {:ok, offset} = BimipLog.write("user1", 1, "alice", "bob", "Hello World")
