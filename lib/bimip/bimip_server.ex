@@ -185,8 +185,10 @@ defmodule Bimip.Service.Master do
   end
 
   def handle_cast({:route_awareness_visibility, visibility}, state) do
+    # Log type for debugging
+    IO.inspect(visibility.type, label: "Awareness type")
 
-    IO.inspect(visibility.type)
+    # Call RPC to update global awareness state
     case BimipRPCClient.awareness_visibility(
           visibility.id,
           visibility.eid,
@@ -194,41 +196,36 @@ defmodule Bimip.Service.Master do
           visibility.type,
           visibility.timestamp
         ) do
+
       {:ok, %BimipServer.AwarenessVisibilityRes{status: 0} = res} ->
-        
-      # let proodcast to all if sucessfull....
-      Registration.upsert_registration(
-        res.eid, 
-        res.type, 
-        res.display_name
-      )
+  
+        Registration.upsert_registration(res.eid, res.type, res.display_name)
+        success_payload = {res.id, res.eid, res.device_id, res.type}
+        AwarenessFanOut.device_group_fan_out(success_payload, res.eid)
 
-      AwarenessFanOut.group_fan_out(error_binary, res.eid)
-
-      {:ok, %BimipServer.AwarenessVisibilityRes{} = res} ->
-
-        error_binary = ThrowAwarenessVisibilitySchema.error(
+      {:ok, %BimipServer.AwarenessVisibilityRes{status: status} = res} when status != 0 ->
+        error_payload = ThrowAwarenessVisibilitySchema.error(
+          res.id,
           res.eid,
           res.device_id,
-          res.id,
           res.message
         )
 
-        AwarenessFanOut.pair_fan_out(error_binary, res.eid)
+        AwarenessFanOut.pair_fan_out(error_payload, visibility.device_id)
 
       {:error, reason} ->
-        # Fan out GRPC errors too
-        error_binary = ThrowAwarenessVisibilitySchema.error(
+        error_payload = ThrowAwarenessVisibilitySchema.error(
+          visibility.id,
           visibility.eid,
           visibility.device_id,
-          visibility.id,
           "RPC call failed: #{inspect(reason)}"
         )
 
-        AwarenessFanOut.pair_fan_out(error_binary, visibility.eid)
+        AwarenessFanOut.pair_fan_out(error_payload, visibility.device_id)
     end
 
-    Subscriber.update_subscriber( visibility.eid, visibility.device_id, "ONLINE")
+    Subscriber.update_subscriber(visibility.eid, visibility.device_id, "ONLINE")
+
     {:noreply, state}
   end
 

@@ -2,10 +2,9 @@ defmodule ProtoTest do
   def test() do
     binary =
       "
-08 03 1A 24 0A 01 31 12 16 0A 0C 61 40 64 6F 6D
-61 69 6E 2E 63 6F 6D 12 06 61 61 61 61 61 31 18
-02 20 CE DD DF AB A2 33 
-
+    08 04 22 24 0A 01 31 12 16 0A 0C 61 40 64 6F 6D
+    61 69 6E 2E 63 6F 6D 12 06 62 62 62 62 62 31 18 
+    01 20 BD F4 D7 AD A3 33
 
       "
       |> String.split()
