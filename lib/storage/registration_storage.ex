@@ -8,7 +8,6 @@ defmodule Storage.Registration do
 
   @table :registration
 
-
   @doc """
   Insert or update a registration for a user (eid).
   Returns {:ok, registration} or {:error, reason}.

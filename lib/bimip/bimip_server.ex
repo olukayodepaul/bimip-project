@@ -3,6 +3,7 @@ defmodule Bimip.Service.Master do
   alias Bimip.Registry
   alias Bimip.Device.Supervisor
   alias Storage.DeviceStorage
+  alias Storage.Registration
   alias Storage.DeviceStateChange
   alias Bimip.Broker
   alias Settings.ServerState
@@ -16,7 +17,6 @@ defmodule Bimip.Service.Master do
   require Logger
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
-  @fetch_interval 100 # milliseconds between fetch batches
 
   # ----------------------
   # Start
@@ -29,29 +29,39 @@ defmodule Bimip.Service.Master do
 
   @impl true
   def init(%{eid: eid, device_id: device_id, exp: exp, ws_pid: ws_pid} = state) do
-    # Fetch user awareness level
-    level =
-      case DeviceStorage.fetch_user_awareness(eid) do
-        {:ok, level} -> level
+    registration =
+      case Registration.fetch_registration(eid) do
+        {:ok, record} ->
+          record
+
         {:error, :not_found} ->
-          DeviceStorage.insert_awareness(eid)
-          2
+          %{
+            eid: eid,
+            display_name: "Unknown User",
+            visibility: 1
+          }
+
         {:error, reason} ->
-          Logger.error("Error fetching awareness for #{eid}: #{inspect(reason)}")
-          2
+          Logger.error("Failed to fetch registration for #{eid}: #{inspect(reason)}")
+          %{
+            eid: eid,
+            display_name: "Unknown User",
+            visibility: 1
+          }
       end
 
-    # Start initial device session
+    # Start initial device session asynchronously
     GenServer.cast(self(), {:start_device, {eid, device_id, exp, ws_pid}})
 
     {:ok,
-      %{
-        eid: eid,
-        awareness: level,
-        current_timer: nil,
-        force_stale: DateTime.utc_now(),
-        devices: %{}
-      }}
+    %{
+      eid: eid,
+      awareness: registration.visibility,
+      display_name: registration.display_name,
+      current_timer: nil,
+      force_stale: DateTime.utc_now(),
+      devices: %{}
+    }}
   end
 
   # ----------------------

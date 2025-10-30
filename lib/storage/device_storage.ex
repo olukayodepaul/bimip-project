@@ -10,96 +10,59 @@ defmodule Storage.DeviceStorage do
 
   @device_table :device
   @device_index_table :device_index
-  @user_awareness_table :user_awareness_table
+  # @user_awareness_table :user_awareness_table -- REMOVED
+
   @doc """
   Save a device payload and update secondary index.
+  OPTIMIZED: Uses a single Mnesia transaction for both device and index writes to ensure atomicity.
   """
-
-  #change this to local file at version two
   def register_device_session(device_id, eid, payload, last_offset \\ 0) do
     key = {eid, device_id}
     timestamp = DateTime.utc_now()
 
+    # Consolidated into a single transaction (TX) for atomicity
     case :mnesia.transaction(fn ->
-          case :mnesia.read(@device_table, key) do
-            [] ->
-              # New insert
-              new_payload =
-                payload
-                |> Map.put(:last_seen, timestamp)
-                |> Map.put(:status_source, "LOGIN")
+          # 1. Handle device read/write logic
+          {_record, awareness} =
+            case :mnesia.read(@device_table, key) do
+              [] ->
+                # New insert
+                new_payload =
+                  payload
+                  |> Map.put(:last_seen, timestamp)
+                  |> Map.put(:status_source, "LOGIN")
 
-              :mnesia.write({@device_table, key, new_payload, last_offset, timestamp})
-              Map.get(new_payload, :awareness_intention, 2)
+                record = {@device_table, key, new_payload, last_offset, timestamp}
+                :mnesia.write(record)
+                {record, Map.get(new_payload, :awareness_intention, 2)}
 
-            [{@device_table, ^key, old_payload, old_offset, _old_ts}] ->
-              # Update only selective fields + bump last_seen
-              updated_payload =
-                old_payload
-                |> Map.put(:status, payload.status)
-                |> Map.put(:ip_address, payload.ip_address)
-                |> Map.put(:app_version, payload.app_version)
-                |> Map.put(:os, payload.os)
-                |> Map.put(:last_seen, timestamp)
-                |> Map.put(:status_source, "LOGIN")
+              [{@device_table, ^key, old_payload, old_offset, _old_ts}] ->
+                # Update only selective fields + bump last_seen
+                updated_payload =
+                  old_payload
+                  |> Map.put(:status, payload.status)
+                  |> Map.put(:ip_address, payload.ip_address)
+                  |> Map.put(:app_version, payload.app_version)
+                  |> Map.put(:os, payload.os)
+                  |> Map.put(:last_seen, timestamp)
+                  |> Map.put(:status_source, "LOGIN")
 
-              :mnesia.write({@device_table, key, updated_payload, old_offset, timestamp})
-              Map.get(updated_payload, :awareness_intention, 2) #The awareness is not use
+                record = {@device_table, key, updated_payload, old_offset, timestamp}
+                :mnesia.write(record)
+                {record, Map.get(updated_payload, :awareness_intention, 2)}
+            end
 
-          end
+          # 2. Write to the secondary index within the same TX
+          :mnesia.write({@device_index_table, eid, device_id})
+          # Return the result
+          awareness
         end) do
       {:atomic, awareness} ->
-        :mnesia.transaction(fn ->
-          :mnesia.write({@device_index_table, eid, device_id})
-        end)
-
         {:ok, awareness}
 
       {:aborted, reason} ->
-        Logger.error("Failed to save device #{inspect(key)}: #{inspect(reason)}")
+        Logger.error("Failed to register device session #{inspect(key)}: #{inspect(reason)}")
         {:error, reason}
-    end
-  end
-
-  def insert_awareness(eid, awareness \\ 2) do
-    key = {eid}
-    timestamp = DateTime.utc_now()
-
-    :mnesia.transaction(fn ->
-      case :mnesia.read({@user_awareness_table, key}) do
-        [] ->
-          # eid not found → insert with default awareness = 2
-          :mnesia.write({@user_awareness_table, key, 2, timestamp})
-
-        _ ->
-          # eid already exists → update normally
-          :mnesia.write({@user_awareness_table, key, awareness, timestamp})
-      end
-    end)
-    |> case do
-      {:atomic, _result} ->
-        {:ok, :updated}
-
-      {:aborted, reason} ->
-        {:error, reason}
-    end
-  end
-
-  def fetch_user_awareness(eid) do
-    key = {eid}
-
-    :mnesia.transaction(fn ->
-      case :mnesia.read({@user_awareness_table, key}) do
-        [{@user_awareness_table, ^key, awareness,  _timestamp}] ->
-          {:ok, awareness}
-
-        [] ->
-          {:error, :not_found}
-      end
-    end)
-    |> case do
-      {:atomic, result} -> result
-      {:aborted, reason} -> {:error, reason}
     end
   end
 
@@ -132,7 +95,6 @@ defmodule Storage.DeviceStorage do
 
   @doc """
   Fetch a device payload from the main table by {eid, device_id}.
-  Returns {payload, last_offset, timestamp} or nil if not found.
   """
   def get_device(eid, device_id) do
     key = {eid, device_id}
@@ -151,7 +113,6 @@ defmodule Storage.DeviceStorage do
 
   @doc """
   Fetch all entries in the secondary index table for a given `eid`.
-  Returns a list of `{eid, device_id}` tuples.
   """
   def check_index_by_eid(eid) do
     :mnesia.transaction(fn ->
@@ -194,24 +155,34 @@ defmodule Storage.DeviceStorage do
     end)
   end
 
-  # your fetch function
+  @doc """
+  Fetch all devices for a given EID.
+  OPTIMIZED: All index and device data reads are consolidated into a single Mnesia transaction.
+  """
   def fetch_devices_by_eid(eid) do
+    # All reads happen in ONE transaction for fast, scalable fetch
     :mnesia.transaction(fn ->
-      :mnesia.match_object({@device_index_table, eid, :_})
+      # 1. Fetch all index records (device IDs)
+      index_records = :mnesia.match_object({@device_index_table, eid, :_})
+
+      # 2. Iterate and read device data *inside* the same transaction
+      index_records
+      |> Enum.flat_map(fn {@device_index_table, ^eid, device_id} ->
+        key = {eid, device_id}
+        case :mnesia.read({@device_table, key}) do
+          [] -> []
+          [record] -> [record]
+        end
+      end)
     end)
     |> case do
-      {:atomic, []} ->
-        []
-
-      {:atomic, index_records} ->
-        index_records
-        |> Enum.map(fn {@device_index_table, ^eid, device_id} ->
-          get_device(eid, device_id)
-        end)
-        |> Enum.reject(&is_nil/1)
+      {:atomic, device_records} ->
+        # 3. Normalize records outside the transaction
+        device_records
         |> Enum.map(&normalize_device/1)
 
       {:aborted, reason} ->
+        Logger.error("Failed to fetch devices for EID #{eid}: #{inspect(reason)}")
         {:error, reason}
     end
   end
@@ -242,6 +213,8 @@ defmodule Storage.DeviceStorage do
   end
 
 end
+
+
 
 # Storage.DeviceStorage.fetch_devices_by_eid("a@domain.com")
 # Storage.DeviceStorage.get_device("a@domain.com", "aaaaa1")
