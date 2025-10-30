@@ -74,7 +74,7 @@ request = %Bimip.AwarenessVisibility{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa1"
   },
-  type: 1,  # 1 = ENABLED (means user wants to hide awareness)
+  type: 2,  # 1 = ENABLED (means user wants to hide awareness)
   timestamp: System.system_time(:millisecond)
 }
 

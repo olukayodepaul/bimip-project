@@ -11,7 +11,8 @@ defmodule Bimip.Service.Master do
   alias Util.StatusMapper
   alias Storage.Subscriber
   alias BimipLog
-  alias BimipClient
+  alias BimipRPCClient
+  alias Storage.Registration
   require Logger
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
@@ -169,10 +170,10 @@ defmodule Bimip.Service.Master do
       case status do
         s when s in 1..2 -> 
           Subscriber.update_subscriber(eid, from_eid, StatusMapper.status_name(s))
-          AwarenessFanOut.awareness(encoded_msg, eid)
+          AwarenessFanOut.group_fan_out(encoded_msg, eid)
         s when s in 6..11 -> 
           Subscriber.update_subscriber(eid, from_eid, "ONLINE")
-          AwarenessFanOut.awareness(encoded_msg, eid)
+          AwarenessFanOut.group_fan_out(encoded_msg, eid)
         12 -> Subscriber.update_subscriber(eid, from_eid, "ONLINE")
         _ -> Logger.warning("Unknown awareness status: #{inspect(status)} from #{from_eid}")
       end
@@ -184,7 +185,9 @@ defmodule Bimip.Service.Master do
   end
 
   def handle_cast({:route_awareness_visibility, visibility}, state) do
-    case BimipClient.awareness_visibility(
+
+    IO.inspect(visibility.type)
+    case BimipRPCClient.awareness_visibility(
           visibility.id,
           visibility.eid,
           visibility.device_id,
@@ -192,19 +195,42 @@ defmodule Bimip.Service.Master do
           visibility.timestamp
         ) do
       {:ok, %BimipServer.AwarenessVisibilityRes{status: 0} = res} ->
-        Logger.info("✅ Awareness updated successfully: #{inspect(res)}")
+        
+      # let proodcast to all if sucessfull....
+      Registration.upsert_registration(
+        res.eid, 
+        res.type, 
+        res.display_name
+      )
 
-      {:ok, %BimipServer.AwarenessVisibilityRes{status: status, message: message}} ->
-        Logger.error("❌ Awareness update failed! Status: #{status}, Message: #{message}")
-        # Optionally, you can send the error somewhere else here
+      AwarenessFanOut.group_fan_out(error_binary, res.eid)
+
+      {:ok, %BimipServer.AwarenessVisibilityRes{} = res} ->
+
+        error_binary = ThrowAwarenessVisibilitySchema.error(
+          res.eid,
+          res.device_id,
+          res.id,
+          res.message
+        )
+
+        AwarenessFanOut.pair_fan_out(error_binary, res.eid)
 
       {:error, reason} ->
-        Logger.error("❌ GRPC error: #{inspect(reason)}")
+        # Fan out GRPC errors too
+        error_binary = ThrowAwarenessVisibilitySchema.error(
+          visibility.eid,
+          visibility.device_id,
+          visibility.id,
+          "RPC call failed: #{inspect(reason)}"
+        )
+
+        AwarenessFanOut.pair_fan_out(error_binary, visibility.eid)
     end
 
+    Subscriber.update_subscriber( visibility.eid, visibility.device_id, "ONLINE")
     {:noreply, state}
   end
-
 
 
   # ----------------------

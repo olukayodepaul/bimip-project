@@ -1,4 +1,4 @@
-defmodule BimipClient do
+defmodule BimipRPCClient do
   require Logger
   alias BimipServer.BimipService.Stub
   alias BimipServer.AwarenessVisibilityReq
@@ -9,7 +9,7 @@ defmodule BimipClient do
       id: id,
       eid: eid,
       device_id: device_id,
-      type: 1,
+      type: type,
       timestamp: timestamp
     }
 

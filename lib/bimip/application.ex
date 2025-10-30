@@ -55,7 +55,7 @@ defmodule Bimip.Application do
   end
 
   defp create_all_bimip_tables do
-    create(:registration, [:key, :eid,  :awareness_permission, :display_name,  :timestamp], :set)
+    create(:registration, [:key, :eid,  :visibility, :display_name,  :timestamp], :set)
     create(:device, [:key, :payload, :last_offset, :timestamp], :set)
     create(:device_index, [:eid, :device_id], :bag)
     create(:subscribers, [:id, :owner_id, :subscriber_id, :status, :blocked, :inserted_at, :last_seen], :set)

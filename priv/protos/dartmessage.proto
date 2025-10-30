@@ -89,6 +89,7 @@ message Awareness {
                                     // implemented in version two
                                     // perform selective awareness online to node that is online
                                     //:rpc.call(:"bimip@node1", Bimip.Server, :deliver_message, [to, payload])
+    int32 visibility = 13;          // 1 = ENABLED, 2 = DISABLED,
 }
 
 // ---------------- Message ----------------

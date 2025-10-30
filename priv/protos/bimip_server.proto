@@ -79,4 +79,5 @@ message AwarenessVisibilityRes {
   int64 timestamp = 5;             // Unix UTC timestamp (echoed back)
   int32 status = 6;                // 0 = OK, non-zero = error code
   string message = 7;              // Description or error message
+  string display_name = 8;         // Description or error message
 }

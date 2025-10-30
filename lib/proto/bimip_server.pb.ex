@@ -101,6 +101,7 @@ defmodule BimipServer.AwarenessVisibilityRes do
   field :timestamp, 5, type: :int64
   field :status, 6, type: :int32
   field :message, 7, type: :string
+  field :display_name, 8, type: :string, json_name: "displayName"
 end
 
 defmodule BimipServer.BimipService.Service do
