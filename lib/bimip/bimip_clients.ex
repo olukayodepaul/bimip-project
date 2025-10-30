@@ -188,8 +188,8 @@ defmodule Bimip.Device.Client do
           :ok ->
 
             pong = ThrowPingPongSchema.success(
-              pingpong_msg.to.eid,
-              pingpong_msg.to.connection_resource_id,
+              pingpong_msg.from.eid,
+              pingpong_msg.from.connection_resource_id,
               pingpong_msg.id,
               2
             )
@@ -197,8 +197,8 @@ defmodule Bimip.Device.Client do
             send(ws_pid, {:binary, pong})
 
             RegistryHub.route_ping_pong_to_server(
-              pingpong_msg.to.eid,
-              pingpong_msg.to.connection_resource_id
+              pingpong_msg.from.eid,
+              pingpong_msg.from.connection_resource_id
             )
 
             {:noreply,
@@ -218,7 +218,7 @@ defmodule Bimip.Device.Client do
             reason = "Field '#{err.field}' → #{err.description}"
 
             error_binary = ThrowPingPongSchema.error(
-              pingpong_msg.to.eid,
+              pingpong_msg.from.eid,
               device_id,
               pingpong_msg.id,
               reason
@@ -235,6 +235,65 @@ defmodule Bimip.Device.Client do
         {:noreply, state}
     end
   end
+
+  def handle_cast(
+        {:client_awareness_visibility, _eid, _device_id, data},
+        %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state
+      ) do
+
+    msg = Bimip.MessageScheme.decode(data)
+
+    case msg.payload do
+      {:awareness_visibility, %Bimip.AwarenessVisibility{} = visibility_msg} ->
+        # ✅ Validate the AwarenessVisibility message
+        case Bimip.Validators.AwarenessVisibilityValidator.validate(visibility_msg, eid, device_id) do
+          :ok ->
+
+            post = %{
+              id: visibility_msg.id,
+              eid: visibility_msg.from.eid,
+              device_id: visibility_msg.from.connection_resource_id,
+              type: visibility_msg.type,
+              timestamp: visibility_msg.timestamp
+            }
+            
+            RegistryHub.route_awareness_visibility_to_server(post)
+
+            {:noreply,
+              %{
+                state
+                | device_state: %{
+                    state.device_state
+                    | last_seen: DateTime.utc_now(),
+                      last_activity: DateTime.utc_now(),
+                      last_change_at: DateTime.utc_now()
+                  }
+              }
+            }
+
+          {:error, err} ->
+            reason = "Field '#{err.field}' → #{err.description}"
+
+            error_binary = ThrowAwarenessVisibilitySchema.error(
+              eid,
+              device_id,
+              visibility_msg.id,
+              reason
+            )
+
+            send(ws_pid, {:binary, error_binary})
+            {:noreply, state}
+        end
+
+      _ ->
+        # ❌ Unexpected payload type
+        reason = "Invalid payload: expected AwarenessVisibility message"
+        error_binary = ThrowAwarenessVisibilitySchema.error(eid, device_id, 0, reason)
+        send(ws_pid, {:binary, error_binary})
+        {:noreply, state}
+    end
+  end
+
 
 end
 

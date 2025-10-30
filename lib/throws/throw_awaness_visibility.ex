@@ -3,27 +3,36 @@ defmodule ThrowAwarenessVisibilitySchema do
   Builds AwarenessVisibility stanzas for both success and error responses.
 
   message AwarenessVisibility {
-      Identity from = 1;        // The user toggling their visibility
-      int32 type = 2;           // 1 = ENABLED, 2 = DISABLED, 3 = ERROR
-      int64 timestamp = 3;      // Unix UTC timestamp (ms)
-      string details = 4;       // Optional message or reason
+      string id = 1;             // Unique request identifier (used to reconcile request/response)
+      Identity from = 2;         // The user toggling their visibility
+      int32 type = 3;            // 1 = ENABLED, 2 = DISABLED, 3 = ERROR
+      int64 timestamp = 4;       // Unix UTC timestamp (ms)
+      string details = 5;        // Optional message or reason
   }
+
+  Behavior:
+    - The `id` from the original request must always be echoed back in the response
+      (whether success or error) to allow the client to correlate both messages.
   """
 
   alias Bimip.{AwarenessVisibility, Identity, MessageScheme}
 
-  @route 5   # <--- IMPORTANT: update to the actual route used for Awareness messages
+  @route 4   # <--- IMPORTANT: use actual route ID for Awareness messages
 
   # ---------------- SUCCESS ----------------
   @doc """
-  Send a visibility update for the user's own status.
+  Builds a success response for an AwarenessVisibility update.
 
-  type:
-    1 = ENABLED (visible)
-    2 = DISABLED (hidden)
+  Parameters:
+    - id: Request ID to echo back for reconciliation
+    - from_eid: User's EID
+    - from_device_id: Device connection resource ID
+    - type: 1 = ENABLED, 2 = DISABLED
+    - details: Optional status description
   """
-  def success(from_eid, from_device_id, type, details \\ "") when type in [1, 2] do
+  def success(id, from_eid, from_device_id, type, details \\ "") when type in [1, 2] do
     msg = %AwarenessVisibility{
+      id: id,
       from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
       type: type,
       timestamp: System.system_time(:millisecond),
@@ -39,11 +48,17 @@ defmodule ThrowAwarenessVisibilitySchema do
 
   # ---------------- ERROR ----------------
   @doc """
-  Return an error result for failed visibility toggle.
-  Type is always 3 = ERROR
+  Builds an error response for a failed AwarenessVisibility update.
+
+  Parameters:
+    - id: Request ID to echo back for reconciliation
+    - from_eid: User's EID
+    - from_device_id: Device connection resource ID
+    - description: Error description
   """
-  def error(from_eid, from_device_id, description) do
+  def error(id, from_eid, from_device_id, description) do
     msg = %AwarenessVisibility{
+      id: id,
       from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
       type: 3, # ERROR
       timestamp: System.system_time(:millisecond),

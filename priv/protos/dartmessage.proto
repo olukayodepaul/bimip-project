@@ -48,7 +48,7 @@ message Ack {
 // ──────────────────────────────────────────────
 // Awareness Mapping:
 //
-// User Device State:
+// User State:
 // 1 = ONLINE          → User device is online
 // 2 = OFFLINE         → User device is offline
 //
@@ -72,6 +72,7 @@ message Ack {
 // Behavioral Characteristics:
 // • Fire-and-forget — no acknowledgment or response required for awareness updates
 // • Auto-expiry — servers and clients must discard awareness after (timestamp + ttl)
+
 message Awareness {
     string id = 1;                  // unique ID to correlate with a related message or action
     Identity from = 2;              // Sender's identity (user or device)
@@ -125,7 +126,7 @@ message ErrorMessage {
 
 message PingPong {
     string id = 1;                 // Unique message or request ID (UUID or sequence)
-    Identity to = 2;               // Target identity (usually the client's own Identity)
+    Identity from = 2;               // Target identity (usually the client's own Identity)
     int32 type = 3;                // 1 = PING, 2 = PONG, 3 = ERROR
     int64 timestamp = 4;           // Unix UTC timestamp in milliseconds
     string details = 5;            // Optional: used only when type = 3 (ERROR)
@@ -171,15 +172,34 @@ message AwarenessContact {
     string details = 7;
 }
 
-
 // ---------------- AwarenessVisibility ----------------
 // User toggles whether their own Awareness signals are visible to others.
 // This affects only the sender's broadcast behavior, not roster/subscriptions.
+//
+// Behavior:
+// - Clients send this message to explicitly ENABLE or DISABLE their own awareness state.
+// - The server MUST always respond with a confirmation message of the same type
+//   (1 = ENABLED, 2 = DISABLED) to acknowledge the change.
+// - The 'id' field allows clients to correlate each request with its corresponding response.
+// - If the request cannot be processed (invalid user, session expired, etc.),
+//   the server responds with type = 3 (ERROR) and includes a descriptive 'details' field.
+//
+// Examples:
+//   → Client: AwarenessVisibility { id: "req-101", from: "user123", type: 2 }
+//   ← Server: AwarenessVisibility { id: "req-101", from: "user123", type: 2, details: "Awareness disabled" }
+//
+//   → Client: AwarenessVisibility { id: "req-102", from: "user123", type: 1 }
+//   ← Server: AwarenessVisibility { id: "req-102", from: "user123", type: 1, details: "Awareness enabled" }
+//
+//   → Client: AwarenessVisibility { id: "req-103", from: "user123", type: 1 }
+//   ← Server: AwarenessVisibility { id: "req-103", from: "user123", type: 3, details: "Already enabled" }
+//
 message AwarenessVisibility {
-    Identity from = 1;        // The user changing their own visibility
-    int32 type = 2;           // 1 = ENABLED, 2 = DISABLED, 3 = ERROR
-    int64 timestamp = 3;      // Unix UTC timestamp (ms)
-    string details = 4;       // Optional reason, explanation, or error description
+    string id = 1;            // Unique request identifier for tracking/ack correlation
+    Identity from = 2;        // The user changing their own visibility
+    int32 type = 3;           // 1 = ENABLED, 2 = DISABLED, 3 = ERROR
+    int64 timestamp = 4;      // Unix UTC timestamp (ms)
+    string details = 5;       // Optional reason, explanation, or error description
 }
 
 
@@ -211,9 +231,9 @@ message MessageScheme {
     oneof payload {
         Awareness awareness                           = 2;
         PingPong ping_pong                            = 3;
-        TokenRevoke token_revoke                      = 4;
-        TokenRefresh token_refresh                    = 5;
-        AwarenessVisibility awareness_visibility      = 6;
+        AwarenessVisibility awareness_visibility      = 4;
+        TokenRevoke token_revoke                      = 5;
+        TokenRefresh token_refresh                    = 6;
         Logout logout                                 = 7;
         ErrorMessage error                            = 8;
         Body body                                     = 9;  // Body container for batched stanzas

@@ -511,7 +511,6 @@ defmodule BimipLog do
   end
 end
 
-
 # {:ok, offset} = BimipLog.write("user1", 1, "alice", "bob", "Hello World")
 # {:ok, result} = BimipLog.fetch("user1", "device1", 1, 10)
 # BimipLog.ack_message("user1", "device1", 1, 3)

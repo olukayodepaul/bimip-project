@@ -87,7 +87,7 @@ defmodule Bimip.Socket do
       %{
         2 => &handle_awareness/2,
         3 => &handle_ping_pong/2,
-        # 14 => &handle_logout/2
+        4 => &handle_awareness_visibility/2
       }
     end
 
@@ -102,7 +102,6 @@ defmodule Bimip.Socket do
     end
 
     defp handle_awareness(state, data) do
-      
       case RegistryHub.route_awareness_to_client(state.eid, state.device_id, data) do
         :ok -> 
           {:ok, state}
@@ -119,27 +118,42 @@ defmodule Bimip.Socket do
         :ok -> {:ok, state}
         :error ->
         
-        error_msg =
-        ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
+          #return same stanza error from here not global error 
+          error_msg =
+          ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
+          send(self(), {:binary, error_msg})
 
-        send(self(), {:binary, error_msg})
         {:ok, state}
       end
     end
 
-    defp handle_logout(state, data) do
-      IO.inspect("log_out_route")
-      case RegistryHub.route_same_ping(state.eid, state.device_id, data) do
+    defp handle_awareness_visibility(state, data) do
+      # Uncomment this later when routing is ready
+      case RegistryHub.route_awareness_visibility_to_client(state.eid, state.device_id, data) do
         :ok -> {:ok, state}
         :error ->
-        
-        error_msg =
-        ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
-
-        send(self(), {:binary, error_msg})
-        {:ok, state}
+          error_msg = ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
+          send(self(), {:binary, error_msg})
+          {:ok, state}
       end
+      # IO.inspect(data, label: "AWARNESS_VISIBILITY_DATA")
+      {:ok, state}
     end
+
+
+    # defp handle_logout(state, data) do
+    #   IO.inspect("log_out_route")
+    #   case RegistryHub.route_same_ping(state.eid, state.device_id, data) do
+    #     :ok -> {:ok, state}
+    #     :error ->
+        
+    #     error_msg =
+    #     ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
+
+    #     send(self(), {:binary, error_msg})
+    #     {:ok, state}
+    #   end
+    # end
 
     def websocket_info(:terminate_socket, state) do
       {:stop, state}

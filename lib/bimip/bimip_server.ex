@@ -11,6 +11,7 @@ defmodule Bimip.Service.Master do
   alias Util.StatusMapper
   alias Storage.Subscriber
   alias BimipLog
+  alias BimipClient
   require Logger
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
@@ -181,6 +182,30 @@ defmodule Bimip.Service.Master do
 
     {:noreply, state}
   end
+
+  def handle_cast({:route_awareness_visibility, visibility}, state) do
+    case BimipClient.awareness_visibility(
+          visibility.id,
+          visibility.eid,
+          visibility.device_id,
+          visibility.type,
+          visibility.timestamp
+        ) do
+      {:ok, %BimipServer.AwarenessVisibilityRes{status: 0} = res} ->
+        Logger.info("✅ Awareness updated successfully: #{inspect(res)}")
+
+      {:ok, %BimipServer.AwarenessVisibilityRes{status: status, message: message}} ->
+        Logger.error("❌ Awareness update failed! Status: #{status}, Message: #{message}")
+        # Optionally, you can send the error somewhere else here
+
+      {:error, reason} ->
+        Logger.error("❌ GRPC error: #{inspect(reason)}")
+    end
+
+    {:noreply, state}
+  end
+
+
 
   # ----------------------
   # Message logging (via BimipLog GenServer)

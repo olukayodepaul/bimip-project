@@ -4,7 +4,7 @@ defmodule Bimip.Validators.PingPongValidator do
 
   message PingPong {
       string id = 1;
-      Identity to = 2;
+      Identity from = 2;
       int32 type = 3;        // 1 = PING, 2 = PONG, 3 = ERROR
       int64 timestamp = 4;
       string details = 5;
@@ -20,11 +20,11 @@ defmodule Bimip.Validators.PingPongValidator do
       msg.id in [nil, ""] ->
         {:error, error_detail(100, "Missing or invalid 'id'", "id")}
 
-      msg.to == nil or msg.to.eid in [nil, ""] ->
-        {:error, error_detail(100, "Invalid 'to' identity", "to.eid")}
+      msg.from == nil or msg.from.eid in [nil, ""] ->
+        {:error, error_detail(100, "Invalid 'from' identity", "from.eid")}
 
-      msg.to.connection_resource_id in [nil, ""] ->
-        {:error, error_detail(100, "Missing 'to.connection_resource_id'", "to.connection_resource_id")}
+      msg.from.connection_resource_id in [nil, ""] ->
+        {:error, error_detail(100, "Missing 'from.connection_resource_id'", "from.connection_resource_id")}
 
       msg.type not in @allowed_types ->
         {:error, error_detail(100, "Invalid 'type' (must be 1, 2, or 3)", "type")}
@@ -35,8 +35,8 @@ defmodule Bimip.Validators.PingPongValidator do
       msg.timestamp in [nil, 0] ->
         {:error, error_detail(100, "Missing or invalid 'timestamp'", "timestamp")}
 
-      msg.to.eid != eid or msg.to.connection_resource_id != device_id ->
-        {:error, error_detail(401, "EID or device_id mismatch — unauthorized sender", "to")}
+      msg.from.eid != eid or msg.from.connection_resource_id != device_id ->
+        {:error, error_detail(401, "EID or device_id mismatch — unauthorized sender", "from")}
 
       true ->
         :ok

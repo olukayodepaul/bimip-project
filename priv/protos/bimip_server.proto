@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package bimip_server;
+
+service BimipService {
+  rpc DeviceAuth (AuthRequest) returns (AuthReply) {}
+  rpc GenerateDeviceToken (GenerateTokenReq) returns (GenerateTokenRes) {}
+  rpc BlackListToken (BlackListTokenReq) returns (BlackListTokenRes) {}
+  rpc GenAccessFromRefreshToken (GenerateAccessTokenFromRefreshTokenReq) returns (GenerateAccessTokenFromRefreshTokenRes) {}
+  
+  // 👇 New RPC for Awareness Visibility
+  rpc AwarenessVisibility (AwarenessVisibilityReq) returns (AwarenessVisibilityRes) {}
+}
+
+// -------------------- Existing Messages --------------------
+
+message AuthReply {
+  int32 status = 1;
+  int32 type = 2; 
+  string jti = 3;
+  string message = 4;
+  string device_id = 5;
+  string jid = 6;
+}
+
+message AuthRequest {
+  string token = 1;
+  int32 type = 2;
+}
+
+message GenerateTokenReq {
+  string jid = 1;
+  string device_id = 2;
+  int32 user_id = 3; 
+}
+
+message GenerateTokenRes {
+  string status = 1;
+  string refresh_token = 2;
+  string access_token = 3;
+  string message = 4;
+}
+
+message BlackListTokenReq {
+  string token = 1;
+}
+
+message BlackListTokenRes {
+  string status = 1;
+  string message = 4;
+}
+
+message GenerateAccessTokenFromRefreshTokenReq {
+  string token = 1;
+}
+
+message GenerateAccessTokenFromRefreshTokenRes {
+  string status = 1;
+  string refresh_token = 2;
+  string access_token = 3;
+  string message = 4;
+}
+
+// -------------------- Awareness Visibility --------------------
+
+message AwarenessVisibilityReq {
+  string id = 1;                   // Unique message ID
+  string eid = 2;                  // Entity ID (user or session identifier)
+  string device_id = 3;            // Device making the visibility change
+  int32 type = 4;                  // 1 = ENABLED (share awareness), 2 = DISABLED (hide awareness)
+  int64 timestamp = 5;             // Unix UTC timestamp (milliseconds)
+}
+
+message AwarenessVisibilityRes {
+  string id = 1;                   // Unique message ID (echoed back)
+  string eid = 2;                  // Entity ID (echoed back)
+  string device_id = 3;            // Device making the visibility change (echoed back)
+  int32 type = 4;                  // Visibility type (echoed back)
+  int64 timestamp = 5;             // Unix UTC timestamp (echoed back)
+  int32 status = 6;                // 0 = OK, non-zero = error code
+  string message = 7;              // Description or error message
+}
