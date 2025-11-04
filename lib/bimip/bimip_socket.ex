@@ -87,7 +87,8 @@ defmodule Bimip.Socket do
       %{
         2 => &handle_awareness/2,
         3 => &handle_ping_pong/2,
-        4 => &handle_awareness_visibility/2
+        4 => &handle_awareness_visibility/2,
+        6 => &handle_message/2,
       }
     end
 
@@ -136,8 +137,16 @@ defmodule Bimip.Socket do
           send(self(), {:binary, error_msg})
           {:ok, state}
       end
-      # IO.inspect(data, label: "AWARNESS_VISIBILITY_DATA")
-      {:ok, state}
+    end
+
+    defp handle_message(state, data) do
+      case RegistryHub.route_message_to_client(state.eid, state.device_id, data) do
+        :ok -> {:ok, state}
+        :error ->
+          error_msg = ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
+          send(self(), {:binary, error_msg})
+          {:ok, state}
+      end
     end
 
 

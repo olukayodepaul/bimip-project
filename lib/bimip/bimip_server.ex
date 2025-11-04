@@ -4,7 +4,7 @@ defmodule Bimip.Service.Master do
   alias Bimip.Device.Supervisor
   alias Storage.DeviceStorage
   alias Storage.Registration
-  alias Storage.DeviceStateChange
+
   alias Bimip.Broker
   alias Settings.ServerState
   alias Route.AwarenessFanOut
@@ -56,7 +56,7 @@ defmodule Bimip.Service.Master do
     {:ok,
     %{
       eid: eid,
-      awareness: registration.visibility,
+      visibility: registration.visibility,
       display_name: registration.display_name,
       current_timer: nil,
       force_stale: DateTime.utc_now(),
@@ -98,30 +98,44 @@ defmodule Bimip.Service.Master do
       supports_notifications: true,
       supports_media: true,
       status_source: "LOGIN",
-      awareness_intention: state.awareness,
+      visibility: state.visibility,
       inserted_at: now
     }
 
     DeviceStorage.register_device_session(device_id, eid, payload)
-    Broker.group(eid, ThrowAwarenessSchema.success(eid, device_id), state.awareness)
+    Broker.group(eid, ThrowAwarenessSchema.success(eid, device_id, "", "", 6), state.visibility)
     {:noreply, state}
   end
 
   # ----------------------
   # Client pong handler
   # ----------------------
+  # Note when working on ping pong, verify is this is a system ping pong. network ping pong is not allow on server
+  # Only client server ping pong is allow on the server. client genserver should handle network ping pong 
+  # only send message to server only when want to terminate
   @impl true
-  def handle_cast({:client_send_pong, {eid, device_id, status}}, %{force_stale: force_stale, awareness: awareness} = state) do
-    now = DateTime.utc_now()
-    DeviceStorage.update_device_status(device_id, eid, "PONG", StatusMapper.status_name(status))
+  def handle_cast({:client_send_pong, {eid, device_id, status}}, %{force_stale: force_stale} = state) do
+    # now = DateTime.utc_now()
+    # DeviceStorage.update_device_status(device_id, eid, "PONG", StatusMapper.status_name(status))
 
-    case Storage.DeviceStateChange.track_state_change(eid) do
-      {:changed, _user_status, _online_devices} ->
-        {:noreply, %{state | force_stale: now}}
-      {:unchanged, _user_status, _online_devices} ->
-        idle_too_long? = DateTime.diff(now, force_stale) >= @stale_threshold_seconds
-        if idle_too_long?, do: {:noreply, %{state | force_stale: now}}, else: {:noreply, state}
-    end
+    # case Storage.DeviceStateChange.track_state_change(eid) do
+    #   {:changed, _user_status, _online_devices} ->
+    #     {:noreply, %{state | force_stale: now}}
+    #   {:unchanged, _user_status, _online_devices} ->
+    #     idle_too_long? = DateTime.diff(now, force_stale) >= @stale_threshold_seconds
+    #     if idle_too_long?, do: {:noreply, %{state | force_stale: now}}, else: {:noreply, state}
+    # end
+
+    {:noreply, state}
+  end
+
+  # Note when working on ping pong, verify is this is a system ping pong. network ping pong is not allow on server
+  # Only client server ping pong is allow on the server. client genserver should handle network ping pong 
+  # only send message to server only when want to terminate
+  def handle_cast({:route_ping_pong, eid, device_id}, %{visibility: visibility} = state) do
+    DeviceStorage.update_device_status(device_id, eid, "PING_PONG", StatusMapper.status_name(1))
+    Broker.group(eid, ThrowAwarenessSchema.success(eid, device_id, "", "", 6), visibility)
+    {:noreply, state}
   end
 
   # ----------------------
@@ -130,17 +144,17 @@ defmodule Bimip.Service.Master do
   @impl true
   def handle_cast({:send_terminate_signal_to_server, %{device_id: device_id, eid: eid}}, %{current_timer: current_timer} = state) do
     DeviceStorage.delete_device(device_id, eid)
-    if Storage.DeviceStateChange.remaining_active_devices?(eid) do
-      DeviceStateChange.cancel_termination_if_any_device_are_online(current_timer)
+    if Storage.DeviceStorage.remaining_active_devices?(eid) do
+      DeviceStorage.cancel_termination_if_any_device_are_online(current_timer)
       {:noreply, state}
     else
-      DeviceStateChange.schedule_termination_if_all_offline(state)
+      DeviceStorage.schedule_termination_if_all_offline(state)
       {:noreply, state}
     end
   end
 
   def handle_info(:terminate, %{eid: eid, current_timer: current_timer} = state) do
-    if Storage.DeviceStateChange.remaining_active_devices?(eid) do
+    if Storage.DeviceStorage.remaining_active_devices?(eid) do
       Logger.warning("Active devices detected. Skipping termination.", eid: eid, timer: current_timer, reason: :devices_still_active)
       {:noreply, state}
     else
@@ -152,22 +166,24 @@ defmodule Bimip.Service.Master do
   # ----------------------
   # Awareness routing
   # ----------------------
-  def handle_cast({:route_awareness, from_eid, from_device_id, to_eid, to_device_id, type, data}, %{awareness: awareness} = state) do
-    DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
+  def handle_cast({:route_awareness, from_eid, from_device_id, to_eid, to_device_id, type, data}, %{visibility: visibility} = state) do
 
     case type do
-      1 -> Broker.group(from_eid, data, awareness)
-      s when s in 2..5 -> Broker.group(from_eid, data, awareness)
-      s when s in 6..11 -> Broker.peer(to_eid, data, awareness)
+      
+      s when s in 1..2 -> 
+
+        DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
+        if type == 1 do
+          # fan out offline queue
+          IO.inspect("Fanout offline queue")
+        end
+          Broker.group(from_eid, data, visibility)
+
+      s when s in 3..6 -> 
+        Broker.group(from_eid, data, visibility)
       _ -> :ok
     end
 
-    {:noreply, state}
-  end
-
-  def handle_cast({:route_ping_pong, eid, device_id}, %{awareness: awareness} = state) do
-    DeviceStorage.update_device_status(device_id, eid, "PING_PONG", StatusMapper.status_name(1))
-    Broker.group(eid, ThrowAwarenessSchema.success(eid, device_id, "", "", 12), awareness)
     {:noreply, state}
   end
 
@@ -180,11 +196,12 @@ defmodule Bimip.Service.Master do
       case status do
         s when s in 1..2 -> 
           Subscriber.update_subscriber(eid, from_eid, StatusMapper.status_name(s))
-          AwarenessFanOut.group_fan_out(encoded_msg, eid)
-        s when s in 6..11 -> 
+          AwarenessFanOut.group_fan_out(encoded_msg, eid) 
+        s when s in 3..5 -> 
           Subscriber.update_subscriber(eid, from_eid, "ONLINE")
-          AwarenessFanOut.group_fan_out(encoded_msg, eid)
-        12 -> Subscriber.update_subscriber(eid, from_eid, "ONLINE")
+        6 -> 
+          Subscriber.update_subscriber(eid, from_eid, "ONLINE")
+          AwarenessFanOut.group_fan_out(encoded_msg, eid) 
         _ -> Logger.warning("Unknown awareness status: #{inspect(status)} from #{from_eid}")
       end
     else
@@ -239,15 +256,62 @@ defmodule Bimip.Service.Master do
     {:noreply, state}
   end
 
+  # ----------------------
+  # Route and persist message
+  # ----------------------
+  @impl true
+  def handle_cast({:route_message, eid, device_id, post}, state) do
+    GenServer.cast(self(), {:chat_queue, post.from, post.to, post})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:chat_queue, from, to, payload}, %{eid: _eid} = state) do
+    partition_id = 1
+
+    %{eid: from_eid} = from
+    %{eid: to_eid} = to
+
+    # ----------------------
+    # Queue keys (directional)
+    # ----------------------
+    user_a = "#{from_eid}_#{to_eid}"  # sender queue
+    user_b = "#{to_eid}_#{from_eid}"  # recipient queue
+
+    case BimipLog.write(user_a, partition_id, from, to, payload) do
+      {:ok, signal_offset_a} ->
+        IO.inspect(signal_offset_a, label: "[WRITE OK A → B]")
+
+        payload_b = PersistMessage.build(%{from: from, to: to, payload: payload}, signal_offset_a)
+
+        case BimipLog.write(user_b, partition_id, to, from, payload, signal_offset_a) do
+          {:ok, signal_offset_b} ->
+            IO.inspect(signal_offset_b, label: "[WRITE OK B ← A]")
+
+          {:error, reason} ->
+            IO.inspect(reason, label: "[WRITE ERROR B ← A]")
+        end
+
+      {:error, reason} ->
+        IO.inspect(reason, label: "[WRITE ERROR A → B]")
+    end
+
+    {:noreply, state}
+  end
+
+
+
 
   # ----------------------
   # Message logging (via BimipLog GenServer)
   # ----------------------
   @impl true
   def handle_cast({:log_user_message, partition_id, from, to, payload}, %{eid: eid} = state) do
-    case BimipLog.write(eid, partition_id, from, to, payload) do
-      {:ok, offset} -> Logger.info("[LOG] eid=#{eid} partition=#{partition_id} offset=#{offset} from=#{from} to=#{to}")
-      {:error, reason} -> Logger.error("[LOG] failed write eid=#{eid} partition=#{partition_id} reason=#{inspect(reason)}")
+    case BimipLog.write("#{from}_#{to}", partition_id, from, to, payload) do
+      {:ok, offset} -> 
+        Logger.info("[LOG] eid=#{eid} partition=#{partition_id} offset=#{offset} from=#{from} to=#{to}")
+      {:error, reason} -> 
+        Logger.error("[LOG] failed write eid=#{eid} partition=#{partition_id} reason=#{inspect(reason)}")
     end
 
     {:noreply, state}

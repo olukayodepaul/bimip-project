@@ -7,10 +7,10 @@ defmodule Storage.DeviceStorage do
   """
 
   require Logger
+  alias Settings.ServerState
 
   @device_table :device
   @device_index_table :device_index
-  # @user_awareness_table :user_awareness_table -- REMOVED
 
   @doc """
   Save a device payload and update secondary index.
@@ -212,9 +212,120 @@ defmodule Storage.DeviceStorage do
     end
   end
 
+  @doc """
+  Check overall user presence based on all their devices.
+  - Returns "ONLINE" if at least one device is active within the stale threshold.
+  - Returns "OFFLINE" if all devices are stale/offline or awareness is disabled.
+  """
+  def user_presence_status(eid) do
+    now = DateTime.utc_now()
+    stale_threshold = ServerState.stale_threshold_seconds()
+
+    case fetch_devices_by_eid(eid) do
+      {:error, _} -> "OFFLINE"
+      [] -> "OFFLINE"
+      devices when is_list(devices) ->
+        owner_override? =
+          Enum.any?(devices, fn d -> d.awareness_intention == 1 end)
+
+        cond do
+          owner_override? ->
+            "OFFLINE"
+
+          Enum.any?(devices, fn d ->
+            d.status == "ONLINE" and
+              DateTime.diff(now, d.last_seen) <= stale_threshold
+          end) ->
+            "ONLINE"
+
+          true ->
+            "OFFLINE"
+        end
+    end
+  end
+
+
+  @doc """
+  Check if there are any currently active devices for a given `eid`.
+  Returns `true` if at least one device is ONLINE and seen within the stale threshold,
+  otherwise `false`.
+  """
+  def remaining_active_devices?(eid) do
+    now = DateTime.utc_now()
+    stale_threshold = Settings.ServerState.stale_threshold_seconds()
+    benchmark_time = DateTime.add(now, -stale_threshold, :second)
+
+    case fetch_devices_by_eid(eid) do
+      {:error, _} ->
+        false
+
+      [] ->
+        false
+
+      devices when is_list(devices) ->
+        Enum.any?(devices, fn d ->
+          d.status == "ONLINE" and
+            d.last_seen != nil and
+            DateTime.compare(d.last_seen, benchmark_time) == :gt
+        end)
+    end
+  end
+
+  # -----------------------------
+  # Termination scheduling
+  # -----------------------------
+  @doc """
+  Schedule termination if all devices for the given user (EID) are offline.
+  Cancels any existing timer before scheduling a new one.
+  Waits for the remaining grace period based on the last_seen timestamp.
+  """
+  def schedule_termination_if_all_offline(%{eid: eid, current_timer: current_timer} = state) do
+    now = DateTime.utc_now()
+    devices = fetch_devices_by_eid(eid)
+    stale_threshold = Settings.ServerState.stale_threshold_seconds()
+
+    online_devices =
+      case devices do
+        {:error, _} -> []
+        _ -> Enum.filter(devices, fn d -> d.status == "ONLINE" end)
+      end
+
+    if current_timer, do: Process.cancel_timer(current_timer)
+
+    if online_devices == [] do
+      latest_last_seen =
+        devices
+        |> Enum.map(& &1.last_seen)
+        |> Enum.max(fn -> now end)
+
+      diff = DateTime.diff(now, latest_last_seen)
+      remaining_seconds = max(stale_threshold - diff, 0)
+      grace_period_ms = remaining_seconds * 1000
+
+      Logger.warning(
+        "All devices offline. Scheduling termination in #{grace_period_ms} ms " <>
+          "(stale_threshold: #{stale_threshold}s, last_seen diff: #{diff}s)"
+      )
+
+      timer_ref = Process.send_after(self(), :terminate, grace_period_ms)
+      {:noreply, %{state | current_timer: timer_ref}}
+    else
+      Logger.info("There are still online devices. No termination scheduled.")
+      {:noreply, %{state | current_timer: nil}}
+    end
+  end
+
+  @doc """
+  Cancels a termination timer if any device is still online.
+  """
+  def cancel_termination_if_any_device_are_online(current_timer) do
+    if current_timer do
+      Logger.info("Cancelled termination timer for #{inspect(current_timer)}")
+      Process.cancel_timer(current_timer)
+    end
+  end
+
 end
-
-
 
 # Storage.DeviceStorage.fetch_devices_by_eid("a@domain.com")
 # Storage.DeviceStorage.get_device("a@domain.com", "aaaaa1")

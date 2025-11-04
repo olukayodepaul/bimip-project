@@ -61,7 +61,6 @@ defmodule Bimip.Application do
     create(:subscribers, [:id, :owner_id, :subscriber_id, :status, :blocked, :inserted_at, :last_seen], :set)
     create(:subscriber_index, [:owner_id, :subscriber_id], :bag)
     
-
     create(:first_segment, [:key, :segment], :set)
     create(:current_segment, [:key, :segment], :set)
     create(:next_offsets, [:key, :offset], :set)
@@ -70,8 +69,6 @@ defmodule Bimip.Application do
     create(:commit_offsets, [:key, :offset], :set)
     create(:segment_cache, [:key, :segment, :position], :set)
     create(:pending_acks, [:key, :offsets], :set)  # <-- new table
-    
-
     
   end
 

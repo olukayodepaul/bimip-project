@@ -52,10 +52,10 @@ defmodule BimipLog do
   # Public API
   # ----------------------
   @doc "Append a message to a user's partition log"
-  def write(user, partition_id, from, to, payload) do
+  def write(user, partition_id, from, to, payload, user_offset \\ nil) do
     with :ok <- ensure_files_exist(user, partition_id),
-         {:ok, %{seg: seg, next_offset: next_offset, do_rollover: do_rollover}} <- get_atomic_write_state(user, partition_id) do
-
+        {:ok, %{seg: seg, next_offset: next_offset, do_rollover: do_rollover}} <- get_atomic_write_state(user, partition_id) do
+        
       qfile = queue_file(user, partition_id, seg)
 
       case File.open(qfile, [:append, :binary]) do
@@ -63,12 +63,15 @@ defmodule BimipLog do
           {:ok, pos_before} = :file.position(fd, :eof)
 
           timestamp = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
+    
+          offset_payload = PersistMessage.build(%{from: from, to: to, payload: payload}, next_offset, user_offset)
+
           record = %{
             offset: next_offset,
             partition_id: partition_id,
             from: from,
             to: to,
-            payload: payload,
+            payload: offset_payload,
             timestamp: timestamp
           }
 
@@ -512,5 +515,5 @@ defmodule BimipLog do
 end
 
 # {:ok, offset} = BimipLog.write("user1", 1, "alice", "bob", "Hello World")
-# {:ok, result} = BimipLog.fetch("user1", "device1", 1, 10)
-# BimipLog.ack_message("user1", "device1", 1, 3)
+# {:ok, result} = BimipLog.fetch("a@domain.com_b@domain.com", "device1", 1, 10)
+# BimipLog.ack_message("a@domain.com", "device1", 1, 9)

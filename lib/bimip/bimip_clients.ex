@@ -295,6 +295,92 @@ defmodule Bimip.Device.Client do
   end
 
 
+  def handle_cast(
+        {:client_message, _eid, _device_id, data},
+        %{ws_pid: ws_pid} = state
+      ) do
+
+    # Decode the incoming message binary
+    msg = Bimip.MessageScheme.decode(data)
+   
+
+    case msg.payload do
+      {:message, %Bimip.Message{} = message} ->
+        # ✅ Validate the Message
+        case Bimip.Validators.MessageValidator.validate(message) do
+          :ok ->
+          
+            # Extract full message data into a post map
+            post = %{
+              id: message.id,
+              from: %{
+                eid: message.from.eid,
+                connection_resource_id: message.from.connection_resource_id
+              },
+              to: %{
+                eid: message.to.eid,
+                connection_resource_id: message.to.connection_resource_id
+              },
+              type: message.type,
+              timestamp: message.timestamp,
+              payload: message.payload,
+              encryption_type: message.encryption_type,
+              encrypted: message.encrypted,
+              signature: message.signature,
+              status: message.status
+            }
+
+            RegistryHub.route_message_to_server(post)
+
+            {:noreply,
+            %{
+              state
+              | device_state: %{
+                  state.device_state
+                  | last_seen: DateTime.utc_now(),
+                    last_activity: DateTime.utc_now(),
+                    last_change_at: DateTime.utc_now()
+                }
+            }}
+
+          {:error, err} ->
+
+            reason = "Field '#{err.field}' → #{err.description}"
+
+            error_binary =
+              ThrowMessageSchema.error(
+                message.id || "",
+                message.from.eid,
+                message.from.connection_resource_id,
+                reason,
+                message.to.eid,
+                message.to.connection_resource_id
+              )
+
+            send(ws_pid, {:binary, error_binary})
+            {:noreply, state}
+        end
+
+      _ ->
+        reason = "Invalid payload: expected Message stanza"
+        error_binary =
+          ThrowMessageSchema.error(
+            "0",                     # id
+            state.eid,               # from_eid
+            state.device_id,         # from_device_id
+            reason,                  # description
+            "",                      # to_eid (optional)
+            ""                       # to_device_id (optional)
+          )
+
+        send(state.ws_pid, {:binary, error_binary})
+        {:noreply, state}
+
+      end
+  end
+
+
+
 end
 
 # Bimip.Device.Client.get_state("aaaaa2")

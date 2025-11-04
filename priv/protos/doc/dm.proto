@@ -1,0 +1,250 @@
+syntax = "proto3";
+
+package bimip;
+
+// ---------------- Identity ----------------
+// Represents a user and optionally a specific device/session
+// int64 node = 12;                
+// Send sender system node to receiver should in case of chat 
+// implemented in version two
+// perform selective awareness online to node that is online
+//:rpc.call(:"bimip@node1", Bimip.Server, :deliver_message, [to, payload])
+message Identity {
+    string eid = 1;                              // User’s global identifier (e.g., account ID or JID)
+    optional string connection_resource_id = 2;  // Identifier for a specific device or session instance
+    string node = 3; // System node handling this entity (cluster context)
+}
+
+// ---------------- Media ----------------
+message Media {
+    string type = 1;        // "image" | "video" | "audio" | "file"
+    string url = 2;         // URL of the media
+    string thumbnail = 3;   // Thumbnail URL (optional)
+    int64 size = 4;         // Size in bytes
+}
+
+// ---------------- Signal ----------------
+// Represents transient system or message events —
+// used for activity (typing, recording) and acknowledgment (delivered, read, etc.)
+message Signal {
+    string id = 1;                      // Unique signal ID (UUID or correlation reference)
+    Identity from = 2;                  // Source entity (user/device/system node)
+    Identity to = 3;                    // Target entity (user/device/system node)
+    int32 type = 4;                     // 1=REQUEST, 2=RESPONSE, 3=ERROR
+    int32 status = 5;                   // 6=TYPING, 7=RECORDING, 8=FORWARDED, 9=DELIVERED, 10=READ, 11=RESUME
+    int64 timestamp = 6;                // Epoch milliseconds
+    int64 monotonic_id = 7;             // Monotonic message queue sequence number (derived from the Message)
+}
+
+// ---------------- Payload ----------------
+message Payload {
+    map<string, string> data = 1;   // dynamic key-value content
+    repeated Media media = 2;       // optional media attachments
+}
+
+// ---------------- Metadata ----------------
+message Metadata {
+    string encrypted = 1;    // base64 encrypted content
+    string signature = 2;    // base64 signature for integrity
+}
+
+// ---------------- ACK ----------------
+message Ack {
+    repeated int32 status = 1;       // numeric status codes:
+                                     // 9 = DELIVERED       → Message successfully delivered to recipient
+                                     // 10 = READ          → Message read by recipient
+                                     // 11 = FORWARDED     → Message forwarded to another recipient
+                                     // 12 = SENT           → Message sent to server
+                                     // 13 = PLAYED/VIEWED → Media message played/viewed
+}
+
+// ---------------- Awareness ----------------
+// The Awareness stanza communicates real-time user or system states
+// such as presence, activity, temporary conditions, or message acknowledgements.
+// It serves as a lightweight, fire-and-forget alternative to XMPP presence stanzas,
+// optimized for low latency, binary transmission, and TTL-based expiration.
+//
+// ──────────────────────────────────────────────
+// Awareness Mapping:
+//
+// User State:
+// 1 = ONLINE          → User device is online
+// 2 = OFFLINE         → User device is offline
+//
+// User Intent Status:
+// 3 = AWAY            → User intentionally away
+// 4 = BUSY            → User intentionally busy
+// 5 = DND             → Do not disturb
+
+
+//System awarenss will have his own stanza
+// System Awareness & Message ACK:
+// 6 = TYPING          → User is typing
+// 7 = RECORDING       → User is recording audio/video
+// 8 = FORWARDED      → Message forwarded to another recipient
+// 9 = DELIVERED       → Message successfully delivered to recipient
+// 10 = READ           → Message read by recipient
+// 11 = RESUME          → User resumes activity
+//
+// Location Sharing Policy:
+// 1 = ENABLED         → User shares real-time location
+// 2 = DISABLED        → User hides location coordinates
+//
+// Behavioral Characteristics:
+// • Fire-and-forget — no acknowledgment or response required for awareness updates
+// • Auto-expiry — servers and clients must discard awareness after (timestamp + ttl)
+
+message Awareness {
+    string id = 1;                  // unique ID to correlate with a related message or action
+    Identity from = 2;              // Sender's identity (user or device)
+    Identity to = 3;                // Target identity (used if resource = OTHERS)
+    int32 type = 4;                 // 1=REQUEST, 2=RESPONSE, 3=ERROR
+    int32 status = 5;               // Awareness or ACK state (see mapping above)
+    int32 location_sharing = 6;     // 1=ENABLED, 2=DISABLED
+    double latitude = 7;            // Latitude (if sharing enabled)
+    double longitude = 8;           // Longitude (if sharing enabled)
+    int32 ttl = 9;                  // Validity duration in seconds before expiration
+    string details = 10;            // Additional info (optional)
+    int64 timestamp = 11;           // Epoch time in milliseconds
+    int32 visibility = 12;          // 1 = ENABLED, 2 = DISABLED
+}
+
+// ---------------- Message ----------------
+// Represents a chat or notification message between users.
+// Message-level ACKs are tracked via the `ack` field.
+// Awareness (TYPING, RECORDING) is per-user and handled separately.
+message Message {
+    string id = 1;                    // unique message ID
+    string from = 2;                  // sender (JID or user ID)
+    string to = 3;                    // recipient (JID or user ID)
+    string type = 4;                  // "chat" | "notification"
+    int64 timestamp = 5;              // epoch milliseconds
+    Payload payload = 6;              // message payload
+    Ack ack = 7;                      // message acknowledgements (DELIVERED, READ, FORWARDED)
+    Metadata metadata = 8;            // secure metadata (optional)
+}
+
+// ---------------- ErrorMessage ----------------
+// Represents an error response with code, description, and optional details
+// ──────────────────────────────────────────────
+// Important Status Codes:
+//  200 = OK, 100 = INVALID_REQUEST, 401 = UNAUTHORIZED, 408 = TIMEOUT,
+//  500 = INTERNAL_ERROR, 600 = DEVICE_DISCONNECTED, 602 = SESSION_EXPIRED
+message ErrorMessage {
+    int32 code = 1;            // See list above
+    int32 error_origin = 2;    // Route or context where the status originated
+    string details = 3;        // Additional info (optional)
+    int64 timestamp = 4;
+}
+
+// ---------------- PingPong ----------------
+// Heartbeat messages exchanged between client and server
+// to maintain connectivity and track device session activity.
+// Client sends PING (type = 1); Server responds with PONG (type = 2).
+
+message PingPong {
+    string id = 1;                 // Unique message or request ID (UUID or sequence)
+    Identity from = 2;               // Target identity (usually the client's own Identity)
+    int32 type = 3;                // 1 = PING, 2 = PONG, 3 = ERROR
+    int64 timestamp = 4;           // Unix UTC timestamp in milliseconds
+    string details = 5;            // Optional: used only when type = 3 (ERROR)
+}
+
+
+// ---------------- AwarenessContact ----------------
+// Used for both negotiation and stored roster state. work with bimipServer
+message Contact {
+    Identity from = 1;              // Owner of the relationship (list holder)
+    Identity to = 2;                // The contact target
+    string tracking_id = 3;         // For matching responses
+
+    int32 relationship = 4;         // 1 = UNILATERAL, 2 = MUTUAL
+
+    int32 action = 5;               // 1=REQUEST (SUBSCRIBE)
+                                    // 2=ACCEPT (SUBSCRIBED)
+                                    // 3=DENY
+                                    // 4=REMOVE (UNSUBSCRIBE)
+                                    // 5=REMOVED (UNSUBSCRIBED)
+                                    // 6=ERROR
+
+    int64 timestamp = 6;
+    string details = 7;
+}
+
+// ---------------- AwarenessVisibility ----------------
+// User toggles whether their own Awareness signals are visible to others.
+// This affects only the sender's broadcast behavior, not roster/subscriptions.
+//
+// Behavior:
+// - Clients send this message to explicitly ENABLE or DISABLE their own awareness state.
+// - The server MUST always respond with a confirmation message of the same type
+//   (1 = ENABLED, 2 = DISABLED) to acknowledge the change.
+// - The 'id' field allows clients to correlate each request with its corresponding response.
+// - If the request cannot be processed (invalid user, session expired, etc.),
+//   the server responds with type = 3 (ERROR) and includes a descriptive 'details' field.
+//
+// Examples:
+//   → Client: AwarenessVisibility { id: "req-101", from: "user123", type: 2 }
+//   ← Server: AwarenessVisibility { id: "req-101", from: "user123", type: 2, details: "Awareness disabled" }
+//
+//   → Client: AwarenessVisibility { id: "req-102", from: "user123", type: 1 }
+//   ← Server: AwarenessVisibility { id: "req-102", from: "user123", type: 1, details: "Awareness enabled" }
+//
+//   → Client: AwarenessVisibility { id: "req-103", from: "user123", type: 1 }
+//   ← Server: AwarenessVisibility { id: "req-103", from: "user123", type: 3, details: "Already enabled" }
+//
+message AwarenessVisibility {
+    string id = 1;            // Unique request identifier for tracking/ack correlation
+    Identity from = 2;        // The user changing their own visibility
+    int32 type = 3;           // 1 = ENABLED, 2 = DISABLED, 3 = ERROR
+    int64 timestamp = 4;      // Unix UTC timestamp (ms)
+    string details = 5;       // Optional reason, explanation, or error description
+}
+
+message TokenAuthority {
+    Identity to = 1;        // Target entity (server or client)
+    string token = 2;       // Access or refresh token
+    int32 type = 3;         // 1=REQUEST, 2=RESULT, 3=ERROR
+    int32 task = 4;         // 1=REFRESH, 2=REVOKE
+    int64 timestamp = 5;    // Unix UTC timestamp (ms)
+    string details = 6;     // Optional explanation (LOGOUT, COMPROMISED, INVALID_TOKEN, etc.)
+}
+
+// ---------------- Logout ----------------
+// Uses both eid and connection_resource_id to log out a specific device.
+message Logout {
+    Identity to = 1;                // Target of logout (client or server)
+    int32 type = 2;                 // 1=REQUEST, 2=RESPONSE, 3=ERROR
+    int32 status = 3;               // 1=DISCONNECT, 2=FAIL, 3=SUCCESS, 4=PENDING
+    int64 timestamp = 4;            // Unix UTC timestamp (ms)
+    string details = 5;             // Optional: error or failure description
+}
+
+// ---------------- Body ----------------
+// Container for a list of stanzas of the same type (currently only Awareness).
+// This is used for batching multiple stanzas into a single transport message
+// to reduce network overhead and increase efficiency.
+message Body {
+    int64 route = 1;                        // Logical stanza route, e.g., 1001=Awareness
+    repeated Awareness awareness_list = 2;  // Only Awareness list for now
+    int64 timestamp = 3;                    // Creation time
+}
+
+// ---------------- MessageScheme ----------------
+// Wrapper for all messaging protocol types, ensuring only one payload can be present.
+message MessageScheme {
+    int64 route = 1;    // Top-level route (transport/channel)
+
+    oneof payload {
+        Awareness awareness                           = 2;
+        PingPong ping_pong                            = 3;
+        AwarenessVisibility awareness_visibility      = 4;
+        TokenAuthority token_authority                = 5;
+        Message chat_message                          = 6;  // Chat or notification message
+
+        Body body                                     = 7;  // Body container for batched stanzas
+        ErrorMessage error                            = 8;
+        Logout logout                                 = 9;
+    }
+
+}

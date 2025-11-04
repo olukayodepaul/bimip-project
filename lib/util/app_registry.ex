@@ -42,6 +42,25 @@ defmodule App.RegistryHub do
     end
   end
 
+  def route_message_to_client(eid, device_id, data) do
+    case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:client_message, eid, device_id, data})
+        :ok
+      [] ->
+        :error
+    end
+  end
+
+  def route_message_to_server(%{from: %{eid: eid, connection_resource_id: device_id}} = post) do
+    case Horde.Registry.lookup(EidRegistry, eid) do
+      [{pid, _}] -> 
+        GenServer.cast(pid, {:route_message, eid, device_id, post})
+      [] -> 
+        :error
+    end
+  end
+
   def route_ping_pong_to_server(eid, device_id) do
     case Horde.Registry.lookup(EidRegistry, eid) do
       [{pid, _}] -> 
@@ -50,7 +69,7 @@ defmodule App.RegistryHub do
     end
   end
 
-  #Stick to this
+  # Stick to this
   @spec route_awareness_visibility_to_server(map()) :: :ok | :error
   def route_awareness_visibility_to_server(%{eid: eid} = visibility) when is_binary(eid) do
     case Horde.Registry.lookup(EidRegistry, eid) do
