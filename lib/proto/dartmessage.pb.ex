@@ -68,13 +68,14 @@ defmodule Bimip.Signal do
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
   field :id, 1, type: :string
-  field :signal_id, 2, type: :string, json_name: "signalId"
-  field :status, 3, type: :int32
-  field :timestamp, 4, type: :int64
-  field :from, 5, type: Bimip.Identity
-  field :to, 6, type: Bimip.Identity
-  field :type, 7, type: :int32
-  field :error, 8, proto3_optional: true, type: :string
+  field :signal_offset, 2, type: :string, json_name: "signalOffset"
+  field :user_offset, 3, type: :string, json_name: "userOffset"
+  field :status, 4, type: :int32
+  field :timestamp, 5, type: :int64
+  field :from, 6, type: Bimip.Identity
+  field :to, 7, type: Bimip.Identity
+  field :type, 8, type: :int32
+  field :error, 9, proto3_optional: true, type: :string
 end
 
 defmodule Bimip.PushNotification do

@@ -261,16 +261,17 @@ defmodule Bimip.Service.Master do
   # ----------------------
   @impl true
   def handle_cast({:route_message, eid, device_id, post}, state) do
-    GenServer.cast(self(), {:chat_queue, post.from, post.to, post})
+    GenServer.cast(self(), {:chat_queue, post.from, post.to, post.id, post})
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:chat_queue, from, to, payload}, %{eid: _eid} = state) do
+  def handle_cast({:chat_queue, from, to, id, payload},  state) do
     partition_id = 1
 
-    %{eid: from_eid} = from
-    %{eid: to_eid} = to
+    %{eid: from_eid, connection_resource_id: from_device_id} = from
+    %{eid: to_eid, connection_resource_id: to_device_id} = to
+    
 
     # ----------------------
     # Queue keys (directional)
@@ -286,8 +287,23 @@ defmodule Bimip.Service.Master do
 
         case BimipLog.write(user_b, partition_id, to, from, payload, signal_offset_a) do
           {:ok, signal_offset_b} ->
-            IO.inspect(signal_offset_b, label: "[WRITE OK B ← A]")
 
+            pair_fan_out = ThrowSignalSchema.success(
+              from_eid, 
+              from_device_id,
+              to_eid,
+              to_device_id,
+              1,
+              signal_offset_a,
+              signal_offset_a,
+              id,
+              ""
+            )
+
+            AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
+
+            IO.inspect(signal_offset_b, label: "[WRITE OK B ← A]")
+            #Send Ack back to A. SENT ack........
           {:error, reason} ->
             IO.inspect(reason, label: "[WRITE ERROR B ← A]")
         end

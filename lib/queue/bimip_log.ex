@@ -69,8 +69,6 @@ defmodule BimipLog do
           record = %{
             offset: next_offset,
             partition_id: partition_id,
-            from: from,
-            to: to,
             payload: offset_payload,
             timestamp: timestamp
           }
@@ -157,13 +155,13 @@ defmodule BimipLog do
         end)
 
       {:ok,
-       %{
-         messages: messages,
-         device_offset: commit_offset,
-         target_offset: target_offset,
-         current_segment: current_seg,
-         first_segment: first_seg
-       }}
+        %{
+          messages: messages,
+          device_offset: commit_offset,
+          target_offset: target_offset,
+          current_segment: current_seg,
+          first_segment: first_seg
+        }}
     else
       {:error, reason} -> {:error, reason}
     end
@@ -515,5 +513,11 @@ defmodule BimipLog do
 end
 
 # {:ok, offset} = BimipLog.write("user1", 1, "alice", "bob", "Hello World")
-# {:ok, result} = BimipLog.fetch("a@domain.com_b@domain.com", "device1", 1, 10)
-# BimipLog.ack_message("a@domain.com", "device1", 1, 9)
+# {:ok, result} = BimipLog.fetch("a@domain.com_b@domain.com", "aaaaa1", 1, 10)
+# BimipLog.fetch("a@domain.com_b@domain.com", "aaaaa1", 1, 50)
+# BimipLog.fetch("b@domain.com_a@domain.com", "aaaaa2", 1, 50)
+# BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 7)
+
+# BimipLog.fetch("b@domain.com_a@domain.com", "bbbbb2", 1, 50)
+# BimipLog.ack_message("b@domain.com_a@domain.com", "bbbbb2", 1, 30)
+# BimipLog.fetch("b@domain.com_a@domain.com", "bbbbb2", 1, 50)

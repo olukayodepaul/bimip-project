@@ -70,7 +70,7 @@ defmodule Route.AwarenessFanOut do
   end
 
   # Send message to a single device safely
-  defp pair_fan_out({message, device_id, eid}) do
+  def pair_fan_out({message, device_id, eid}) do
     try do
       RegistryHub.receive_awareness_from_server(device_id, eid, message)
     rescue
