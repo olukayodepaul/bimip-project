@@ -332,55 +332,90 @@ defmodule BimipLog do
     :mnesia.transaction(fn -> :mnesia.write({:commit_offsets, key, offset}) end)
   end
 
-  # ----------------------
-  # ACK / Commit logic (Original non-contiguous logic preserved)
-  # ----------------------
-  @doc "Public ack API"
-  def ack_message(user, device_id, partition_id, offset) do
-    key = {user, device_id, partition_id}
 
-    {:atomic, {:ok, new_commit}} =
-      :mnesia.transaction(fn ->
-        # Current commit offset
-        commit =
-          case :mnesia.read(:commit_offsets, key) do
-            [{:commit_offsets, ^key, c}] -> c
-            [] -> 0
-          end
 
-        # Current pending set
-        pending =
-          case :mnesia.read(:pending_acks, key) do
-            [{:pending_acks, ^key, s}] -> s
-            [] -> MapSet.new()
-          end
-
-        # Add new ack to pending if beyond commit
-        pending = if offset > commit, do: MapSet.put(pending, offset), else: pending
-
-        # Advance commit to the **highest acked offset** (even if out-of-order)
-        new_commit = advance_commit_to_max(pending, commit)
-
-        # Remove all offsets ≤ new_commit from pending
-        new_pending = MapSet.filter(pending, fn x -> x > new_commit end)
-
-        # Save updated commit & pending
-        :mnesia.write({:commit_offsets, key, new_commit})
-        :mnesia.write({:pending_acks, key, new_pending})
-
-        {:ok, new_commit}
-      end)
-
-    {:ok, new_commit}
+  # Advance commit only to the highest contiguous offset (e.g. 1→2→3, stop if 5 is missing)
+  defp advance_commit_to_max(pending, commit) do
+    next = commit + 1
+    if MapSet.member?(pending, next) do
+      advance_commit_to_max(MapSet.delete(pending, next), next)
+    else
+      commit
+    end
   end
 
-  # Advance commit to highest acked offset (preserves non-contiguous behavior)
-  defp advance_commit_to_max(pending, commit) do
-    if MapSet.size(pending) == 0 do
-      commit
-    else
-      max_offset = Enum.max(pending)
-      max(max_offset, commit)
+  def ack_status(user, device, partition, offset, status)
+    when status in [:sent, :delivered, :read] do
+    key = {user, device, partition}
+
+    result =
+      :mnesia.transaction(fn ->
+        # ----------------------------
+        # Load current status offsets
+        # ----------------------------
+        {sent, delivered, read} =
+          case :mnesia.read(:create_status_offsets, key) do
+            [{:create_status_offsets, ^key, s, d, r}] -> {s, d, r}
+            [] -> {0, 0, 0}
+          end
+
+        # ----------------------------
+        # Update status offsets
+        # ----------------------------
+        new_status =
+          case status do
+            :sent -> {:create_status_offsets, key, max(sent, offset), delivered, read}
+            :delivered -> {:create_status_offsets, key, sent, max(delivered, offset), read}
+            :read -> {:create_status_offsets, key, sent, delivered, max(read, offset)}
+          end
+
+        :mnesia.write(new_status)
+
+        # ----------------------------
+        # Commit logic for delivered/read
+        # ----------------------------
+        if status in [:delivered, :read] do
+          commit =
+            case :mnesia.read(:commit_offsets, key) do
+              [{:commit_offsets, ^key, c}] -> c
+              [] -> 0
+            end
+
+          pending =
+            case :mnesia.read(:pending_acks, key) do
+              [{:pending_acks, ^key, set}] -> set
+              [] -> MapSet.new()
+            end
+
+          # Add new offset if greater than commit
+          pending =
+            if offset > commit do
+              MapSet.put(pending, offset)
+            else
+              pending
+            end
+
+          # Advance contiguous commit offset
+          new_commit = advance_commit_to_max(pending, commit)
+          new_pending = MapSet.filter(pending, fn x -> x > new_commit end)
+
+          :mnesia.write({:commit_offsets, key, new_commit})
+          :mnesia.write({:pending_acks, key, new_pending})
+        end
+
+        # Return latest status snapshot
+        case :mnesia.read(:create_status_offsets, key) do
+          [{:create_status_offsets, ^key, s, d, r}] ->
+            %{sent: s, delivered: d, read: r}
+          _ ->
+            %{sent: 0, delivered: 0, read: 0}
+        end
+      end)
+
+    # Handle transaction result
+    case result do
+      {:atomic, res} -> {:ok, res}
+      {:aborted, reason} -> {:error, reason}
     end
   end
 
@@ -512,9 +547,88 @@ defmodule BimipLog do
       {:error, reason} -> {:corrupt, reason}
     end
   end
+
+  def message_status(user, device, partition, offset) do
+    key = {user, device, partition}
+
+    case :mnesia.transaction(fn ->
+          case :mnesia.read(:create_status_offsets, key) do
+            [{:create_status_offsets, ^key, sent, delivered, read}] ->
+              %{
+                sent?: offset <= sent,
+                delivered?: offset <= delivered,
+                read?: offset <= read
+              }
+
+            [] ->
+              %{sent?: false, delivered?: false, read?: false}
+          end
+        end) do
+      {:atomic, res} -> {:ok, res}
+      {:aborted, _} -> {:error, :failed}
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Acknowledge (commit) message offset — moves contiguous commit forward
+  # -------------------------------------------------------------------
+  def ack_message(user, device, partition, offset) do
+    key = {user, device, partition}
+
+    result =
+      :mnesia.transaction(fn ->
+        commit =
+          case :mnesia.read(:commit_offsets, key) do
+            [{:commit_offsets, ^key, c}] -> c
+            [] -> 0
+          end
+
+        pending =
+          case :mnesia.read(:pending_acks, key) do
+            [{:pending_acks, ^key, set}] -> set
+            [] -> MapSet.new()
+          end
+
+        # Only add if it's ahead of commit
+        pending =
+          if offset > commit do
+            MapSet.put(pending, offset)
+          else
+            pending
+          end
+
+        # Move commit forward if contiguous
+        new_commit = advance_commit_to_max(pending, commit)
+        new_pending = MapSet.filter(pending, fn x -> x > new_commit end)
+
+        :mnesia.write({:commit_offsets, key, new_commit})
+        :mnesia.write({:pending_acks, key, new_pending})
+
+        new_commit
+      end)
+
+    case result do
+      {:atomic, commit} -> {:ok, commit}
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
 end
 
 # BimipLog.write("user1", 1, "alice", "bob", "Hello World")
 # BimipLog.fetch("a@domain.com_b@domain.com", "aaaaa1", 1, 10)
-# BimipLog.acked?("a@domain.com_b@domain.com", "aaaaa1", 1, 10)
-# BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 10)
+# BimipLog.acked?("a@domain.com_b@domain.com", "aaaaa1", 1, 2)
+# BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 2)
+
+# BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 5)
+# BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 11)
+
+# ACT each message
+# BimipLog.ack_status("a@domain.com_b@domain.com", "aaaaa1", 1, 11, :sent)
+# BimipLog.ack_status("a@domain.com_b@domain.com", "aaaaa1", 1, 1, :delivered)
+# BimipLog.ack_status("a@domain.com_b@domain.com", "aaaaa1", 1, 1, :read)
+
+# :mnesia.dirty_read(:commit_offsets, {"a@domain.com_b@domain.com", "aaaaa1", 1})
+# :mnesia.dirty_read(:pending_acks, {"a@domain.com_b@domain.com", "aaaaa1", 1})
+
+#  BimipLog.ack_status("a@domain.com_b@domain.com", "aaaaa1", 1, 0, :sent)
