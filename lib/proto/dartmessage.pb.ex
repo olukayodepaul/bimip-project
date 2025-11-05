@@ -186,7 +186,8 @@ defmodule Bimip.Body do
 
   field :route, 1, type: :int64
   field :awareness_list, 2, repeated: true, type: Bimip.Awareness, json_name: "awarenessList"
-  field :timestamp, 3, type: :int64
+  field :message, 3, repeated: true, type: Bimip.Message
+  field :timestamp, 4, type: :int64
 end
 
 defmodule Bimip.MessageScheme do

@@ -272,7 +272,6 @@ defmodule Bimip.Service.Master do
     %{eid: from_eid, connection_resource_id: from_device_id} = from
     %{eid: to_eid, connection_resource_id: to_device_id} = to
     
-
     # ----------------------
     # Queue keys (directional)
     # ----------------------
@@ -300,20 +299,8 @@ defmodule Bimip.Service.Master do
               ""
             )
             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
-
-            # Fetch pending messages for sender's device
-            {:ok, fetched} = BimipLog.fetch(user_c, from_device_id, 1, 10000)
-
-            # Filter out messages that came from the same device
-            filtered_messages =
-              fetched.messages
-              |> Enum.filter(fn msg ->
-                msg.payload.device_id != from_device_id
-              end)
-
-              # Now filtered_messages only contains messages from *other devices*
-              IO.inspect(filtered_messages, label: "Filtered pending messages")
-
+            AwarenessFanOut.send_offline_message(from_eid, to_eid)
+            
           {:error, reason} ->
             IO.inspect(reason, label: "[WRITE ERROR B ← A]")
         end
@@ -324,9 +311,6 @@ defmodule Bimip.Service.Master do
 
     {:noreply, state}
   end
-
-
-
 
   # ----------------------
   # Message logging (via BimipLog GenServer)

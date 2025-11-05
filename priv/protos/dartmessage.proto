@@ -152,7 +152,8 @@ message Logout {
 message Body {
   int64 route = 1;
   repeated Awareness awareness_list = 2;
-  int64 timestamp = 3;
+  repeated Message message = 3;
+  int64 timestamp = 4;
 }
 
 // ---------------- MessageScheme ----------------

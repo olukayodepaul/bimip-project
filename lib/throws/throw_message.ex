@@ -14,48 +14,63 @@ defmodule ThrowMessageSchema do
     - 9 = CANCELLED
   """
 
-  alias Bimip.{Message, MessageScheme, Identity}
+  alias Bimip.{Message, MessageScheme, Identity, Body}
 
   @route 6
 
   # ------------------------------------------------------------------------
-  # SUCCESS / NORMAL MESSAGE
+  # BUILD INDIVIDUAL MESSAGE STRUCT
   # ------------------------------------------------------------------------
-  def success(
-        from_eid,
-        from_device_id,
-        to_eid \\ "",
-        to_device_id \\ "",
-        type \\ 1,
-        payload \\ %{},
-        encryption_type \\ "none",
-        encrypted \\ "",
-        signature \\ "",
-        status \\ 4,
-        id \\ "",
-        signal_offset \\ "",
-        user_offset \\ ""
-      ) do
-    message = %Message{
+  def build_message(%{
       id: id,
-      signal_offset: signal_offset,
-      user_offset: user_offset,
-      from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
-      to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
+      status: status,
       type: type,
-      timestamp: System.system_time(:millisecond),
-      payload: Jason.encode!(payload),
+      from: %{eid: from_eid, connection_resource_id: from_device_id},
+      to: %{eid: to_eid, connection_resource_id: to_device_id},
+      payload: payload,
       encryption_type: encryption_type,
       encrypted: encrypted,
       signature: signature,
-      status: status
+      signal_offset: signal_offset,
+      user_offset: user_offset
+    }) do
+  %Message{
+    id: id,
+    signal_offset: signal_offset,
+    user_offset: user_offset,
+    from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
+    to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
+    type: type,
+    timestamp: System.system_time(:millisecond),
+    payload:
+      case payload do
+        bin when is_binary(bin) -> bin
+        map when is_map(map) -> Jason.encode!(map)
+      end,
+    encryption_type: encryption_type,
+    encrypted: encrypted,
+    signature: signature,
+    status: status
+  }
+end
+
+
+  # ------------------------------------------------------------------------
+  # SUCCESS / NORMAL MESSAGE — WRAP ONLY
+  # ------------------------------------------------------------------------
+  def success(message_list) when is_list(message_list) do
+    body = %Body{
+      route: 6,
+      message: message_list,
+      timestamp: System.system_time(:millisecond)
     }
 
-    %MessageScheme{
-      route: @route,
-      payload: {:message, message}
-    }
-    |> MessageScheme.encode()
+      %MessageScheme{
+        route: 10,
+        payload: {:body, body}
+      }
+      |> MessageScheme.encode()
+
   end
 
   # ------------------------------------------------------------------------
@@ -72,7 +87,6 @@ defmodule ThrowMessageSchema do
     message = %Message{
       id: id,
       from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
-      to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
       type: 3, # error type
       timestamp: System.system_time(:millisecond),
       payload: Jason.encode!(%{error: description}),

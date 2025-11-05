@@ -86,7 +86,7 @@ message Message {
   string encryption_type = 8;       // "none", "AES256", etc.
   string encrypted = 9;             // base64 encrypted content
   string signature = 10;            // base64 signature for integrity
-  int64 status = 11;                // 1=SENT, 2=DELIVERED, 3=READ, 4=FORWARDED, 5=PLAYED, 6=TYPING, 7=RECORDING, 8=PAUSED, 9=CANCELLED, 10=RESUME, 11=CALLING, 12=DECLINE
+  int64 status = 11;                // 1=SENT, 2=DELIVERED, 3=READ, 4=FORWARDED, 5=PLAYED, 6=TYPING, 7=RECORDING, 8=PAUSED, 9=CANCELLED, 10=RESUME, 11=CALLING, 12=DECLINE, 13=,
 }
 
 ```
@@ -101,7 +101,7 @@ Would you like me to show how to implement **step 4** — i.e., how each `bimipS
 # -------------------------------
 request = %Bimip.Message{
   id: "1",
-  signal_offset: "5",  # server-assigned global offset
+  signal_offset: "6",  # server-assigned global offset
   user_offset: "0",    # per-user offset (A's own queue offset)
   from: %Bimip.Identity{
     eid: "a@domain.com",
