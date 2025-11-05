@@ -24,8 +24,8 @@ defmodule Bimip.Application do
           id: :https,
           start: {:cowboy, :start_tls,
                   [:https,
-                   [port: Connections.port(), certfile: Connections.cert_file(), keyfile: Connections.key_file()],
-                   %{env: %{dispatch: dispatch()}}]}
+                  [port: Connections.port(), certfile: Connections.cert_file(), keyfile: Connections.key_file()],
+                  %{env: %{dispatch: dispatch()}}]}
         }
       else
         %{
@@ -69,7 +69,8 @@ defmodule Bimip.Application do
     create(:commit_offsets, [:key, :offset], :set)
     create(:segment_cache, [:key, :segment, :position], :set)
     create(:pending_acks, [:key, :offsets], :set)  # <-- new table
-    
+    create(:create_status_offsets, [:key, :sent, :delivered, :read], :set)
+    create(:pending_status_acks, [:key, :delivered_set, :read_set], :set)
   end
 
   # ----------------------

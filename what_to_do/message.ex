@@ -37,7 +37,7 @@ request = %Bimip.Message{
   },
   to: %Bimip.Identity{
     eid: "b@domain.com",
-    connection_resource_id: "bbbbb2"
+    connection_resource_id: "bbbbb1"
   },
   type: 1,
   timestamp: System.system_time(:millisecond),
