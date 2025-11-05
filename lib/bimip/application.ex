@@ -61,16 +61,29 @@ defmodule Bimip.Application do
     create(:subscribers, [:id, :owner_id, :subscriber_id, :status, :blocked, :inserted_at, :last_seen], :set)
     create(:subscriber_index, [:owner_id, :subscriber_id], :bag)
     
-    create(:first_segment, [:key, :segment], :set)
+
     create(:current_segment, [:key, :segment], :set)
+    create(:first_segment, [:key, :segment], :set)
     create(:next_offsets, [:key, :offset], :set)
-    create(:device_offsets, [:key, :offset], :set)
-    create(:ack_table, [:key, :last_ack], :set)
-    create(:commit_offsets, [:key, :offset], :set)
     create(:segment_cache, [:key, :segment, :position], :set)
-    create(:pending_acks, [:key, :offsets], :set)  # <-- new table
-    create(:create_status_offsets, [:key, :sent, :delivered, :read], :set)
-    create(:pending_status_acks, [:key, :delivered_set, :read_set], :set)
+    create(:commit_offsets, [:key, :offset], :set)
+    create(:pending_acks, [:key, :offsets], :set)   # original pending
+
+    # New per-status pending and commit tables
+    create(:pending_sent, [:key, :set], :set)
+    create(:pending_delivered, [:key, :set], :set)
+    create(:pending_read, [:key, :set], :set)
+    create(:commit_sent, [:key, :offset], :set)
+    create(:commit_delivered, [:key, :offset], :set)
+    create(:commit_read, [:key, :offset], :set)
+
+ 
+  
+
+
+
+
+
   end
 
   # ----------------------
