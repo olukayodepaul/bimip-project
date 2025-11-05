@@ -84,3 +84,10 @@ end
 
 # JWT.generate_tokens(%{device_id: "bbbbb1", eid: "a@domain.com", user_id: "1"})
 # Storage.DeviceStorage.fetch_devices_by_eid("a@domain.com")
+
+
+# 1. SEND message.
+# 2. save on a queue for A and B
+# 3. fetch other device pending data and send to A
+# 4. send ack of newly sent message to A.
+# 5. A on receiving pending data of other device, send offset dispose to A to move the offset

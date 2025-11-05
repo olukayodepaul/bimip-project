@@ -278,17 +278,17 @@ defmodule Bimip.Service.Master do
     # ----------------------
     user_a = "#{from_eid}_#{to_eid}"  # sender queue
     user_b = "#{to_eid}_#{from_eid}"  # recipient queue
+    user_c = "#{from_eid}_#{to_eid}"
 
     case BimipLog.write(user_a, partition_id, from, to, payload) do
       {:ok, signal_offset_a} ->
-        IO.inspect(signal_offset_a, label: "[WRITE OK A → B]")
 
         payload_b = PersistMessage.build(%{from: from, to: to, payload: payload}, signal_offset_a)
 
         case BimipLog.write(user_b, partition_id, to, from, payload, signal_offset_a) do
           {:ok, signal_offset_b} ->
 
-            pair_fan_out = ThrowSignalSchema.success(
+          pair_fan_out = ThrowSignalSchema.success(
               from_eid, 
               from_device_id,
               to_eid,
@@ -299,11 +299,21 @@ defmodule Bimip.Service.Master do
               id,
               ""
             )
-
             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
 
-            IO.inspect(signal_offset_b, label: "[WRITE OK B ← A]")
-            #Send Ack back to A. SENT ack........
+            # Fetch pending messages for sender's device
+            {:ok, fetched} = BimipLog.fetch(user_c, from_device_id, 1, 10000)
+
+            # Filter out messages that came from the same device
+            filtered_messages =
+              fetched.messages
+              |> Enum.filter(fn msg ->
+                msg.payload.device_id != from_device_id
+              end)
+
+              # Now filtered_messages only contains messages from *other devices*
+              IO.inspect(filtered_messages, label: "Filtered pending messages")
+
           {:error, reason} ->
             IO.inspect(reason, label: "[WRITE ERROR B ← A]")
         end

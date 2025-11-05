@@ -77,13 +77,6 @@ defmodule Bimip.Application do
     create(:commit_delivered, [:key, :offset], :set)
     create(:commit_read, [:key, :offset], :set)
 
- 
-  
-
-
-
-
-
   end
 
   # ----------------------
