@@ -618,7 +618,7 @@ end
 # BimipLog.write("user1", 1, "alice", "bob", "Hello World")
 # BimipLog.fetch("a@domain.com_b@domain.com", "aaaaa1", 1, 10)
 # BimipLog.acked?("a@domain.com_b@domain.com", "aaaaa1", 1, 2)
-# BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 2)
+# BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 12)
 
 # BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 5)
 # BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 11)
