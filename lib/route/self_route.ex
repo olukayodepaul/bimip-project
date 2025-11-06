@@ -41,7 +41,6 @@ defmodule Route.AwarenessFanOut do
     end
   end
 
-
   # Generic group fan-out for awareness messages
   def send_offline_message(from_eid, to_id) do
     now = DateTime.utc_now()
@@ -59,34 +58,34 @@ defmodule Route.AwarenessFanOut do
         |> Task.async_stream(
           fn device ->
             from_device_id = device.device_id
-            user_key = from_eid <> "_" <> to_id
-            
 
-            # Fetch pending messages for this user's device
-            
-            case BimipLog.fetch(user_key, from_device_id, 1, 10000) do
-              {:ok, %{messages: msgs}} ->
+            # --- Check grace period first ---
+            if grace_expired?(from_eid, from_device_id) do
+              user_key = from_eid <> "_" <> to_id
 
-                filtered =
-                  msgs
-                  |> Enum.filter(fn msg ->
-                    msg.payload.device_id != from_device_id
-                  end)
+              case BimipLog.fetch(user_key, from_device_id, 1, 10_000) do
+                {:ok, %{messages: msgs}} ->
+                  filtered =
+                    msgs
+                    |> Enum.filter(fn msg -> msg.payload.device_id != from_device_id end)
 
-                # Step 2: build structured messages
-                built =
-                  Enum.map(filtered, fn msg ->
-                    ThrowMessageSchema.build_message(msg.payload)
-                  end)
+                  if filtered != [] do
+                    built =
+                      Enum.map(filtered, fn msg -> ThrowMessageSchema.build_message(msg.payload) end)
 
-                if built != [] do
-                  send_batch_to_device(from_eid, from_device_id, built)
-                else
-                  Logger.info("✅ No pending messages for #{from_eid}/#{from_device_id}")
-                end
+                    send_batch_to_device(from_eid, from_device_id, built)
+                    # Set grace period: 30 seconds = 30_000 milliseconds
+                    set_grace(from_eid, from_device_id, 30_000)
+                  else
+                    Logger.info("✅ No pending messages for #{from_eid}/#{from_device_id}")
+                  end
 
-              {:error, reason} ->
-                Logger.error("❌ Failed to fetch messages for #{from_eid}/#{from_device_id}: #{inspect(reason)}")
+                {:error, reason} ->
+                  Logger.error("❌ Failed to fetch messages for #{from_eid}/#{from_device_id}: #{inspect(reason)}")
+              end
+            else
+              # Grace period active — skip all processing
+              Logger.debug("⏱ Grace period active for #{from_eid}/#{from_device_id}, skipping fetch & send")
             end
           end,
           max_concurrency: 10,
@@ -98,6 +97,7 @@ defmodule Route.AwarenessFanOut do
         :ok
     end
   end
+
 
   # ----------------------------------------------------------------------
   # Wrap all messages in a single <message> stanza and fan-out once
@@ -147,6 +147,34 @@ defmodule Route.AwarenessFanOut do
         {:error, error}
     end
   end
+
+  def grace_expired?(user, device) do
+    key = {user, device}
+
+    case :mnesia.transaction(fn -> :mnesia.read(:resume_grace, key) end) do
+      {:atomic, [{:resume_grace, ^key, timestamp}]} ->
+        System.system_time(:millisecond) >= timestamp
+
+      {:atomic, []} ->
+        true
+
+      {:aborted, reason} ->
+        # fallback to allow processing
+        Logger.error("❌ Failed to read grace period for #{inspect(key)}: #{inspect(reason)}")
+        true
+    end
+  end
+
+  def set_grace(user, device, duration_ms) do
+    key = {user, device}
+    ts = System.system_time(:millisecond) + duration_ms
+
+    :mnesia.transaction(fn ->
+      :mnesia.write({:resume_grace, key, ts})
+    end)
+  end
+
+
 end
 
 
@@ -159,3 +187,6 @@ end
 # 3. fetch other device pending data and send to A
 # 4. send ack of newly sent message to A.
 # 5. A on receiving pending data of other device, send offset dispose to A to move the offset
+
+# Route.AwarenessFanOut.set_grace("a@domain.com", "aaaaa1", 30_000)
+# Route.AwarenessFanOut.grace_expired?("a@domain.com", "aaaaa4") 

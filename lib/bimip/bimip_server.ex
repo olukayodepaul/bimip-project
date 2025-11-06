@@ -298,6 +298,7 @@ defmodule Bimip.Service.Master do
               id,
               ""
             )
+            
             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
             AwarenessFanOut.send_offline_message(from_eid, to_eid)
             
