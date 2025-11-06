@@ -301,7 +301,10 @@ defmodule Bimip.Service.Master do
             )
 
             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
-            AwarenessFanOut.send_offline_message(from_eid, to_eid)
+            AwarenessFanOut.send_direct_message(from_eid, from_device_id, signal_offset_a, payload)
+
+            # AwarenessFanOut.send_offline_message(from_eid, to_eid)
+            # message in save in a queue for B. check subscriber state and send him the message.
             
           {:error, reason} ->
             IO.inspect(reason, label: "[WRITE ERROR B ← A]")

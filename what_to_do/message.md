@@ -373,10 +373,13 @@ Would you like me to diagram how these strategies interact (with A1, A2, Server,
 # -------------------------------
 # ✅ Example Message Test Payload (Client → Server)
 # -------------------------------
+
+signal_offset: "",  # server-assigned global offset
+user_offset: "0",    # per-user offset (A's own queue offset)
+
+
 request = %Bimip.Message{
-  id: "1",
-  signal_offset: "6",  # server-assigned global offset
-  user_offset: "0",    # per-user offset (A's own queue offset)
+  id: "2",
   from: %Bimip.Identity{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa2"
@@ -394,7 +397,8 @@ request = %Bimip.Message{
   encryption_type: "none",
   encrypted: "",
   signature: "",
-  status: 1
+  status: 1,
+  signal_type: 2
 }
 
 msg_scheme = %Bimip.MessageScheme{

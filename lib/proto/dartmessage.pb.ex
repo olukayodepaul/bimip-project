@@ -60,6 +60,7 @@ defmodule Bimip.Message do
   field :encrypted, 10, type: :string
   field :signature, 11, type: :string
   field :status, 12, type: :int32
+  field :signal_type, 13, type: :int32, json_name: "signalType"
 end
 
 defmodule Bimip.Signal do
@@ -75,7 +76,8 @@ defmodule Bimip.Signal do
   field :from, 6, type: Bimip.Identity
   field :to, 7, type: Bimip.Identity
   field :type, 8, type: :int32
-  field :error, 9, proto3_optional: true, type: :string
+  field :signal_type, 9, type: :int32, json_name: "signalType"
+  field :error, 10, proto3_optional: true, type: :string
 end
 
 defmodule Bimip.PushNotification do

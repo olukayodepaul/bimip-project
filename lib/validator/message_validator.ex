@@ -6,18 +6,19 @@ defmodule Bimip.Validators.MessageValidator do
     - `id` must be a non-empty binary
     - `from` and `to` identities must exist and contain valid `eid` and `connection_resource_id`
     - `type` must be integer: 1=Chat, 2=PushNotification
-    - `status` must be 4 (SENT) for new messages
+    - `status` must be 1 (SENT) for new messages
     - `timestamp` must be a positive integer (Unix UTC ms)
     - `payload` must be binary and valid JSON
     - `encryption_type` must be a non-empty binary
     - `encrypted` and `signature` are optional binaries
-    - `signal_id` is ignored on client-side validation
+    - `signal_type` must be 2 (TWO-WAY)
   """
 
   alias Bimip.Message
 
-  @allowed_types [1, 2]   # 1=Chat, 2=PushNotification
-  @allowed_status 1       # Only SENT is allowed for new messages
+  @allowed_types [1, 2]      # 1=Chat, 2=PushNotification
+  @allowed_status 1           # Only SENT is allowed for new messages
+  @allowed_signal_type 2      # TWO-WAY
 
   @spec validate(Message.t()) :: :ok | {:error, map()}
   def validate(%Message{} = msg) do
@@ -30,7 +31,8 @@ defmodule Bimip.Validators.MessageValidator do
          :ok <- validate_payload(msg.payload),
          :ok <- validate_binary_field(msg.encrypted, "encrypted"),
          :ok <- validate_binary_field(msg.signature, "signature"),
-         :ok <- validate_encryption_type(msg.encryption_type) do
+         :ok <- validate_encryption_type(msg.encryption_type),
+         :ok <- validate_signal_type(msg.signal_type) do
       :ok
     end
   end
@@ -46,7 +48,7 @@ defmodule Bimip.Validators.MessageValidator do
   defp validate_identity(nil, field),
     do: {:error, error_detail(102, "Missing #{field} identity", field)}
 
-  defp validate_identity(%{eid: eid, connection_resource_id: crid} = _identity, field) do
+  defp validate_identity(%{eid: eid, connection_resource_id: crid}, field) do
     cond do
       not (is_binary(eid) and byte_size(eid) > 0) ->
         {:error, error_detail(103, "Invalid #{field}.eid — must be non-empty string", "#{field}.eid")}
@@ -70,7 +72,7 @@ defmodule Bimip.Validators.MessageValidator do
   # ---------------- Status Validation ----------------
   defp validate_status(s) when s == @allowed_status, do: :ok
   defp validate_status(_),
-    do: {:error, error_detail(107, "Invalid status — must be 4=SENT for new messages", "status")}
+    do: {:error, error_detail(107, "Invalid status — must be 1=SENT for new messages", "status")}
 
   # ---------------- Timestamp Validation ----------------
   defp validate_timestamp(ts) when is_integer(ts) and ts > 0, do: :ok
@@ -89,7 +91,7 @@ defmodule Bimip.Validators.MessageValidator do
 
   # ---------------- Optional Binary Fields ----------------
   defp validate_binary_field(nil, _), do: :ok
-  defp validate_binary_field(val, field) when is_binary(val), do: :ok
+  defp validate_binary_field(val, _field) when is_binary(val), do: :ok
   defp validate_binary_field(_, field),
     do: {:error, error_detail(110, "#{field} must be a binary if provided", field)}
 
@@ -97,6 +99,11 @@ defmodule Bimip.Validators.MessageValidator do
   defp validate_encryption_type(enc) when is_binary(enc) and byte_size(enc) > 0, do: :ok
   defp validate_encryption_type(_),
     do: {:error, error_detail(111, "Missing or invalid encryption_type", "encryption_type")}
+
+  # ---------------- Signal Type Validation ----------------
+  defp validate_signal_type(@allowed_signal_type), do: :ok
+  defp validate_signal_type(_),
+    do: {:error, error_detail(112, "Invalid signal_type — must be 2=TWO-WAY", "signal_type")}
 
   # ---------------- Error Helper ----------------
   defp error_detail(code, description, field),
