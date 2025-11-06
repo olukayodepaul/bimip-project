@@ -282,6 +282,7 @@ defmodule Bimip.Service.Master do
     case BimipLog.write(user_a, partition_id, from, to, payload) do
       {:ok, signal_offset_a} ->
 
+        BimipLog.ack_message(user_a, from_device_id, 1, signal_offset_a)
         payload_b = PersistMessage.build(%{from: from, to: to, payload: payload}, signal_offset_a)
 
         case BimipLog.write(user_b, partition_id, to, from, payload, signal_offset_a) do
@@ -298,7 +299,7 @@ defmodule Bimip.Service.Master do
               id,
               ""
             )
-            
+
             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
             AwarenessFanOut.send_offline_message(from_eid, to_eid)
             

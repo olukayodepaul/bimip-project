@@ -304,8 +304,48 @@ end
   defp set_segment_cache(_user, _device, _partition, _seg, _pos), do: :ok
 
 
-  # -------------------------------------------------------------------
+# -------------------------------------------------------------------
 # Acknowledge (commit) message offset — NO contiguous advancement
+# -------------------------------------------------------------------
+# def ack_message(user, device, partition, offset) do
+#   key = {user, device, partition}
+
+#   result =
+#     :mnesia.transaction(fn ->
+#       # Get current commit offset
+#       commit =
+#         case :mnesia.read(:commit_offsets, key) do
+#           [{:commit_offsets, ^key, c}] -> c
+#           [] -> 0
+#         end
+
+#       # Just set the commit to the latest offset if it's ahead
+#       new_commit =
+#         if offset > commit do
+#           offset
+#         else
+#           commit
+#         end
+
+#       # Directly persist the new commit offset
+#       :mnesia.write({:commit_offsets, key, new_commit})
+
+#       # Do NOT maintain or check pending set for this
+#       :mnesia.delete({:pending_acks, key})
+
+#       new_commit
+#     end)
+
+#   case result do
+#     {:atomic, commit} -> {:ok, commit}
+#     {:aborted, reason} -> {:error, reason}
+#   end
+# end
+
+
+
+# -------------------------------------------------------------------
+# Acknowledge (commit) message offset — moves contiguous commit forward
 # -------------------------------------------------------------------
 def ack_message(user, device, partition, offset) do
   key = {user, device, partition}
@@ -319,19 +359,28 @@ def ack_message(user, device, partition, offset) do
           [] -> 0
         end
 
-      # Just set the commit to the latest offset if it's ahead
-      new_commit =
-        if offset > commit do
-          offset
-        else
-          commit
+      # Get current pending set
+      pending =
+        case :mnesia.read(:pending_acks, key) do
+          [{:pending_acks, ^key, set}] -> set
+          [] -> MapSet.new()
         end
 
-      # Directly persist the new commit offset
-      :mnesia.write({:commit_offsets, key, new_commit})
+      # Only add if it's ahead of commit
+      pending =
+        if offset > commit do
+          MapSet.put(pending, offset)
+        else
+          pending
+        end
 
-      # Do NOT maintain or check pending set for this
-      :mnesia.delete({:pending_acks, key})
+      # Advance commit forward if contiguous
+      new_commit = advance_commit_to_max(pending, commit)
+      new_pending = MapSet.filter(pending, fn x -> x > new_commit end)
+
+      # Persist
+      :mnesia.write({:commit_offsets, key, new_commit})
+      :mnesia.write({:pending_acks, key, new_pending})
 
       new_commit
     end)
@@ -341,55 +390,6 @@ def ack_message(user, device, partition, offset) do
     {:aborted, reason} -> {:error, reason}
   end
 end
-
-
-
-#   # -------------------------------------------------------------------
-# # Acknowledge (commit) message offset — moves contiguous commit forward
-# # -------------------------------------------------------------------
-# def ack_message(user, device, partition, offset) do
-#   key = {user, device, partition}
-
-#   result =
-#     :mnesia.transaction(fn ->
-#       # Get current commit offset
-#       commit =
-#         case :mnesia.read(:commit_offsets, key) do
-#           [{:commit_offsets, ^key, c}] -> c
-#           [] -> 0
-#         end
-
-#       # Get current pending set
-#       pending =
-#         case :mnesia.read(:pending_acks, key) do
-#           [{:pending_acks, ^key, set}] -> set
-#           [] -> MapSet.new()
-#         end
-
-#       # Only add if it's ahead of commit
-#       pending =
-#         if offset > commit do
-#           MapSet.put(pending, offset)
-#         else
-#           pending
-#         end
-
-#       # Advance commit forward if contiguous
-#       new_commit = advance_commit_to_max(pending, commit)
-#       new_pending = MapSet.filter(pending, fn x -> x > new_commit end)
-
-#       # Persist
-#       :mnesia.write({:commit_offsets, key, new_commit})
-#       :mnesia.write({:pending_acks, key, new_pending})
-
-#       new_commit
-#     end)
-
-#   case result do
-#     {:atomic, commit} -> {:ok, commit}
-#     {:aborted, reason} -> {:error, reason}
-#   end
-# end
 
   # -------------------------------------------------------------------
   # Helper to advance commit only through contiguous offsets
@@ -538,3 +538,9 @@ end
 
 # # Check message status
 # BimipLog.message_status("a@domain.com_b@domain.com", "aaaaa2", 1, 3)
+
+
+# :mnesia.dirty_read(:commit_offsets, {"a@domain.com_b@domain.com", "aaaaa1", 1})
+# :mnesia.dirty_read(:commit_offsets, {"a@domain.com_b@domain.com", "aaaaa2", 1})
+# :mnesia.dirty_read(:pending_acks,  {"a@domain.com_b@domain.com", "aaaaa1", 1})
+# :mnesia.dirty_read(:pending_acks,  {"a@domain.com_b@domain.com", "aaaaa2", 1})

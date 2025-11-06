@@ -407,3 +407,18 @@ hex    = Base.encode16(binary, case: :upper)
 IO.inspect(decoded, label: "Decoded Message (Client → Server)")
 
 ```
+
+---
+
+Full message lifecycle for clarity:
+A1 → Server: Send message (offset N).
+Server → A1: “Sent” ACK (message persisted and queued).
+A1 updates local status to “sent”. ✅
+No ACK back to server is needed.
+Server → B: Deliver message (offset M for B).
+B → Server: “Received” ACK.
+Server → A1: “Delivered” notification (B got the message).
+B → Server: “Read” notification (optional, if B reads the message).
+Server → A1: “Read” notification.
+Only B sends ACKs to server for messages it received.
+A1 only tracks server ACKs to know the status of its sent messages.
