@@ -380,15 +380,14 @@ user_offset: "0",    # per-user offset (A's own queue offset)
 
 request = %Bimip.Message{
   id: "3",
-  to: %Bimip.Identity{
+  from: %Bimip.Identity{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa1"
   },
- from: %Bimip.Identity{
+ to: %Bimip.Identity{
     eid: "b@domain.com",
     connection_resource_id: "bbbbb1"
   },
-  type: 1,
   timestamp: System.system_time(:millisecond),
   payload: Jason.encode!(%{
     text: "Hello from BIMIP 👋",
@@ -397,7 +396,6 @@ request = %Bimip.Message{
   encryption_type: "none",
   encrypted: "",
   signature: "",
-  status: 1,
   signal_type: 2
 }
 
@@ -423,19 +421,15 @@ request = %Bimip.Message{
     eid: "b@domain.com",
     connection_resource_id: "bbbbb1"
   },
-  type: 1,
   timestamp: System.system_time(:millisecond),
   payload: Jason.encode!(%{
     text: "Hello from BIMIP 👋",
     attachments: []
   }),
-  encryption_type: "none",
+  encryption_type: "",
   encrypted: "",
   signature: "",
-  status: 1,
   signal_type: 2,
-
-
 }
 
 msg_scheme = %Bimip.MessageScheme{

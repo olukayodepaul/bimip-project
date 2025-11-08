@@ -51,25 +51,32 @@ message Message {
   int32 user_offset = 3;     // server-assigned global ID (monotonic or unique)
   Identity from = 4;          // sender (JID or user ID)
   Identity to = 5;            // recipient (JID or user ID)
-  int32 type = 6;             // 1 = Chat
   int64 timestamp = 7;        // epoch milliseconds
   bytes payload = 8;          // pass JSON { }
   string encryption_type = 9; // "none", "AES256", "E2E", etc.
   string encrypted = 10;       // base64 encrypted content (if any)
   string signature = 11;      // base64 signature for integrity
-  int32 status = 12;          // 1=SENT, 2=RECORDING, 3=DELIVERED, 4=READ, 5=FORWARDED, 6=PLAYED/VIEWED,
-                              // 7=TYPING, 8=RECORDING, 9=PAUSED, 10=CANCELLED, 11=RESUME,
-                              // 12=CALLING, 13=DECLINE
-  int32 signal_type = 13;     // 1=ONE-WAY, 2-TWO-WAY, 0-LOCAL,
-  bool signal_offset_state = 14;    // 
-  SignalAckState signal_ack_state = 15;     //
+  int32 signal_type = 12;     // 1=ONE-WAY, 2-TWO-WAY, 0-LOCAL,
+  bool signal_offset_state = 13;    // 
+  SignalAckState signal_ack_state = 14;     //
 }
 
 // when Device receive sent ack. it update the local message with 
 // signal_offset and user_offset.
 
 
-
+// -------------------------------------------------------------
+// status defines the real-time user activity or system state
+// -------------------------------------------------------------
+// 1 = CHATING        → User is actively chatting
+// 2 = RECORDING      → User is recording audio/video
+// 3 = PLAYED/VIEWED  → Media or message has been viewed/played
+// 4 = TYPING         → User is typing
+// 5 = PAUSED         → Typing/recording paused
+// 6 = CANCELLED      → Action cancelled
+// 7 = RESUME         → Action resumed
+// 8 = NOTIFICATION   → System/app notification (non-chat event)
+// -------------------------------------------------------------
 // ---------------- Signal ----------------
 // Used by both client and server to reconcile message status.
 // Supports dual reference (id + signal_id) for precise synchronization.
@@ -77,7 +84,7 @@ message Signal {
   string id = 1;            // client/queue message ID
   int32 signal_offset = 2; // server-assigned global ID (monotonic or unique)
   int32 user_offset = 3;   // server-assigned global ID (monotonic or unique)
-  int32 status = 4;         // 1=SENT, 2=RECORDING, 3=DELIVERED, 4=READ, 5=FORWARDED, 6=PLAYED/VIEWED, 7=TYPING, 8=RECORDING, 9=PAUSED, 10=CANCELLED, 11=RESUME
+  int32 status = 4;     
   int64 timestamp = 5;      // epoch ms
   Identity from = 6;        // who sent the ACK
   Identity to = 7;          // who receives the ACK

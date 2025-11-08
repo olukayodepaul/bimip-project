@@ -321,13 +321,11 @@ defmodule Bimip.Device.Client do
                 eid: message.to.eid,
                 connection_resource_id: message.to.connection_resource_id
               },
-              type: message.type,
               timestamp: message.timestamp,
               payload: message.payload,
               encryption_type: message.encryption_type,
               encrypted: message.encrypted,
               signature: message.signature,
-              status: message.status
             }
 
             RegistryHub.route_message_to_server(post)
@@ -344,7 +342,7 @@ defmodule Bimip.Device.Client do
             }}
 
           {:error, err} ->
-
+            IO.inspect("2sncjsdncjdns")
             reason = "Field '#{err.field}' → #{err.description}"
 
             error_binary =
@@ -362,6 +360,7 @@ defmodule Bimip.Device.Client do
         end
 
       _ ->
+        IO.inspect("3sncjsdncjdns")
         reason = "Invalid payload: expected Message stanza"
         error_binary =
           ThrowMessageSchema.error(

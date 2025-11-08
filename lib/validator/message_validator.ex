@@ -16,8 +16,7 @@ defmodule Bimip.Validators.MessageValidator do
 
   alias Bimip.Message
 
-  @allowed_types [1]      # 1=Chat, 2=PushNotification
-  @allowed_status 1           # Only SENT is allowed for new messages
+
   @allowed_signal_type 2      # TWO-WAY
 
   @spec validate(Message.t()) :: :ok | {:error, map()}
@@ -25,8 +24,6 @@ defmodule Bimip.Validators.MessageValidator do
     with :ok <- validate_id(msg.id),
          :ok <- validate_identity(msg.from, "from"),
          :ok <- validate_identity(msg.to, "to"),
-         :ok <- validate_type(msg.type),
-         :ok <- validate_status(msg.status),
          :ok <- validate_timestamp(msg.timestamp),
          :ok <- validate_payload(msg.payload),
          :ok <- validate_binary_field(msg.encrypted, "encrypted"),
@@ -63,16 +60,6 @@ defmodule Bimip.Validators.MessageValidator do
 
   defp validate_identity(_, field),
     do: {:error, error_detail(105, "Malformed #{field} identity", field)}
-
-  # ---------------- Type Validation ----------------
-  defp validate_type(t) when t in @allowed_types, do: :ok
-  defp validate_type(_),
-    do: {:error, error_detail(106, "Invalid type — must be 1=Chat or 2=PushNotification", "type")}
-
-  # ---------------- Status Validation ----------------
-  defp validate_status(s) when s == @allowed_status, do: :ok
-  defp validate_status(_),
-    do: {:error, error_detail(107, "Invalid status — must be 1=SENT for new messages", "status")}
 
   # ---------------- Timestamp Validation ----------------
   defp validate_timestamp(ts) when is_integer(ts) and ts > 0, do: :ok

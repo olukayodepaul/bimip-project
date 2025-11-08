@@ -63,16 +63,14 @@ defmodule Bimip.Message do
   field :user_offset, 3, type: :int32, json_name: "userOffset"
   field :from, 4, type: Bimip.Identity
   field :to, 5, type: Bimip.Identity
-  field :type, 6, type: :int32
   field :timestamp, 7, type: :int64
   field :payload, 8, type: :bytes
   field :encryption_type, 9, type: :string, json_name: "encryptionType"
   field :encrypted, 10, type: :string
   field :signature, 11, type: :string
-  field :status, 12, type: :int32
-  field :signal_type, 13, type: :int32, json_name: "signalType"
-  field :signal_offset_state, 14, type: :bool, json_name: "signalOffsetState"
-  field :signal_ack_state, 15, type: Bimip.SignalAckState, json_name: "signalAckState"
+  field :signal_type, 12, type: :int32, json_name: "signalType"
+  field :signal_offset_state, 13, type: :bool, json_name: "signalOffsetState"
+  field :signal_ack_state, 14, type: Bimip.SignalAckState, json_name: "signalAckState"
 end
 
 defmodule Bimip.Signal do

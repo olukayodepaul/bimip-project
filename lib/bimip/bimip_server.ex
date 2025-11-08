@@ -268,6 +268,7 @@ defmodule Bimip.Service.Master do
 
   @impl true
   def handle_cast({:chat_queue, from, to, id, payload},  state) do
+    
     partition_id = 1
     
     %{eid: from_eid, connection_resource_id: from_device_id} = from
@@ -310,7 +311,6 @@ defmodule Bimip.Service.Master do
                 id,
                 ""
               )
-            IO.inspect(pair_fan_out, label: ["RESPONSE TO A SERVER"])
             BimipLog.ack_status(user_b, "", 1, signal_offset_b, :sent)
             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
             AwarenessFanOut.send_direct_message(from_eid, from_device_id, signal_offset_a, signal_offset_a, sender_payload)
@@ -323,7 +323,6 @@ defmodule Bimip.Service.Master do
             })
 
             # AwarenessFanOut.send_offline_message(from_eid, to_eid)
-            IO.inspect(transport, label: ["DIRECT MESSAGE TO B"])
             RegistryHub.send_chat(to_eid, to_device_id, transport)
             
           {:error, reason} ->
