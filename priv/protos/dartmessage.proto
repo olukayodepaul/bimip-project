@@ -46,24 +46,23 @@ message SignalAckState {
 // Awareness (TYPING, RECORDING) is per-user and handled separately.
 // This is sent once.
 message Message {
-  string id = 1;              // client/queue-generated message ID
-  int32 signal_offset = 2;   // server-assigned global ID (monotonic or unique)
-  int32 user_offset = 3;     // server-assigned global ID (monotonic or unique)
-  Identity from = 4;          // sender (JID or user ID)
-  Identity to = 5;            // recipient (JID or user ID)
-  int64 timestamp = 7;        // epoch milliseconds
-  bytes payload = 8;          // pass JSON { }
-  string encryption_type = 9; // "none", "AES256", "E2E", etc.
+  string id = 1;               // client/queue-generated message ID
+  int32 signal_offset = 2;     // server-assigned global ID (monotonic or unique)
+  int32 user_offset = 3;       // server-assigned global ID (monotonic or unique)
+  Identity from = 4;           // sender (JID or user ID)
+  Identity to = 5;             // recipient (JID or user ID)
+  int64 timestamp = 7;         // epoch milliseconds
+  bytes payload = 8;           // pass JSON { }
+  string encryption_type = 9;  // "none", "AES256", "E2E", etc.
   string encrypted = 10;       // base64 encrypted content (if any)
-  string signature = 11;      // base64 signature for integrity
-  int32 signal_type = 12;     // 1=ONE-WAY, 2-TWO-WAY, 0-LOCAL,
-  bool signal_offset_state = 13;    // 
+  string signature = 11;                      // base64 signature for integrity 
+  int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
+  bool signal_offset_state = 13;            // 
   SignalAckState signal_ack_state = 14;     //
 }
 
 // when Device receive sent ack. it update the local message with 
 // signal_offset and user_offset.
-
 
 // -------------------------------------------------------------
 // status defines the real-time user activity or system state

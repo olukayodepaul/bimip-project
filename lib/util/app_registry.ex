@@ -69,10 +69,10 @@ defmodule App.RegistryHub do
     end
   end
 
-  def send_chat(eid, device_id, message) do
+  def send_chat(%{to: %{eid: eid}} = message) do
     case Horde.Registry.lookup(EidRegistry, eid) do
       [{pid, _}] -> 
-        GenServer.cast(pid, {:chat_message, eid, device_id, message})
+        GenServer.cast(pid, {:chat_message,  message})
       [] -> :error
     end
   end

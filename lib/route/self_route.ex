@@ -43,7 +43,7 @@ defmodule Route.AwarenessFanOut do
 
   # Specialized group fan-out for awareness visibility toggles
   
-  def send_direct_message(from_eid, from_device_id, signal_offset, user_offset, message) do
+  def send_direct_message(signal_ack_state, from_eid, signal_offset, user_offset, message, from_device_id \\ nil, signal_type \\ nil) do
     now = DateTime.utc_now()
 
     case DeviceStorage.fetch_devices_by_eid(from_eid) do
@@ -56,11 +56,11 @@ defmodule Route.AwarenessFanOut do
         |> Enum.filter(fn d ->
           d.status == "ONLINE" 
           and DateTime.diff(now, d.last_seen) <= @stale_threshold_seconds
-          and d.device_id != from_device_id  
+          and d.device_id != from_device_id  # remove sender device sp as not to get the message twice
         end)
         |> Task.async_stream(
           fn device ->
-            payload = ThrowMessageSchema.build_message(message, signal_offset, user_offset, device.device_id)
+            payload = ThrowMessageSchema.build_message(signal_ack_state, message, signal_offset, user_offset, signal_type)
             pair_fan_out({payload, device.device_id, device.eid})
           end,
           max_concurrency: 10,

@@ -529,7 +529,7 @@ end
 
 # BimipLog.write("user1", 1, "alice", "bob", "Hello World")
 # BimipLog.fetch("a@domain.com_b@domain.com", "aaaaa1", 1, 1)
-# BimipLog.fetch("b@domain.com_a@domain.com", "bbbbb2", 1, 1)
+# BimipLog.fetch("b@domain.com_a@domain.com", "bbbbb1", 1, 1)
 
 #move offset forward
 # BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 2)

@@ -1,6 +1,6 @@
 defmodule ThrowMessageSchema do
 
-  alias Bimip.{Message, MessageScheme, Identity, Body}
+  alias Bimip.{Message, MessageScheme, Identity, Body, SignalAckState}
 
   @route 6
 
@@ -56,23 +56,25 @@ end
 
   end
 
-
-
   # ------------------------------------------------------------------------
   # SUCCESS / NORMAL MESSAGE
   # ------------------------------------------------------------------------
-  def build_message(%{
-          id: id,
-          signature: signature,
-          from: %{eid: from_eid, connection_resource_id: from_device_id},
-          to: %{eid: to_eid, connection_resource_id: to_device_id},
-          payload: payload,
-          encryption_type: encryption_type,
-          encrypted: encrypted,
-          signal_type: signal_type,
-        }, signal_offset, user_offset,  device_id) do
-
+  def build_message(
+    signal_ack_state,
+    %{
+      id: id,
+      from: %{eid: from_eid, connection_resource_id: from_device_id},
+      to: %{eid: to_eid, connection_resource_id: to_device_id},
+      payload: payload,
+      encryption_type: encryption_type,
+      encrypted: encrypted,
+      signature: signature,
+      signal_type: signal_type,
+      },  signal_offset, user_offset, signal \\ nil) do
+      
+      peer_offset = signal || signal_type
       now = System.system_time(:millisecond)
+      %{read: read, sent: sent, delivered: delivered} = signal_ack_state 
 
       # Normalize payload: encode map -> JSON, or use string directly
       payload_json =
@@ -81,19 +83,25 @@ end
           map when is_map(map) -> Jason.encode!(map)
         end
 
-    message =  %Message{
-        id: id,
-        signal_offset: signal_offset,
-        user_offset: user_offset,
-        from: %Identity{eid: from_eid, connection_resource_id: device_id},
-        to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
-        timestamp: now,
-        payload: payload_json,
-        encryption_type: encryption_type || "none",
-        encrypted: encrypted || "",
-        signature: signature || "",
-        signal_type: signal_type
-      }
+      message =  %Message {
+          id: id,
+          signal_offset: signal_offset,
+          user_offset: user_offset,
+          from: %Identity{eid: from_eid, connection_resource_id: from_device_id}, # the device_id of sender
+          to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
+          timestamp: now,
+          payload: payload_json,
+          encryption_type: encryption_type || "none",
+          encrypted: encrypted || "",
+          signature: signature || "",
+          signal_type: peer_offset,
+          signal_ack_state:
+          %SignalAckState{
+            send: sent,
+            received: delivered,
+            read: read
+          }
+        }
 
       %MessageScheme{
         route: 6,

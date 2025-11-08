@@ -53,7 +53,6 @@ defmodule Bimip.Service.Master do
 
     # Start initial device session asynchronously
     GenServer.cast(self(), {:start_device, {eid, device_id, exp, ws_pid}})
-
     {:ok,
     %{
       eid: eid,
@@ -270,6 +269,7 @@ defmodule Bimip.Service.Master do
   def handle_cast({:chat_queue, from, to, id, payload},  state) do
     
     partition_id = 1
+    signal_type = 2
     
     %{eid: from_eid, connection_resource_id: from_device_id} = from
     %{eid: to_eid, connection_resource_id: to_device_id} = to
@@ -294,10 +294,10 @@ defmodule Bimip.Service.Master do
 
         receiver_payload = Map.merge(payload, %{
           signal_type: 3,
-          device_id: from_device_id
+          device_id:  from_device_id
         })
 
-        case BimipLog.write(user_b, partition_id, to, from, receiver_payload, signal_offset_a) do
+        case BimipLog.write(user_b, partition_id, from, to, receiver_payload, signal_offset_a) do
           {:ok, signal_offset_b} ->
 
             pair_fan_out = ThrowSignalSchema.success(
@@ -313,7 +313,11 @@ defmodule Bimip.Service.Master do
               )
             BimipLog.ack_status(user_b, "", 1, signal_offset_b, :sent)
             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
-            AwarenessFanOut.send_direct_message(from_eid, from_device_id, signal_offset_a, signal_offset_a, sender_payload)
+            #same device
+            AwarenessFanOut.send_direct_message(
+              BimipLog.message_status(user_a, "", 1, signal_offset_a),
+              from_eid, signal_offset_a, signal_offset_a, sender_payload, from_device_id, signal_type
+            )
 
             transport =  Map.merge(receiver_payload, %{
               signal_offset: signal_offset_b,
@@ -322,8 +326,7 @@ defmodule Bimip.Service.Master do
               signal_ack_state: BimipLog.message_status(user_b, "", 1, signal_offset_b)
             })
 
-            # AwarenessFanOut.send_offline_message(from_eid, to_eid)
-            RegistryHub.send_chat(to_eid, to_device_id, transport)
+            RegistryHub.send_chat(transport)
             
           {:error, reason} ->
             IO.inspect(reason, label: "[WRITE ERROR B ← A]")
@@ -337,8 +340,15 @@ defmodule Bimip.Service.Master do
   end
 
   @impl true
-  def handle_cast({:chat_message, eid, device_id, %{signal_offset: signal_offset, user_offset: user_offset } =  message}, state) do
-    AwarenessFanOut.send_direct_message(eid, "00000000", signal_offset, user_offset, message)
+  def handle_cast({:chat_message,  %{ to: %{eid: to_eid}, from: %{eid: from_eid},  signal_offset: signal_offset, user_offset: user_offset } = message}, state) do
+
+    user = "#{to_eid}_#{from_eid}"  # recipient queue
+
+    AwarenessFanOut.send_direct_message(
+      BimipLog.message_status(user, "", 1, signal_offset),
+      to_eid, signal_offset, user_offset, message
+    )
+
     {:noreply, state}
   end
 
