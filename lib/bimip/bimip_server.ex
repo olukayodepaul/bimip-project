@@ -289,7 +289,7 @@ defmodule Bimip.Service.Master do
     case BimipLog.write(user_a, partition_id, from, to, sender_payload) do
       {:ok, signal_offset_a} ->
 
-        # BimipLog.ack_message(user_a, from_device_id, 1, signal_offset_a)
+        BimipLog.ack_message(user_a, from_device_id, 1, signal_offset_a)
         BimipLog.ack_status(user_a, "", 1, signal_offset_a, :sent)
 
         receiver_payload = Map.merge(payload, %{
