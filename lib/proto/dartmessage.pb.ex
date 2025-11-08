@@ -43,14 +43,24 @@ defmodule Bimip.Awareness do
   field :visibility, 12, type: :int32
 end
 
+defmodule Bimip.SignalAckState do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :send, 1, type: :bool
+  field :received, 2, type: :bool
+  field :read, 3, type: :bool
+end
+
 defmodule Bimip.Message do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
   field :id, 1, type: :string
-  field :signal_offset, 2, type: :string, json_name: "signalOffset"
-  field :user_offset, 3, type: :string, json_name: "userOffset"
+  field :signal_offset, 2, type: :int32, json_name: "signalOffset"
+  field :user_offset, 3, type: :int32, json_name: "userOffset"
   field :from, 4, type: Bimip.Identity
   field :to, 5, type: Bimip.Identity
   field :type, 6, type: :int32
@@ -61,6 +71,8 @@ defmodule Bimip.Message do
   field :signature, 11, type: :string
   field :status, 12, type: :int32
   field :signal_type, 13, type: :int32, json_name: "signalType"
+  field :signal_offset_state, 14, type: :bool, json_name: "signalOffsetState"
+  field :signal_ack_state, 15, type: Bimip.SignalAckState, json_name: "signalAckState"
 end
 
 defmodule Bimip.Signal do
@@ -69,8 +81,8 @@ defmodule Bimip.Signal do
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
   field :id, 1, type: :string
-  field :signal_offset, 2, type: :string, json_name: "signalOffset"
-  field :user_offset, 3, type: :string, json_name: "userOffset"
+  field :signal_offset, 2, type: :int32, json_name: "signalOffset"
+  field :user_offset, 3, type: :int32, json_name: "userOffset"
   field :status, 4, type: :int32
   field :timestamp, 5, type: :int64
   field :from, 6, type: Bimip.Identity
@@ -78,6 +90,8 @@ defmodule Bimip.Signal do
   field :type, 8, type: :int32
   field :signal_type, 9, type: :int32, json_name: "signalType"
   field :error, 10, proto3_optional: true, type: :string
+  field :signal_offset_state, 11, type: :bool, json_name: "signalOffsetState"
+  field :signal_ack_state, 12, type: Bimip.SignalAckState, json_name: "signalAckState"
 end
 
 defmodule Bimip.PushNotification do

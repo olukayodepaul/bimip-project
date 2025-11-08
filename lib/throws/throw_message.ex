@@ -86,8 +86,9 @@ end
           to: %{eid: to_eid, connection_resource_id: to_device_id},
           payload: payload,
           encryption_type: encryption_type,
-          encrypted: encrypted
-        }, offset, device_id) do
+          encrypted: encrypted,
+          signal_type: signal_type,
+        }, signal_offset, user_offset,  device_id) do
 
       now = System.system_time(:millisecond)
 
@@ -100,8 +101,8 @@ end
 
     message =  %Message{
         id: id,
-        signal_offset: to_string(offset),
-        user_offset: to_string(offset),
+        signal_offset: signal_offset,
+        user_offset: user_offset,
         from: %Identity{eid: from_eid, connection_resource_id: device_id},
         to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
         type: type,
@@ -111,10 +112,8 @@ end
         encrypted: encrypted || "",
         signature: signature || "",
         status: status,
-        signal_type: 1 
+        signal_type: signal_type
       }
-
-      IO.inspect(message)
 
       %MessageScheme{
         route: 6,

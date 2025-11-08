@@ -21,17 +21,22 @@ defmodule ThrowSignalSchema do
         signal_offset \\ 0,
         user_offset \\ 0,
         id \\ "",
-        error \\ ""
+        error \\ "",
+        signal_offset_state \\ true
+        signal_type \\ 1
       ) do
     signal = %Bimip.Signal{
       id: id,
-      signal_offset: "#{signal_offset}",
-      user_offset: "#{user_offset}",
+      signal_offset: signal_offset,
+      user_offset: user_offset,
       status: status,
       timestamp: System.system_time(:millisecond),
       from: %Bimip.Identity{eid: from_eid, connection_resource_id: from_device_id},
       to: %Bimip.Identity{eid: to_eid, connection_resource_id: to_device_id},
       type: @type_response,
+      signal_type: signal_type,
+      signal_offset_state: signal_offset_state,
+      signal_ack_state: %Bimip.SignalAckState{ send: true, received: false, read: false },
       error: error
     }
 

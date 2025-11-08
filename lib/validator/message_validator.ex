@@ -16,7 +16,7 @@ defmodule Bimip.Validators.MessageValidator do
 
   alias Bimip.Message
 
-  @allowed_types [1, 2]      # 1=Chat, 2=PushNotification
+  @allowed_types [1]      # 1=Chat, 2=PushNotification
   @allowed_status 1           # Only SENT is allowed for new messages
   @allowed_signal_type 2      # TWO-WAY
 

@@ -11,10 +11,8 @@ defmodule PersistMessage do
 
     # Merge the given payload with our added offsets and device id
     Map.merge(payload, %{
-      device_id: from[:connection_resource_id],
       signal_offset: "#{signal_offset}",
-      user_offset: "#{per_user_offset}",
-      signal_type: 1
+      user_offset: "#{per_user_offset}"
     })
   end
 end

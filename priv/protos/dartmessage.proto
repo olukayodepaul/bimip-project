@@ -34,6 +34,12 @@ message Awareness {
   int32 visibility = 12;
 }
 
+message SignalAckState {
+  bool send = 1;
+  bool received = 2;
+  bool read = 3;
+}
+
 // ---------------- Message ----------------
 // Represents a chat or notification message between users.
 // Message-level ACKs are tracked via the status field.
@@ -41,11 +47,11 @@ message Awareness {
 // This is sent once.
 message Message {
   string id = 1;              // client/queue-generated message ID
-  string signal_offset = 2;   // server-assigned global ID (monotonic or unique)
-  string user_offset = 3;     // server-assigned global ID (monotonic or unique)
+  int32 signal_offset = 2;   // server-assigned global ID (monotonic or unique)
+  int32 user_offset = 3;     // server-assigned global ID (monotonic or unique)
   Identity from = 4;          // sender (JID or user ID)
   Identity to = 5;            // recipient (JID or user ID)
-  int32 type = 6;             // 1 = Chat | 2 = PushNotification
+  int32 type = 6;             // 1 = Chat
   int64 timestamp = 7;        // epoch milliseconds
   bytes payload = 8;          // pass JSON { }
   string encryption_type = 9; // "none", "AES256", "E2E", etc.
@@ -54,23 +60,32 @@ message Message {
   int32 status = 12;          // 1=SENT, 2=RECORDING, 3=DELIVERED, 4=READ, 5=FORWARDED, 6=PLAYED/VIEWED,
                               // 7=TYPING, 8=RECORDING, 9=PAUSED, 10=CANCELLED, 11=RESUME,
                               // 12=CALLING, 13=DECLINE
-  int32 signal_type = 13;     // 1=ONE-WAY, 2-TWO-WAY, 0-LOCAL
+  int32 signal_type = 13;     // 1=ONE-WAY, 2-TWO-WAY, 0-LOCAL,
+  bool signal_offset_state = 14;    // 
+  SignalAckState signal_ack_state = 15;     //
 }
+
+// when Device receive sent ack. it update the local message with 
+// signal_offset and user_offset.
+
+
 
 // ---------------- Signal ----------------
 // Used by both client and server to reconcile message status.
 // Supports dual reference (id + signal_id) for precise synchronization.
 message Signal {
   string id = 1;            // client/queue message ID
-  string signal_offset = 2; // server-assigned global ID (monotonic or unique)
-  string user_offset = 3;   // server-assigned global ID (monotonic or unique)
+  int32 signal_offset = 2; // server-assigned global ID (monotonic or unique)
+  int32 user_offset = 3;   // server-assigned global ID (monotonic or unique)
   int32 status = 4;         // 1=SENT, 2=RECORDING, 3=DELIVERED, 4=READ, 5=FORWARDED, 6=PLAYED/VIEWED, 7=TYPING, 8=RECORDING, 9=PAUSED, 10=CANCELLED, 11=RESUME
   int64 timestamp = 5;      // epoch ms
   Identity from = 6;        // who sent the ACK
   Identity to = 7;          // who receives the ACK
   int32 type = 8;           // 1=REQUEST, 2=RESPONSE, 3=ERROR
-  int32 signal_type = 9;    // 1=SENDER  2=DEVICE  3=RECEIVER  4=NONE
+  int32 signal_type = 9;    // 1=SENDER  2=DEVICE  3=RECEIVER
   optional string error = 10;// optional error message if type=3
+  bool signal_offset_state = 11 ;   // use to forward offset.
+  SignalAckState signal_ack_state = 12;     //
 }
 
 // ---------------- PushNotification ----------------
@@ -175,3 +190,6 @@ message MessageScheme {
     Logout logout = 12;
   }
 }
+
+
+

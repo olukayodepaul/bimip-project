@@ -14,6 +14,7 @@ defmodule Bimip.Service.Master do
   alias BimipLog
   alias BimipRPCClient
   alias Storage.Registration
+  alias App.RegistryHub
   require Logger
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
@@ -268,7 +269,7 @@ defmodule Bimip.Service.Master do
   @impl true
   def handle_cast({:chat_queue, from, to, id, payload},  state) do
     partition_id = 1
-
+    
     %{eid: from_eid, connection_resource_id: from_device_id} = from
     %{eid: to_eid, connection_resource_id: to_device_id} = to
     
@@ -279,32 +280,46 @@ defmodule Bimip.Service.Master do
     user_b = "#{to_eid}_#{from_eid}"  # recipient queue
     user_c = "#{from_eid}_#{to_eid}"
 
-    case BimipLog.write(user_a, partition_id, from, to, payload) do
+    sender_payload = Map.merge(payload, %{
+      signal_type: 1,
+      device_id: from_device_id
+    })
+
+    case BimipLog.write(user_a, partition_id, from, to, sender_payload) do
       {:ok, signal_offset_a} ->
 
         BimipLog.ack_message(user_a, from_device_id, 1, signal_offset_a)
-        payload_b = PersistMessage.build(%{from: from, to: to, payload: payload}, signal_offset_a)
 
-        case BimipLog.write(user_b, partition_id, to, from, payload, signal_offset_a) do
+        receiver_payload = Map.merge(payload, %{
+          signal_type: 2,
+          device_id: from_device_id
+        })
+
+        case BimipLog.write(user_b, partition_id, to, from, receiver_payload, signal_offset_a) do
           {:ok, signal_offset_b} ->
 
-          pair_fan_out = ThrowSignalSchema.success(
-              from_eid, 
-              from_device_id,
-              to_eid,
-              to_device_id,
-              1,
-              signal_offset_a,
-              signal_offset_a,
-              id,
-              ""
-            )
+            pair_fan_out = ThrowSignalSchema.success(
+                from_eid, 
+                from_device_id,
+                to_eid,
+                to_device_id,
+                1,
+                signal_offset_a,
+                signal_offset_a,
+                id,
+                ""
+              )
 
             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
-            AwarenessFanOut.send_direct_message(from_eid, from_device_id, signal_offset_a, payload)
+            AwarenessFanOut.send_direct_message(from_eid, from_device_id, signal_offset_a, signal_offset_a, sender_payload)
+
+            transport =  Map.merge(receiver_payload, %{
+              signal_offset: signal_offset_b,
+              user_offset: signal_offset_a
+            })
 
             # AwarenessFanOut.send_offline_message(from_eid, to_eid)
-            # message in save in a queue for B. check subscriber state and send him the message.
+            RegistryHub.send_chat(to_eid, to_device_id, transport)
             
           {:error, reason} ->
             IO.inspect(reason, label: "[WRITE ERROR B ← A]")
@@ -314,6 +329,12 @@ defmodule Bimip.Service.Master do
         IO.inspect(reason, label: "[WRITE ERROR A → B]")
     end
 
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:chat_message, eid, device_id, %{signal_offset: signal_offset, user_offset: user_offset } =  message}, state) do
+    AwarenessFanOut.send_direct_message(eid, "00000000", signal_offset, user_offset, message)
     {:noreply, state}
   end
 
@@ -364,3 +385,5 @@ defmodule Bimip.Service.Master do
     {:noreply, state}
   end
 end
+
+

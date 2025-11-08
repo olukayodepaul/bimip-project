@@ -42,7 +42,8 @@ defmodule Route.AwarenessFanOut do
   end
 
   # Specialized group fan-out for awareness visibility toggles
-  def send_direct_message(from_eid, from_device_id, offset, message) do
+  
+  def send_direct_message(from_eid, from_device_id, signal_offset, user_offset, message) do
     now = DateTime.utc_now()
 
     case DeviceStorage.fetch_devices_by_eid(from_eid) do
@@ -59,7 +60,7 @@ defmodule Route.AwarenessFanOut do
         end)
         |> Task.async_stream(
           fn device ->
-            payload = ThrowMessageSchema.build_message(message, offset, device.device_id)
+            payload = ThrowMessageSchema.build_message(message, signal_offset, user_offset, device.device_id)
             pair_fan_out({payload, device.device_id, device.eid})
           end,
           max_concurrency: 10,
@@ -67,7 +68,6 @@ defmodule Route.AwarenessFanOut do
           on_timeout: :kill_task
         )
         |> Stream.run()
-
         :ok
     end
   end

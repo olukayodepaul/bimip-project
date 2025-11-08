@@ -69,6 +69,14 @@ defmodule App.RegistryHub do
     end
   end
 
+  def send_chat(eid, device_id, message) do
+    case Horde.Registry.lookup(EidRegistry, eid) do
+      [{pid, _}] -> 
+        GenServer.cast(pid, {:chat_message, eid, device_id, message})
+      [] -> :error
+    end
+  end
+
   # Stick to this
   @spec route_awareness_visibility_to_server(map()) :: :ok | :error
   def route_awareness_visibility_to_server(%{eid: eid} = visibility) when is_binary(eid) do

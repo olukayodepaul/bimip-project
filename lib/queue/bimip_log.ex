@@ -22,7 +22,7 @@ defmodule BimipLog do
   @doc "Append a message to a user's partition log"
   def write(user, partition_id, from, to, payload, user_offset \\ nil, merge_offset \\ nil) do
     with :ok <- ensure_files_exist(user, partition_id),
-         {:ok, %{seg: seg, next_offset: next_offset, do_rollover: do_rollover}} <- get_atomic_write_state(user, partition_id) do
+        {:ok, %{seg: seg, next_offset: next_offset, do_rollover: do_rollover}} <- get_atomic_write_state(user, partition_id) do
 
       qfile = queue_file(user, partition_id, seg)
 
@@ -403,9 +403,9 @@ end
     end
   end
 
-  def ack_status(user, device, partition, offset, status) 
-      when status in [:sent, :delivered, :read] do
+  def ack_status(user, device , partition, offset, status) when status in [:sent, :delivered, :read] do
     key = {user, device, partition}
+    key = {user, partition}
 
     {pending_table, commit_table} =
       case status do
@@ -528,6 +528,7 @@ end
 
 # BimipLog.write("user1", 1, "alice", "bob", "Hello World")
 # BimipLog.fetch("a@domain.com_b@domain.com", "aaaaa1", 1, 100)
+# BimipLog.fetch("b@domain.com_a@domain.com", "bbbbb2", 1, 100)
 # BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 2)
 
 # Version 2 will save the data in protobuf
@@ -544,3 +545,4 @@ end
 # :mnesia.dirty_read(:commit_offsets, {"a@domain.com_b@domain.com", "aaaaa2", 1})
 # :mnesia.dirty_read(:pending_acks,  {"a@domain.com_b@domain.com", "aaaaa1", 1})
 # :mnesia.dirty_read(:pending_acks,  {"a@domain.com_b@domain.com", "aaaaa2", 1})
+
