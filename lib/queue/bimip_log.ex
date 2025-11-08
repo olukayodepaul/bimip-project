@@ -403,9 +403,9 @@ end
     end
   end
 
-  def ack_status(user, device , partition, offset, status) when status in [:sent, :delivered, :read] do
-    key = {user, device, partition}
-    key = {user, partition}
+  def ack_status(user, device, partition, offset, status) when status in [:sent, :delivered, :read] do
+    key = {user,  partition}
+    # key = {user, device, partition}
 
     {pending_table, commit_table} =
       case status do
@@ -447,7 +447,8 @@ end
   end
 
   def message_status(user, device, partition, offset) do
-    key = {user, device, partition}
+    # key = {user, device, partition}
+    key = {user,  partition}
 
     {:ok, sent_commit} =
       case :mnesia.transaction(fn ->
@@ -516,9 +517,9 @@ end
       end
 
     %{
-      sent?: offset <= sent_commit or MapSet.member?(pending_sent, offset),
-      delivered?: offset <= delivered_commit or MapSet.member?(pending_delivered, offset),
-      read?: offset <= read_commit or MapSet.member?(pending_read, offset)
+      sent: offset <= sent_commit or MapSet.member?(pending_sent, offset),
+      delivered: offset <= delivered_commit or MapSet.member?(pending_delivered, offset),
+      read: offset <= read_commit or MapSet.member?(pending_read, offset)
     }
   end
 
@@ -527,8 +528,10 @@ end
 
 
 # BimipLog.write("user1", 1, "alice", "bob", "Hello World")
-# BimipLog.fetch("a@domain.com_b@domain.com", "aaaaa1", 1, 100)
-# BimipLog.fetch("b@domain.com_a@domain.com", "bbbbb2", 1, 100)
+# BimipLog.fetch("a@domain.com_b@domain.com", "aaaaa1", 1, 1)
+# BimipLog.fetch("b@domain.com_a@domain.com", "bbbbb2", 1, 1)
+
+#move offset forward
 # BimipLog.ack_message("a@domain.com_b@domain.com", "aaaaa1", 1, 2)
 
 # Version 2 will save the data in protobuf
@@ -538,7 +541,7 @@ end
 # BimipLog.ack_status("a@domain.com_b@domain.com", "aaaaa1", 1, 3, :read)
 
 # # Check message status
-# BimipLog.message_status("a@domain.com_b@domain.com", "aaaaa2", 1, 3)
+# BimipLog.message_status("b@domain.com_a@domain.com", "aaaaa2", 1, 4)
 
 
 # :mnesia.dirty_read(:commit_offsets, {"a@domain.com_b@domain.com", "aaaaa1", 1})

@@ -288,10 +288,11 @@ defmodule Bimip.Service.Master do
     case BimipLog.write(user_a, partition_id, from, to, sender_payload) do
       {:ok, signal_offset_a} ->
 
-        BimipLog.ack_message(user_a, from_device_id, 1, signal_offset_a)
+        # BimipLog.ack_message(user_a, from_device_id, 1, signal_offset_a)
+        BimipLog.ack_status(user_a, "", 1, signal_offset_a, :sent)
 
         receiver_payload = Map.merge(payload, %{
-          signal_type: 2,
+          signal_type: 3,
           device_id: from_device_id
         })
 
@@ -309,16 +310,20 @@ defmodule Bimip.Service.Master do
                 id,
                 ""
               )
-
+            IO.inspect(pair_fan_out, label: ["RESPONSE TO A SERVER"])
+            BimipLog.ack_status(user_b, "", 1, signal_offset_b, :sent)
             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
             AwarenessFanOut.send_direct_message(from_eid, from_device_id, signal_offset_a, signal_offset_a, sender_payload)
 
             transport =  Map.merge(receiver_payload, %{
               signal_offset: signal_offset_b,
-              user_offset: signal_offset_a
+              user_offset: signal_offset_a,
+              signal_offset_state: false,
+              signal_ack_state: BimipLog.message_status(user_b, "", 1, signal_offset_b)
             })
 
             # AwarenessFanOut.send_offline_message(from_eid, to_eid)
+            IO.inspect(transport, label: ["DIRECT MESSAGE TO B"])
             RegistryHub.send_chat(to_eid, to_device_id, transport)
             
           {:error, reason} ->

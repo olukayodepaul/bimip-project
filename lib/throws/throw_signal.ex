@@ -22,7 +22,7 @@ defmodule ThrowSignalSchema do
         user_offset \\ 0,
         id \\ "",
         error \\ "",
-        signal_offset_state \\ true
+        signal_offset_state \\ true,
         signal_type \\ 1
       ) do
     signal = %Bimip.Signal{
@@ -36,7 +36,7 @@ defmodule ThrowSignalSchema do
       type: @type_response,
       signal_type: signal_type,
       signal_offset_state: signal_offset_state,
-      signal_ack_state: %Bimip.SignalAckState{ send: true, received: false, read: false },
+      signal_ack_state: %Bimip.SignalAckState{send: true, received: false, read: false },
       error: error
     }
 
