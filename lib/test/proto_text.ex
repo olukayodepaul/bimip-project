@@ -12,9 +12,9 @@ A6 33 42 31 7B 22 74 65 78 74 22 3A 22 48 65 6C
 22 3A 5B 5D 7D 4A 04 6E 6F 6E 65 60 03 72 02 08
 01
       "
-      |> String.split()
+      |> String.split
       |> Enum.map(&String.to_integer(&1, 16))
-      |> :binary.list_to_bin()
+      |> :binary.list_to_bin
 
     # Decode with MessageScheme|>
     message = Bimip.MessageScheme.decode(binary) 
@@ -24,3 +24,48 @@ A6 33 42 31 7B 22 74 65 78 74 22 3A 22 48 65 6C
 end
 
 # ProtoTest.test()
+
+
+defmodule Identocon.Struct do
+  defstruct [:hex, :color]
+end
+
+defmodule Identocon.Image do
+
+  def items(input) do
+      input 
+        # |> String.upcase 
+        # |> String.length
+        |> hash_input
+        |> pick_color
+        |> build_grid
+  end
+
+  def build_grid(%Identocon.Struct{hex: hex} = image) do
+    hex 
+      |> Enum.chunk(3)
+      |> Enum.map(fn row -> mirror_row(row) end)
+      |> filter
+  end
+
+  def filter(grid) do
+    tl(grid)
+  end
+
+  def mirror_row([first, second | _tail] = row) do
+    row ++ [second, first]
+  end
+
+  def pick_color(%Identocon.Struct{hex: [r, g, b | _tail]} = image) do
+    %Identocon.Struct{image | color: {r,g, b}}
+  end
+
+  def hash_input(input) do
+    hashed = 
+      :crypto.hash(:md5, input)
+        |> :binary.bin_to_list
+
+    %Identocon.Struct{hex: hashed}
+  end
+
+end
