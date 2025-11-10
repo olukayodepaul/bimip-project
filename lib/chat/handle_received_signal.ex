@@ -18,7 +18,9 @@ defmodule ChatMessage.RecivedSignal do
     ack_message_receiver_state({receiver, signal_offset})
     move_receiver_offset_forward({receiver, signal_offset, from_device_id})
     ack_message_sender_state({sender, user_offset})
-
+    fetch_reciever_ack = fetch_sender_ack(receiver, signal_offset)
+    fetch_sender_ack = fetch_sender_ack(sender, user_offset)
+    
     
     {:noreply, state}
   end
@@ -33,12 +35,17 @@ defmodule ChatMessage.RecivedSignal do
     BimipLog.ack_status(user, "", 1, offset, :delivered)
   end
 
-  def fetch_sender_ack(user, offset) do
+  def move_receiver_offset_forward({user, offset, device_id}) do
+    # Move offset forwars
+    BimipLog.ack_message(user, device_id, 1, offset)
+  end
+
+  def fetch_receiver_ack({user, offset}) do
     # fetch the ack from the queue
     BimipLog.message_status(user, "", 1, offset)
   end
 
-  def fetch_receiver_ack(user, offset) do
+  def fetch_sender_ack({user, offset}) do
     # fetch the ack from the queue
     BimipLog.message_status(user, "", 1, offset)
   end
@@ -48,10 +55,6 @@ defmodule ChatMessage.RecivedSignal do
     BimipLog.message_status(user, "", 1, offset)
   end
 
-  def move_receiver_offset_forward({user, offset, device_id}) do
-    # Move offset forwars
-    BimipLog.ack_message(user, device_id, 1, offset)
-  end
 
   def receiver_acknowledge_delivered() do
 
