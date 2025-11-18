@@ -69,10 +69,10 @@ defmodule Route.Connect do
     end
   end
 
-  def send_chat(%{to: %{eid: eid}} = message) do
+  def send_message_to_receiver_server(%{to: %{eid: eid}} = message) do
     case Horde.Registry.lookup(EidRegistry, eid) do
       [{pid, _}] ->
-        GenServer.cast(pid, {:chat_message,  message})
+        GenServer.cast(pid, {:send_message_to_receiver_server,  message})
       [] -> :error
     end
   end

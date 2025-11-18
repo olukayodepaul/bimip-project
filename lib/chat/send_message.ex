@@ -54,7 +54,7 @@ defmodule Chat.SendMessage do
         |> Map.put(:signal_offset_state, false)
         |> Map.put(:signal_type, 3)
         |> Map.put(:signal_ack_state, Injection.get_ack_status(reverse_queue_id, to_device_id, @partition_id, recv_offset))
-        |> Connect.send_chat
+        |> Connect.send_message_to_receiver_server
 
       else
         {:error, reason} ->
@@ -70,7 +70,7 @@ defmodule Chat.SendMessage do
   end
 
   def send_message_to_sender_other_devices(new_payload) do
-    SignalCommunication.single_signal_message(new_payload)
+    SignalCommunication.send_message_to_sender_other_devices(new_payload)
   end
 
 end

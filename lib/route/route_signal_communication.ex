@@ -13,7 +13,7 @@ defmodule Route.SignalCommunication do
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
 
-  def single_signal_message(%{
+  def send_message_to_sender_other_devices(%{
     to: %{eid: to_eid, connection_resource_id: to_device_id},
     from: %{eid: from_eid, connection_resource_id: from_device_id},
     } = payload ) do
@@ -35,9 +35,44 @@ defmodule Route.SignalCommunication do
         |> Task.async_stream(
           fn device ->
 
-            new_payload =
               payload
               |> Map.put(:from, %{eid: device.eid, connection_resource_id: device.device_id})
+              |> ThrowMessageSchema.build_message
+              |> then(fn data -> single_signal_communication(%{eid: device.eid, connection_resource_id: device.device_id}, data) end)
+
+          end,
+          max_concurrency: 10,
+          timeout: 5_000,
+          on_timeout: :kill_task
+        )
+        |> Stream.run()
+        :ok
+    end
+  end
+
+  def send_message_to_all_receiver_devices(%{
+    to: %{eid: to_eid, connection_resource_id: to_device_id},
+    from: %{eid: from_eid, connection_resource_id: from_device_id},
+    } = payload ) do
+
+    now = DateTime.utc_now()
+
+    case DeviceStorage.fetch_devices_by_eid(to_eid) do
+      {:error, reason} ->
+        Logger.error("❌ Failed to fetch devices for EID #{from_eid}: #{inspect(reason)}")
+        {:error, reason}
+
+      devices ->
+        devices
+        |> Enum.filter(fn d ->
+          d.status == "ONLINE" and
+            DateTime.diff(now, d.last_seen) <= @stale_threshold_seconds and
+            d.device_id != from_device_id
+        end)
+        |> Task.async_stream(
+          fn device ->
+
+              payload
               |> ThrowMessageSchema.build_message
               |> then(fn data -> single_signal_communication(%{eid: device.eid, connection_resource_id: device.device_id}, data) end)
 

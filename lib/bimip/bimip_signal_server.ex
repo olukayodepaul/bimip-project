@@ -1,6 +1,8 @@
 defmodule Bimip.SignalServer do
   use GenServer
   alias Supervisor.{Registry, Client}
+  alias Route.SignalCommunication
+  alias Chat.SendMessage
   alias Storage.DeviceStorage
   alias Storage.Registration
   alias Bimip.Broker
@@ -12,8 +14,8 @@ defmodule Bimip.SignalServer do
   alias BimipLog
   alias BimipRPCClient
   alias Storage.Registration
-  alias Chat.SendMessage
   require Logger
+
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
 
@@ -254,9 +256,9 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
-  # ----------------------
+  # -------------------------------
   # Route and persist message
-  # ----------------------
+  # -------------------------------
   @impl true
   def handle_cast({:route_message, eid, device_id, post}, state) do
     GenServer.cast(self(), {:chat_queue, post.from, post.to, post.id, post})
@@ -268,21 +270,9 @@ defmodule Bimip.SignalServer do
     SendMessage.store_message({from, to, id, payload}, state)
   end
 
-
-
-
-
-  # coming back to this
   @impl true
-  def handle_cast({:chat_message,  %{ to: %{eid: to_eid}, from: %{eid: from_eid},  signal_offset: signal_offset, user_offset: user_offset } = message}, state) do
-
-    user = "#{to_eid}_#{from_eid}"  # recipient queue
-
-    AwarenessFanOut.send_direct_message(
-      BimipLog.message_status(user, "", 1, signal_offset),
-      to_eid, signal_offset, user_offset, message
-    )
-
+  def handle_cast({:send_message_to_receiver_server,  payload}, state) do
+    SignalCommunication.send_message_to_all_receiver_devices(payload)
     {:noreply, state}
   end
 
