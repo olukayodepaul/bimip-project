@@ -10,8 +10,6 @@ defmodule Chat.SendMessage do
   @sender_push_type 2
   @receiver_push_type 3
 
-  # --- Main Public Function ---
-
   def store_message({
     %{eid: from_eid, connection_resource_id: from_device_id} = from,
     %{eid: to_eid, connection_resource_id: to_device_id} = to,
@@ -29,12 +27,10 @@ defmodule Chat.SendMessage do
 
         send_signal_to_sender({from, to, @status, offset, id})
 
-        # Push to sender's other devices
         payload
         |> set_message_fields(offset, offset, @sender_push_type, queue_id, from_device_id)
         |> send_message_to_sender_other_devices
 
-        # Push to receiver's server
         payload
         |> set_message_fields(recv_offset, offset, @receiver_push_type, reverse_queue_id, to_device_id)
         |> Connect.send_message_to_receiver_server
@@ -47,9 +43,6 @@ defmodule Chat.SendMessage do
     {:noreply, state}
   end
 
-  # --- Private Storage Helpers (New) ---
-
-  # Handles storage, offset advance, and marking :sent for the SENDER's outbound queue.
   defp store_and_ack_sender(payload, queue_id, from, to, from_device_id) do
     storage_payload =
       payload
@@ -63,8 +56,6 @@ defmodule Chat.SendMessage do
     end
   end
 
-  # Handles storage and marking :sent for the RECEIVER's inbound queue.
-  # Note: It maintains the original logic of using 'from_device_id' for the ACK mark.
   defp store_and_ack_receiver(payload, reverse_queue_id, from, to, from_device_id) do
     storage_payload =
       payload
@@ -76,8 +67,6 @@ defmodule Chat.SendMessage do
       {:ok, recv_offset}
     end
   end
-
-  # --- Existing Private Transmission Helpers (Cleaned up for consistency) ---
 
   defp send_signal_to_sender({from, to, status,  offset, id}) do
     binary_payload = ThrowSignalSchema.success(from, to, status, offset,offset,id)
