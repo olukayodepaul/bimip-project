@@ -7,6 +7,10 @@ defmodule Chat.SendMessage do
   @sender_signal_type  1
   @receiver_signal_type  1
   @status 1
+  @sender_push_type 2
+  @receiver_push_type 3
+
+  # --- Main Public Function ---
 
   def store_message({
     %{eid: from_eid, connection_resource_id: from_device_id} = from,
@@ -18,42 +22,21 @@ defmodule Chat.SendMessage do
     queue_id = "#{from_eid}_#{to_eid}"
     reverse_queue_id = "#{to_eid}_#{from_eid}"
 
-    with {:ok, offset} <-
-          payload
-          |> Map.put(:signal_type, @sender_signal_type)
-          |> Map.put(:device_id, from_device_id)
-          |> then(&Injection.store_message(queue_id, @partition_id, from, to, &1)),
-
-          {:ok, adv_offset} <- Injection.advance_offset(queue_id, from_device_id, @partition_id, offset),
-          {:atomic, ack_id} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent),
-
-          {:ok, recv_offset} <-
-          payload
-          |> Map.put(:signal_type, @receiver_signal_type)
-          |> Map.put(:device_id, from_device_id)
-          |> then(&Injection.store_message(reverse_queue_id, @partition_id, from, to, &1)),
-
-          {:atomic, ack_id} <- Injection.mark_ack_status(reverse_queue_id, from_device_id, @partition_id, recv_offset, :sent)
+    # The 'with' block is now much cleaner, focusing only on the outcome of the steps.
+    with {:ok, offset} <- store_and_ack_sender(payload, queue_id, from, to, from_device_id),
+         {:ok, recv_offset} <- store_and_ack_receiver(payload, reverse_queue_id, from, to, from_device_id)
       do
 
         send_signal_to_sender({from, to, @status, offset, id})
 
-        # Push message to other device
+        # Push to sender's other devices
         payload
-        |> Map.put(:signal_offset, offset)
-        |> Map.put(:user_offset, offset)
-        |> Map.put(:signal_type, 2)
-        |> Map.put(:signal_offset_state, false)
-        |> Map.put(:signal_ack_state, Injection.get_ack_status(queue_id, from_device_id, @partition_id, offset))
+        |> set_message_fields(offset, offset, @sender_push_type, queue_id, from_device_id)
         |> send_message_to_sender_other_devices
 
-        # Push messsage to receiver
+        # Push to receiver's server
         payload
-        |> Map.put(:signal_offset, recv_offset)
-        |> Map.put(:user_offset, offset)
-        |> Map.put(:signal_offset_state, false)
-        |> Map.put(:signal_type, 3)
-        |> Map.put(:signal_ack_state, Injection.get_ack_status(reverse_queue_id, to_device_id, @partition_id, recv_offset))
+        |> set_message_fields(recv_offset, offset, @receiver_push_type, reverse_queue_id, to_device_id)
         |> Connect.send_message_to_receiver_server
 
       else
@@ -64,13 +47,53 @@ defmodule Chat.SendMessage do
     {:noreply, state}
   end
 
-  def send_signal_to_sender({from, to, status,  offset, id}) do
+  # --- Private Storage Helpers (New) ---
+
+  # Handles storage, offset advance, and marking :sent for the SENDER's outbound queue.
+  defp store_and_ack_sender(payload, queue_id, from, to, from_device_id) do
+    storage_payload =
+      payload
+      |> Map.put(:signal_type, @sender_signal_type)
+      |> Map.put(:device_id, from_device_id)
+
+    with {:ok, offset} <- Injection.store_message(queue_id, @partition_id, from, to, storage_payload),
+         {:ok, _adv_offset} <- Injection.advance_offset(queue_id, from_device_id, @partition_id, offset),
+         {:atomic, _ack_id} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
+      {:ok, offset}
+    end
+  end
+
+  # Handles storage and marking :sent for the RECEIVER's inbound queue.
+  # Note: It maintains the original logic of using 'from_device_id' for the ACK mark.
+  defp store_and_ack_receiver(payload, reverse_queue_id, from, to, from_device_id) do
+    storage_payload =
+      payload
+      |> Map.put(:signal_type, @receiver_signal_type)
+      |> Map.put(:device_id, from_device_id)
+
+    with {:ok, recv_offset} <- Injection.store_message(reverse_queue_id, @partition_id, from, to, storage_payload),
+         {:atomic, _ack_id} <- Injection.mark_ack_status(reverse_queue_id, from_device_id, @partition_id, recv_offset, :sent) do
+      {:ok, recv_offset}
+    end
+  end
+
+  # --- Existing Private Transmission Helpers (Cleaned up for consistency) ---
+
+  defp send_signal_to_sender({from, to, status,  offset, id}) do
     binary_payload = ThrowSignalSchema.success(from, to, status, offset,offset,id)
     SignalCommunication.single_signal_communication(from, binary_payload)
   end
 
-  def send_message_to_sender_other_devices(new_payload) do
+  defp send_message_to_sender_other_devices(new_payload) do
     SignalCommunication.send_message_to_sender_other_devices(new_payload)
   end
 
+  defp set_message_fields(payload, signal_offset, user_offset, signal_type, queue_id, device_id) do
+    payload
+    |> Map.put(:signal_offset, signal_offset)
+    |> Map.put(:user_offset, user_offset)
+    |> Map.put(:signal_type, signal_type)
+    |> Map.put(:signal_offset_state, false)
+    |> Map.put(:signal_ack_state, Injection.get_ack_status(queue_id, device_id, @partition_id, signal_offset))
+  end
 end
