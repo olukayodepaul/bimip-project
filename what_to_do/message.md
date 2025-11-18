@@ -80,20 +80,31 @@ Do you want me to create that diagram?
 
 ```
 
+message SignalAckState {
+  bool send = 1;
+  bool received = 2;
+  bool read = 3;
+}
+
 // ---------------- Message ----------------
 // Represents a chat or notification message between users.
+// Message-level ACKs are tracked via the status field.
+// Awareness (TYPING, RECORDING) is per-user and handled separately.
+// This is sent once.
 message Message {
-  string id = 1;                    // client/queue-generated message ID
-  string signal_id = 2;             // server-assigned global ID
-  Identity from = 3;                // sender
-  Identity to = 4;                  // recipient
-  int32 type = 5;                   // 1=Chat | 2=PushNotification
-  int64 timestamp = 6;              // epoch milliseconds
-  bytes payload = 7;                // JSON { ... }
-  string encryption_type = 8;       // "none", "AES256", etc.
-  string encrypted = 9;             // base64 encrypted content
-  string signature = 10;            // base64 signature for integrity
-  int64 status = 11;                // 1=SENT, 2=DELIVERED, 3=READ, 4=FORWARDED, 5=PLAYED, 6=TYPING, 7=RECORDING, 8=PAUSED, 9=CANCELLED, 10=RESUME, 11=CALLING, 12=DECLINE, 13=,
+  string id = 1;               // client/queue-generated message ID
+  int32 signal_offset = 2;     // server-assigned global ID (monotonic or unique)
+  int32 user_offset = 3;       // server-assigned global ID (monotonic or unique)
+  Identity from = 4;           // sender (JID or user ID)
+  Identity to = 5;             // recipient (JID or user ID)
+  int64 timestamp = 7;         // epoch milliseconds
+  bytes payload = 8;           // pass JSON { }
+  string encryption_type = 9;  // "none", "AES256", "E2E", etc.
+  string encrypted = 10;       // base64 encrypted content (if any)
+  string signature = 11;                      // base64 signature for integrity 
+  int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
+  bool signal_offset_state = 13;            // 
+  SignalAckState signal_ack_state = 14;     //
 }
 
 ```
@@ -396,7 +407,7 @@ request = %Bimip.Message{
   encryption_type: "none",
   encrypted: "",
   signature: "",
-  signal_type: 2
+  signal_type: 1
 }
 
 msg_scheme = %Bimip.MessageScheme{
@@ -412,12 +423,12 @@ IO.inspect(decoded, label: "Decoded Message (Client → Server)")
 
 
 request = %Bimip.Message{
-  id: "3",
-  to: %Bimip.Identity{
+  id: "4637829384765473892",
+  from: %Bimip.Identity{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa1"
   },
-  from: %Bimip.Identity{
+  to: %Bimip.Identity{
     eid: "b@domain.com",
     connection_resource_id: "bbbbb1"
   },
@@ -429,7 +440,7 @@ request = %Bimip.Message{
   encryption_type: "",
   encrypted: "",
   signature: "",
-  signal_type: 2,
+  signal_type: 1,
 }
 
 msg_scheme = %Bimip.MessageScheme{
@@ -455,3 +466,32 @@ B → Server: “Read” notification (optional, if B reads the message).
 Server → A1: “Read” notification.
 Only B sends ACKs to server for messages it received.
 A1 only tracks server ACKs to know the status of its sent messages.
+
+
+
+message SignalAckState {
+  bool send = 1;
+  bool received = 2;
+  bool read = 3;
+}
+
+// ---------------- Message ----------------
+// Represents a chat or notification message between users.
+// Message-level ACKs are tracked via the status field.
+// Awareness (TYPING, RECORDING) is per-user and handled separately.
+// This is sent once.
+message Message {
+  string id = 1;               // client/queue-generated message ID
+  int32 signal_offset = 2;     // server-assigned global ID (monotonic or unique)
+  int32 user_offset = 3;       // server-assigned global ID (monotonic or unique)
+  Identity from = 4;           // sender (JID or user ID)
+  Identity to = 5;             // recipient (JID or user ID)
+  int64 timestamp = 7;         // epoch milliseconds
+  bytes payload = 8;           // pass JSON { }
+  string encryption_type = 9;  // "none", "AES256", "E2E", etc.
+  string encrypted = 10;       // base64 encrypted content (if any)
+  string signature = 11;                      // base64 signature for integrity 
+  int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
+  bool signal_offset_state = 13;            // 
+  SignalAckState signal_ack_state = 14;     //
+}

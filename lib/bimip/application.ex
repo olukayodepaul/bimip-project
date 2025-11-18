@@ -16,7 +16,7 @@ defmodule Bimip.Application do
 
     # Tables
     create_all_bimip_tables()
- 
+
     # TCP / HTTP
     tcp_connection =
       if Connections.secure_tls?() do
@@ -40,8 +40,8 @@ defmodule Bimip.Application do
       {Redix, name: :redix},
       {Horde.Registry, name: DeviceIdRegistry, keys: :unique, members: :auto},
       {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},
-      {Bimip.Supervisor.Orchestrator, []},
-      {Bimip.Device.Supervisor, []}
+      {Supervisor.Server, []},
+      {Supervisor.Client, []}
     ]
 
     opts = [strategy: :one_for_one, name: Bimip.Supervisor]
@@ -60,7 +60,7 @@ defmodule Bimip.Application do
     create(:device_index, [:eid, :device_id], :bag)
     create(:subscribers, [:id, :owner_id, :subscriber_id, :status, :blocked, :inserted_at, :last_seen], :set)
     create(:subscriber_index, [:owner_id, :subscriber_id], :bag)
-    
+
 
     create(:current_segment, [:key, :segment], :set)
     create(:first_segment, [:key, :segment], :set)

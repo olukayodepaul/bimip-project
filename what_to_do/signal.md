@@ -1,0 +1,40 @@
+
+
+
+
+
+```Sending delivered to server
+
+# Receiver acknowledging a received message
+ack_signal = %Bimip.Signal{
+  id: "1",
+  signal_offset: 1,
+  user_offset: 1,
+  status: 1,
+  timestamp: System.system_time(:second),
+  from: %Bimip.Identity{
+    eid: "b@domain.com",
+    connection_resource_id: "bbbbb1"
+  },
+  to: %Bimip.Identity{
+    eid: "a@domain.com",
+    connection_resource_id: "aaaaa1"
+  },
+  type: 1,               # 1 = REQUEST (signal sent to server)
+  signal_type: 3,        # 3 = RECEIVER (acknowledgment from receiver)
+  signal_offset_state: true,
+  signal_ack_state: %Bimip.SignalAckState{
+    received: true        # receiver confirms receipt
+  }
+}
+
+ack_message = %Bimip.MessageScheme{
+  route: 7,               # route for signaling/ack messages
+  payload: {:signal, ack_signal}
+}
+
+binary_ack = Bimip.MessageScheme.encode(ack_message)
+hex_ack = Base.encode16(binary_ack, case: :upper)
+
+
+```

@@ -12,7 +12,7 @@ defmodule Util.Network.AdaptivePingPong do
 
   require Logger
   alias Settings.AdaptiveNetwork
-  alias App.RegistryHub
+  alias Route.Connect
   alias Util.Client.DeviceState
 
   @max_pong_counter AdaptiveNetwork.max_pong_retries()
@@ -41,7 +41,7 @@ defmodule Util.Network.AdaptivePingPong do
         Logger.error(
           "[#{device_id}] Ping delayed by #{delta}s (> #{@max_allowed_delay}), terminating GenServer"
         )
-        RegistryHub.send_terminate_signal_to_server({device_id, eid})
+        Connect.send_terminate_signal_to_server({device_id, eid})
         {:stop, :normal, state}
 
       # Too many missed pongs → mark offline
@@ -166,7 +166,7 @@ defmodule Util.Network.AdaptivePingPong do
   # Device state change
   # -------------------------
   def state_change(device_id, eid, status, last_state_change, state, awareness_intention \\ 2) do
-    
+
     attrs = %{
       status: status,
       last_seen: DateTime.utc_now(),
@@ -180,12 +180,12 @@ defmodule Util.Network.AdaptivePingPong do
     case DeviceState.track_state_change(attrs, device_state) do
       {:changed, prev_status, new_state} ->
         Logger.info("[#{device_id}] State changed #{prev_status} → #{status}")
-        RegistryHub.send_pong_to_bimip_server_master(device_id, eid, prev_status)
+        Connect.send_pong_to_bimip_server_master(device_id, eid, prev_status)
         {:chr, new_state}
-      
+
         {:refresh, prev_status, new_state} ->
         Logger.debug("[#{device_id}] State refresh #{prev_status} → #{status}")
-        RegistryHub.send_pong_to_bimip_server_master(device_id, eid, prev_status)
+        Connect.send_pong_to_bimip_server_master(device_id, eid, prev_status)
         {:chr, new_state}
 
       {:unchanged, prev_status, new_state} ->
@@ -233,7 +233,7 @@ defmodule Util.Network.AdaptivePingPong do
   def schedule_ping(device_id, last_rtt \\ nil) do
     interval = maybe_adaptive_interval(last_rtt)
     Logger.debug("[#{device_id}] Scheduling next ping in #{interval}ms")
-    RegistryHub.schedule_ping_registry(device_id, interval)
+    Connect.schedule_ping_registry(device_id, interval)
     :ok
   end
 
@@ -283,6 +283,6 @@ defmodule Util.Network.AdaptivePingPong do
   # -------------------------
   def handle_pong_from_network(device_id, sent_time) do
     Logger.debug("[#{device_id}] Handling network pong at #{sent_time}")
-    RegistryHub.handle_pong_registry(device_id, sent_time)
+    Connect.handle_pong_registry(device_id, sent_time)
   end
 end

@@ -17,7 +17,7 @@ defmodule Bimip.Validators.MessageValidator do
   alias Bimip.Message
 
 
-  @allowed_signal_type 2      # TWO-WAY
+  @allowed_signal_type 1
 
   @spec validate(Message.t()) :: :ok | {:error, map()}
   def validate(%Message{} = msg) do

@@ -1,6 +1,6 @@
-defmodule Bimip.Supervisor.Orchestrator do
+defmodule Supervisor.Server do
   #supervisor
-  
+
   use Horde.DynamicSupervisor
   require Logger
 
@@ -20,7 +20,7 @@ defmodule Bimip.Supervisor.Orchestrator do
   def start_mother(%{eid: eid} = state) do
     child_spec = %{
       id: {:orchestrator_session, eid},                  # unique per user
-      start: {Bimip.Service.Master, :start_link, [state]}, # pass full state to Master
+      start: {Bimip.SignalServer, :start_link, [state]}, # pass full state to Master
       restart: :transient,
       shutdown: 5000
     }
