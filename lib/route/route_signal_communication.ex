@@ -183,82 +183,44 @@ defmodule Route.SignalCommunication do
     end
   end
 
+  def single_signal_message(%{
+    to: %{eid: to_eid, connection_resource_id: to_device_id},
+    from: %{eid: from_eid, connection_resource_id: from_device_id},
+    } = payload ) do
 
-  # def grace_expired?(user, device) do
-  #   key = {user, device}
+    now = DateTime.utc_now()
 
-  #   case :mnesia.transaction(fn -> :mnesia.read(:resume_grace, key) end) do
-  #     {:atomic, [{:resume_grace, ^key, timestamp}]} ->
-  #       System.system_time(:millisecond) >= timestamp
+    case DeviceStorage.fetch_devices_by_eid(from_eid) do
+      {:error, reason} ->
+        Logger.error("❌ Failed to fetch devices for EID #{from_eid}: #{inspect(reason)}")
+        {:error, reason}
 
-  #     {:atomic, []} ->
-  #       true
+      devices ->
+        devices
+        |> Enum.filter(fn d ->
+          d.status == "ONLINE" and
+            DateTime.diff(now, d.last_seen) <= @stale_threshold_seconds and
+            d.device_id != from_device_id
+        end)
+        |> Task.async_stream(
+          fn device ->
 
-  #     {:aborted, reason} ->
-  #       # fallback to allow processing
-  #       Logger.error("❌ Failed to read grace period for #{inspect(key)}: #{inspect(reason)}")
-  #       true
-  #   end
-  # end
+            new_payload =
+              payload
+              |> Map.put(:from, %{eid: device.eid, connection_resource_id: device.device_id})
+              |> ThrowMessageSchema.build_message
+              |> then(fn data -> single_signal_communication(%{eid: device.eid, connection_resource_id: device.device_id}, data) end)
 
-  # def set_grace(user, device, duration_ms) do
-  #   key = {user, device}
-  #   ts = System.system_time(:millisecond) + duration_ms
+          end,
+          max_concurrency: 10,
+          timeout: 5_000,
+          on_timeout: :kill_task
+        )
+        |> Stream.run()
+        :ok
+    end
+  end
 
-  #   :mnesia.transaction(fn ->
-  #     :mnesia.write({:resume_grace, key, ts})
-  #   end)
-  # end
-
-  #  def single_signal_message(
-  #       from,
-  #       signal_offset,
-  #       user_offset,
-  #       message,
-  #       signal_ack_state,
-  #       from_device_id \\ nil,
-  #       signal_type \\ nil
-  #     ) do
-  #   now = DateTime.utc_now()
-
-  #   case DeviceStorage.fetch_devices_by_eid(from_eid) do
-  #     {:error, reason} ->
-  #       Logger.error("❌ Failed to fetch devices for EID #{from_eid}: #{inspect(reason)}")
-  #       {:error, reason}
-
-  #     devices ->
-  #       devices
-  #       |> Enum.filter(fn d ->
-  #         # remove sender device sp as not to get the message twice
-  #         d.status == "ONLINE" and
-  #           DateTime.diff(now, d.last_seen) <= @stale_threshold_seconds and
-  #           d.device_id != from_device_id
-  #       end)
-  #       |> Task.async_stream(
-  #         fn device ->
-  #           payload =
-  #             ThrowMessageSchema.build_message(
-  #               signal_ack_state,
-  #               message,
-  #               signal_offset,
-  #               user_offset,
-  #               signal_type
-  #             )
-
-  #           # pair_fan_out({payload, device.device_id, device.eid})
-  #         end,
-  #         max_concurrency: 10,
-  #         timeout: 5_000,
-  #         on_timeout: :kill_task
-  #       )
-  #       |> Stream.run()
-
-  #       :ok
-  #   end
-  # end
-
-
-  # Send message to a single device safely
   def single_signal_communication(from, binary_payload) do
     try do
       Connect.receive_awareness_from_server(from.connection_resource_id, from.eid, binary_payload)

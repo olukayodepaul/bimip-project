@@ -16,7 +16,8 @@ defmodule ThrowMessageSchema do
       encrypted: encrypted,
       signature: signature,
       signal_offset: signal_offset,
-      user_offset: user_offset
+      user_offset: user_offset,
+      signal_type: signal_type
     }) do
   %Message{
     id: id,
@@ -33,7 +34,7 @@ defmodule ThrowMessageSchema do
     encryption_type: encryption_type,
     encrypted: encrypted,
     signature: signature,
-    signal_type: 1
+    signal_type: signal_type
   }
 end
 
@@ -60,7 +61,6 @@ end
   # SUCCESS / NORMAL MESSAGE
   # ------------------------------------------------------------------------
   def build_message(
-    signal_ack_state,
     %{
       id: id,
       from: %{eid: from_eid, connection_resource_id: from_device_id},
@@ -70,11 +70,12 @@ end
       encrypted: encrypted,
       signature: signature,
       signal_type: signal_type,
-      },  signal_offset, user_offset, signal \\ nil) do
-      
-      peer_offset = signal || signal_type
-      now = System.system_time(:millisecond)
-      %{read: read, sent: sent, delivered: delivered} = signal_ack_state 
+      user_offset: user_offset,
+      signal_offset: signal_offset,
+      signal_offset_state: signal_offset_state,
+      signal_ack_state: %{read: read, sent: sent, delivered: delivered},
+      timestamp:  timestamp
+      }) do
 
       # Normalize payload: encode map -> JSON, or use string directly
       payload_json =
@@ -89,12 +90,12 @@ end
           user_offset: user_offset,
           from: %Identity{eid: from_eid, connection_resource_id: from_device_id}, # the device_id of sender
           to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
-          timestamp: now,
+          timestamp: timestamp,
           payload: payload_json,
-          encryption_type: encryption_type || "none",
-          encrypted: encrypted || "",
-          signature: signature || "",
-          signal_type: peer_offset,
+          encryption_type: encryption_type,
+          encrypted: encrypted,
+          signature: signature,
+          signal_type: signal_type,
           signal_ack_state:
           %SignalAckState{
             send: sent,

@@ -47,7 +47,6 @@ defmodule Chat.SendMessage do
         |> Map.put(:signal_ack_state, Injection.get_ack_status(queue_id, from_device_id, @partition_id, offset))
         |> send_signal_to_sender_other_devices
 
-        IO.inspect({push_to_other_device, payload })
       else
         {:error, reason} ->
           Logger.error("Message pipeline failed: #{inspect(reason)}")
@@ -62,13 +61,8 @@ defmodule Chat.SendMessage do
   end
 
   def send_signal_to_sender_other_devices(new_payload) do
-
+    SignalCommunication.single_signal_message(new_payload)
   end
-
-
-
-
-
 
 end
 
