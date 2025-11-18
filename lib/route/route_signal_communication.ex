@@ -22,7 +22,7 @@ defmodule Route.SignalCommunication do
 
     case DeviceStorage.fetch_devices_by_eid(from_eid) do
       {:error, reason} ->
-        Logger.error("❌ Failed to fetch devices for EID #{from_eid}: #{inspect(reason)}")
+        Logger.error("Failed to fetch devices for EID #{from_eid}: #{inspect(reason)}")
         {:error, reason}
 
       devices ->
@@ -59,7 +59,7 @@ defmodule Route.SignalCommunication do
 
     case DeviceStorage.fetch_devices_by_eid(to_eid) do
       {:error, reason} ->
-        Logger.error("❌ Failed to fetch devices for EID #{from_eid}: #{inspect(reason)}")
+        Logger.error("Failed to fetch devices for EID #{from_eid}: #{inspect(reason)}")
         {:error, reason}
 
       devices ->
@@ -91,7 +91,7 @@ defmodule Route.SignalCommunication do
       Connect.receive_awareness_from_server(from.connection_resource_id, from.eid, binary_payload)
     rescue
       error ->
-        Logger.error("⚠️ Fan-out failed for device #{from.connection_resource_id} (EID #{from.eid}): #{inspect(error)}")
+        Logger.error("Fan-out failed for device #{from.connection_resource_id} (EID #{from.eid}): #{inspect(error)}")
         {:error, error}
     end
   end
