@@ -210,6 +210,52 @@ defmodule Route.SignalCommunication do
   #   end)
   # end
 
+  #  def single_signal_message(
+  #       from,
+  #       signal_offset,
+  #       user_offset,
+  #       message,
+  #       signal_ack_state,
+  #       from_device_id \\ nil,
+  #       signal_type \\ nil
+  #     ) do
+  #   now = DateTime.utc_now()
+
+  #   case DeviceStorage.fetch_devices_by_eid(from_eid) do
+  #     {:error, reason} ->
+  #       Logger.error("❌ Failed to fetch devices for EID #{from_eid}: #{inspect(reason)}")
+  #       {:error, reason}
+
+  #     devices ->
+  #       devices
+  #       |> Enum.filter(fn d ->
+  #         # remove sender device sp as not to get the message twice
+  #         d.status == "ONLINE" and
+  #           DateTime.diff(now, d.last_seen) <= @stale_threshold_seconds and
+  #           d.device_id != from_device_id
+  #       end)
+  #       |> Task.async_stream(
+  #         fn device ->
+  #           payload =
+  #             ThrowMessageSchema.build_message(
+  #               signal_ack_state,
+  #               message,
+  #               signal_offset,
+  #               user_offset,
+  #               signal_type
+  #             )
+
+  #           # pair_fan_out({payload, device.device_id, device.eid})
+  #         end,
+  #         max_concurrency: 10,
+  #         timeout: 5_000,
+  #         on_timeout: :kill_task
+  #       )
+  #       |> Stream.run()
+
+  #       :ok
+  #   end
+  # end
 
 
   # Send message to a single device safely

@@ -30,7 +30,6 @@ defmodule Queue.QueueLog do
       def mark_ack_status(user, device, partition, offset, status),
         do: QueueLogImpl.ack_status(user, device, partition, offset, status)
 
-
     end
   end
 end

@@ -390,7 +390,7 @@ user_offset: "0",    # per-user offset (A's own queue offset)
 
 
 request = %Bimip.Message{
-  id: "3",
+  id: "4637829384765473892",
   from: %Bimip.Identity{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa1"
@@ -445,7 +445,7 @@ request = %Bimip.Message{
 
 msg_scheme = %Bimip.MessageScheme{
   route: 6,         # your route ID
-  message: request   # just set the optional field directly
+  payload: {:message, request} 
 }
 
 binary = Bimip.MessageScheme.encode(msg_scheme)
