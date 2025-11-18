@@ -1,7 +1,7 @@
 defmodule Chat.SendMessage do
 
   alias Queue.Injection
-  alias Route.SignalCommunication
+  alias Route.{SignalCommunication, Connect}
 
   @partition_id  1
   @sender_signal_type  1
@@ -38,14 +38,23 @@ defmodule Chat.SendMessage do
 
         send_signal_to_sender({from, to, @status, offset, id})
 
-        push_to_other_device =
+        # Push message to other device
         payload
         |> Map.put(:signal_offset, offset)
         |> Map.put(:user_offset, offset)
         |> Map.put(:signal_type, 2)
-        |> Map.put(:signal_offset_state, true)
+        |> Map.put(:signal_offset_state, false)
         |> Map.put(:signal_ack_state, Injection.get_ack_status(queue_id, from_device_id, @partition_id, offset))
-        |> send_signal_to_sender_other_devices
+        |> send_message_to_sender_other_devices
+
+        # Push messsage to receiver
+        payload
+        |> Map.put(:signal_offset, recv_offset)
+        |> Map.put(:user_offset, offset)
+        |> Map.put(:signal_offset_state, false)
+        |> Map.put(:signal_type, 3)
+        |> Map.put(:signal_ack_state, Injection.get_ack_status(reverse_queue_id, to_device_id, @partition_id, recv_offset))
+        |> Connect.send_chat
 
       else
         {:error, reason} ->
@@ -60,59 +69,8 @@ defmodule Chat.SendMessage do
     SignalCommunication.single_signal_communication(from, binary_payload)
   end
 
-  def send_signal_to_sender_other_devices(new_payload) do
+  def send_message_to_sender_other_devices(new_payload) do
     SignalCommunication.single_signal_message(new_payload)
   end
 
 end
-
-
-# Injection.fetch_messages("a@domain.com_b@domain.com", "aaaaa1", 1, 10)
-
-
-
-#     case Injection.write(queue_id, partition_id, from, to, sender_payload) do
-#       {:ok, signal_offset_a} ->
-
-#         QueueLog.ack_message(user_a, from_device_id, 1, signal_offset_a)
-#         QueueLog.ack_status(user_a, "", 1, signal_offset_a, :sent)
-
-#         receiver_payload = Map.merge(payload, %{
-#           signal_type: 3,
-#           device_id:  from_device_id
-#         })
-
-#         case QueueLog.write(user_b, partition_id, from, to, receiver_payload, signal_offset_a) do
-#           {:ok, signal_offset_b} ->
-
-#
-#             QueueLog.ack_status(user_b, "", 1, signal_offset_b, :sent)
-#             AwarenessFanOut.pair_fan_out({pair_fan_out, from_device_id, from_eid})
-
-#             AwarenessFanOut.send_direct_message(
-#               QueueLog.message_status(user_a, "", 1, signal_offset_a),
-#               from_eid, signal_offset_a, signal_offset_a, sender_payload, from_device_id, signal_type
-#             )
-
-#             transport =  Map.merge(receiver_payload, %{
-#               signal_offset: signal_offset_b,
-#               user_offset: signal_offset_a,
-#               signal_offset_state: false,
-#               signal_ack_state: QueueLog.message_status(user_b, "", 1, signal_offset_b)
-#             })
-
-#             RegistryHub.send_chat(transport)
-
-#           {:error, reason} ->
-#             IO.inspect(reason, label: "[WRITE ERROR B ← A]")
-#         end
-
-#       {:error, reason} ->
-#         IO.inspect(reason, label: "[WRITE ERROR A → B]")
-#     end
-
-
-# Queue.Injection.fetch_messages("a@domain.com_b@domain.com", "aaaaa1", 1, 10)
-# Queue.Injection.get_ack_status("b@domain.com_a@domain.com", "device1", 1, 4)
-# Queue.Injection.fetch_messages("a@domain.com_b@domain.com", "aaaaa1", 1, 10)
-# Queue.Injection.get_ack_status("b@domain.com_a@domain.com", "device1", 1, 4)
