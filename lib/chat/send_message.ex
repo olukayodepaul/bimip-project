@@ -35,6 +35,7 @@ defmodule Chat.SendMessage do
 
           {:atomic, ack_id} <- Injection.mark_ack_status(reverse_queue_id, from_device_id, @partition_id, recv_offset, :sent)
       do
+
         send_signal_to_sender({from, to, @status, offset, id})
 
         push_to_other_device =
@@ -44,10 +45,9 @@ defmodule Chat.SendMessage do
         |> Map.put(:signal_type, 2)
         |> Map.put(:signal_offset_state, true)
         |> Map.put(:signal_ack_state, Injection.get_ack_status(queue_id, from_device_id, @partition_id, offset))
+        |> send_signal_to_sender_other_devices
 
         IO.inspect({push_to_other_device, payload })
-
-        # send_message_to_sender_other_devices()
       else
         {:error, reason} ->
           Logger.error("Message pipeline failed: #{inspect(reason)}")
@@ -56,30 +56,14 @@ defmodule Chat.SendMessage do
     {:noreply, state}
   end
 
-
-#    %{
-#    id: "4637829384765473892",
-#    timestamp: 1763469469548,
-#    signature: "",
-#    to: %{eid: "b@domain.com", connection_resource_id: "bbbbb1"},
-#    from: %{eid: "a@domain.com", connection_resource_id: "aaaaa1"},
-#    payload: "{\"text\":\"Hello from BIMIP 👋\",\"attachments\":[]}",
-#    encryption_type: "none",
-#    encrypted: ""
-#  }}
-
-
   def send_signal_to_sender({from, to, status,  offset, id}) do
     binary_payload = ThrowSignalSchema.success(from, to, status, offset,offset,id)
     SignalCommunication.single_signal_communication(from, binary_payload)
   end
 
-#   def send_signal_to_sender_other_devices() do
-#     SignalCommunication.single_signal_message(
-# SignalCommunication.get_ack_status(user_a, "", 1, signal_offset_a),
-#       from_eid, signal_offset_a, signal_offset_a, sender_payload, from_device_id, signal_type
-#     )
-#   end
+  def send_signal_to_sender_other_devices(new_payload) do
+
+  end
 
 
 
