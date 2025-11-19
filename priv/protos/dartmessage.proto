@@ -59,6 +59,7 @@ message Message {
   int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
   bool signal_offset_state = 13;            // 
   SignalAckState signal_ack_state = 14;     //
+  int32 signal_request = 15;
 }
 
 // when Device receive sent ack. it update the local message with 
@@ -92,6 +93,7 @@ message Signal {
   optional string error = 10;// optional error message if type=3
   bool signal_offset_state = 11 ;   // use to forward offset.
   SignalAckState signal_ack_state = 12;     //
+  int32 signal_request = 13;
 }
 
 // ---------------- PushNotification ----------------

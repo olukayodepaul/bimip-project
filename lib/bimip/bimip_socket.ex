@@ -110,8 +110,14 @@ defmodule Bimip.Socket do
   end
 
   def handle_signal(state, data) do
-    IO.inspect(data, label: "CHECK_SIGNAL")
-    {:ok, state}
+    case Connect.handle_inbouce_signal({:device_id, state.device_id, :signal_to_client, data}) do
+      :ok ->
+        {:ok, state}
+      :error ->
+        error_msg = ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
+        send(self(), {:binary, error_msg})
+        {:ok, state}
+    end
   end
 
   defp handle_awareness(state, data) do

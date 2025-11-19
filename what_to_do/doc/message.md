@@ -155,6 +155,8 @@ If `false`, the client **must retry the same message** until the server returns 
 
 ---
 
+
+
 ## **14. `signal_ack_state`**
 
 **Type:** `SignalAckState`
@@ -167,6 +169,22 @@ Represents message delivery lifecycle:
 * sent
 * delivered
 * read
+
+Ensures consistent UI and device synchronization.
+
+---
+
+## **15. `signal_request`**
+
+**Type:** `int`
+Track if message receive is either pull or push request.
+
+### Purpose:
+
+Represents message delivery channel:
+
+* pull: 1 -> after advancing offset, fetch next message
+* push: 2 -> after advancing offser, do not fetch next message
 
 Ensures consistent UI and device synchronization.
 
@@ -291,6 +309,7 @@ message Message {
   int32 signal_type = 12;           
   bool signal_offset_state = 13;    
   SignalAckState signal_ack_state = 14;
+  int32 signal_request = 15;
 }
 ```
 

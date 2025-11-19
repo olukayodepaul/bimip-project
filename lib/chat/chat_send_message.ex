@@ -9,6 +9,7 @@ defmodule Chat.SendMessage do
   @status 1
   @sender_push_type 2
   @receiver_push_type 3
+  @signal_request 2
 
   def store_message({
     %{eid: from_eid, connection_resource_id: from_device_id} = from,
@@ -22,7 +23,7 @@ defmodule Chat.SendMessage do
 
     # The 'with' block is now much cleaner, focusing only on the outcome of the steps.
     with {:ok, offset} <- store_and_ack_sender(payload, queue_id, from, to, from_device_id),
-         {:ok, recv_offset} <- store_and_ack_receiver(payload, reverse_queue_id, from, to, from_device_id)
+        {:ok, recv_offset} <- store_and_ack_receiver(payload, reverse_queue_id, from, to, from_device_id)
       do
 
         send_signal_to_sender({from, to, @status, offset, id})
@@ -50,8 +51,8 @@ defmodule Chat.SendMessage do
       |> Map.put(:device_id, from_device_id)
 
     with {:ok, offset} <- Injection.store_message(queue_id, @partition_id, from, to, storage_payload),
-         {:ok, _adv_offset} <- Injection.advance_offset(queue_id, from_device_id, @partition_id, offset),
-         {:atomic, _ack_id} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
+        {:ok, _adv_offset} <- Injection.advance_offset(queue_id, from_device_id, @partition_id, offset),
+        {:atomic, _ack_id} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
       {:ok, offset}
     end
   end
@@ -63,7 +64,7 @@ defmodule Chat.SendMessage do
       |> Map.put(:device_id, from_device_id)
 
     with {:ok, recv_offset} <- Injection.store_message(reverse_queue_id, @partition_id, from, to, storage_payload),
-         {:atomic, _ack_id} <- Injection.mark_ack_status(reverse_queue_id, from_device_id, @partition_id, recv_offset, :sent) do
+        {:atomic, _ack_id} <- Injection.mark_ack_status(reverse_queue_id, from_device_id, @partition_id, recv_offset, :sent) do
       {:ok, recv_offset}
     end
   end
@@ -79,6 +80,7 @@ defmodule Chat.SendMessage do
 
   defp set_message_fields(payload, signal_offset, user_offset, signal_type, queue_id, device_id) do
     payload
+    |> Map.put(:signal_request, @signal_request)
     |> Map.put(:signal_offset, signal_offset)
     |> Map.put(:user_offset, user_offset)
     |> Map.put(:signal_type, signal_type)

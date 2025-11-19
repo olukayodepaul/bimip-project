@@ -71,6 +71,7 @@ defmodule Bimip.Message do
   field :signal_type, 12, type: :int32, json_name: "signalType"
   field :signal_offset_state, 13, type: :bool, json_name: "signalOffsetState"
   field :signal_ack_state, 14, type: Bimip.SignalAckState, json_name: "signalAckState"
+  field :signal_request, 15, type: :int32, json_name: "signalRequest"
 end
 
 defmodule Bimip.Signal do
@@ -90,6 +91,7 @@ defmodule Bimip.Signal do
   field :error, 10, proto3_optional: true, type: :string
   field :signal_offset_state, 11, type: :bool, json_name: "signalOffsetState"
   field :signal_ack_state, 12, type: Bimip.SignalAckState, json_name: "signalAckState"
+  field :signal_request, 13, type: :int32, json_name: "signalRequest"
 end
 
 defmodule Bimip.PushNotification do

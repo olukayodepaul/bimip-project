@@ -12,7 +12,8 @@ defmodule Queue.Persist do
     # Merge the given payload with our added offsets and device id
     Map.merge(payload, %{
       signal_offset: "#{signal_offset}",
-      user_offset: "#{per_user_offset}"
+      user_offset: "#{per_user_offset}",
+      eid: from.eid
     })
   end
 end

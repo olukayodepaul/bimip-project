@@ -390,10 +390,10 @@ user_offset: "0",    # per-user offset (A's own queue offset)
 
 
 request = %Bimip.Message{
-  id: "4637829384765473892",
+  id: "1",
   from: %Bimip.Identity{
     eid: "a@domain.com",
-    connection_resource_id: "aaaaa1"
+    connection_resource_id: "aaaaa2"
   },
  to: %Bimip.Identity{
     eid: "b@domain.com",

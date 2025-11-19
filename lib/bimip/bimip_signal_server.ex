@@ -1,8 +1,15 @@
 defmodule Bimip.SignalServer do
   use GenServer
+  require Logger
   alias Supervisor.{Registry, Client}
   alias Route.SignalCommunication
-  alias Chat.SendMessage
+  alias Chat.{SendMessage, ReceivedSignal}
+  # refactoring
+
+
+
+
+
   alias Storage.DeviceStorage
   alias Storage.Registration
   alias Bimip.Broker
@@ -14,7 +21,7 @@ defmodule Bimip.SignalServer do
   alias BimipLog
   alias BimipRPCClient
   alias Storage.Registration
-  require Logger
+
 
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
@@ -256,25 +263,7 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
-  # -------------------------------
-  # Route and persist message
-  # -------------------------------
-  @impl true
-  def handle_cast({:route_message, eid, device_id, post}, state) do
-    GenServer.cast(self(), {:chat_queue, post.from, post.to, post.id, post})
-    {:noreply, state}
-  end
 
-  @impl true
-  def handle_cast({:chat_queue, from, to, id, payload},  state) do
-    SendMessage.store_message({from, to, id, payload}, state)
-  end
-
-  @impl true
-  def handle_cast({:send_message_to_receiver_server,  payload}, state) do
-    SignalCommunication.send_message_to_all_receiver_devices(payload)
-    {:noreply, state}
-  end
 
   # ----------------------
   # Message logging (via BimipLog GenServer)
@@ -322,4 +311,38 @@ defmodule Bimip.SignalServer do
     Logger.warning("Unhandled message received in Master GenServer: #{inspect(msg)}")
     {:noreply, state}
   end
+
+
+
+
+
+  # -------------------------------
+  # Route and persist message
+  # -------------------------------
+  @impl true
+  def handle_cast({:route_message, eid, device_id, post}, state) do
+    GenServer.cast(self(), {:chat_queue, post.from, post.to, post.id, post})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:chat_queue, from, to, id, payload},  state) do
+    SendMessage.store_message({from, to, id, payload}, state)
+  end
+
+  @impl true
+  def handle_cast({:send_message_to_receiver_server,  payload}, state) do
+    SignalCommunication.send_message_to_all_receiver_devices(payload)
+    {:noreply, state}
+  end
+
+  # -------------------------------
+  # Signal
+  # -------------------------------
+  @impl true
+  def handle_cast({:signal_to_server, payload}, state) do
+    ReceivedSignal.handle_received_signal(payload)
+    {:noreply, state}
+  end
+
 end

@@ -118,13 +118,13 @@ defmodule Queue.QueueLogImpl do
         end)
 
       {:ok,
-       %{
-         messages: messages,
-         device_offset: commit_offset,
-         target_offset: target_offset,
-         current_segment: current_seg,
-         first_segment: first_seg
-       }}
+      %{
+        messages: messages,
+        device_offset: commit_offset,
+        target_offset: target_offset,
+        current_segment: current_seg,
+        first_segment: first_seg
+      }}
     else
       {:error, reason} -> {:error, reason}
     end

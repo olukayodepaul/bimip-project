@@ -67,7 +67,7 @@ Represents user actions or system events in real time.
 **Status Codes:**
 
 ```
-1 = CHATTING
+1 = ACKLODGEMENT
 2 = RECORDING
 3 = PLAYED/VIEWED
 4 = TYPING
@@ -213,7 +213,19 @@ Enhances reliability and message-queue integrity.
 
 
 ---
-Perfect! Let’s create the **complete Messaging Protocol Specification v1.0 section specifically for Signal**, just like we did for Message. This will cover all fields, statuses, offsets, acknowledgments, and behavior.
+## **13. `signal_request`**
+
+**Type:** `int`
+Track if message receive is either pull or push request.
+
+### Purpose:
+
+Represents message delivery channel:
+
+* pull: 1 -> after advancing offset, fetch next message
+* push: 2 -> after advancing offser, do not fetch next message
+
+Ensures consistent UI and device synchronization.
 
 ---
 
@@ -261,6 +273,7 @@ message Signal {
   optional string error = 10;
   bool signal_offset_state = 11;   
   SignalAckState signal_ack_state = 12;
+  int32 signal_request = 13;
 }
 ```
 

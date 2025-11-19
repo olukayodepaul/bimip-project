@@ -63,7 +63,7 @@ defmodule Bimip.SignalClient do
   end
 
   def handle_cast({:send_terminate_signal_to_client, {device_id, eid}}, state) do
-    RegistryHub.send_terminate_signal_to_server({device_id, eid})
+    # RegistryHub.send_terminate_signal_to_server({device_id, eid})
     {:stop, :normal, state}
   end
 
@@ -303,7 +303,6 @@ defmodule Bimip.SignalClient do
     # Decode the incoming message binary
     msg = Bimip.MessageScheme.decode(data)
 
-
     case msg.payload do
       {:message, %Bimip.Message{} = message} ->
         # ✅ Validate the Message
@@ -360,7 +359,6 @@ defmodule Bimip.SignalClient do
         end
 
       _ ->
-        IO.inspect("3sncjsdncjdns")
         reason = "Invalid payload: expected Message stanza"
         error_binary =
           ThrowMessageSchema.error(
@@ -378,8 +376,33 @@ defmodule Bimip.SignalClient do
       end
   end
 
+  def handle_cast({:signal_to_client, payload}, state) do
+    msg = Bimip.MessageScheme.decode(payload)
+
+    case msg.payload do
+      {:signal, %Bimip.Signal{} = signal} ->
+
+        transmit_signal_to_server = %Chat.ResumeStruct{
+          to: %{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id},
+          from: %{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id},
+          status: signal.status,
+          type: signal.type
+        }
+
+        transmit_signal_to_server
+        |> render
+        |> Connect.handle_inbouce_signal
+
+      _ ->
+        IO.inspect("rroro")
+    end
+
+    {:noreply, state}
+  end
+
+  defp render(%Chat.ResumeStruct{} = payload) do
+    {:eid, payload.from.eid, :signal_to_server, payload}
+  end
 
 
 end
-
-# Bimip.Device.Client.get_state("aaaaa2")

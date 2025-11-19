@@ -17,7 +17,7 @@ defmodule Queue.QueueLog do
         QueueLogImpl.write(user, partition_id, from, to, payload, user_offset, merge_offset)
       end
 
-      def fetch_messages(user, device_id, partition_id, limit \\ 10) when limit > 0 do
+      def fetch_messages(user, device_id, partition_id, limit \\ 1) when limit > 0 do
         QueueLogImpl.fetch(user, device_id, partition_id, limit)
       end
 

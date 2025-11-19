@@ -1,6 +1,8 @@
 defmodule Route.Connect do
 
   require Logger
+  @deviceid_registry DeviceIdRegistry
+  @eid_registry EidRegistry
 
   def send_pong_to_bimip_server_master(device_id, eid, status \\ "ONLINE") do
     case Horde.Registry.lookup(EidRegistry, eid) do
@@ -171,6 +173,8 @@ defmodule Route.Connect do
     :ok
   end
 
+
+
   def handle_terminate(reason, state) do
     IO.inspect("GenServer Terminated Pass 2B")
     Logger.info("WebSocket terminated with reason: #{inspect(reason)}")
@@ -203,5 +207,29 @@ defmodule Route.Connect do
   defp extract_registry_id({:new, {device_id, _, _, _}}), do: device_id
   defp extract_registry_id(_), do: :unknown
 
+
+  # -------------------------------
+  # ONLY HERE IS WORKING
+  # ROUTE BETWEEN CLIENT AND SERVER
+  # -------------------------------
+  def handle_inbouce_signal({identifier, registry_id, resouce_finder, payload}) do
+    case identifier do
+      :eid ->
+        horde_route({@eid_registry, registry_id, resouce_finder, payload})
+      :device_id ->
+        horde_route({@deviceid_registry, registry_id, resouce_finder, payload})
+    end
+  end
+
+  defp horde_route({lookup_via_registry, registry_id, resouce_finder, payload}) do
+    case Horde.Registry.lookup(lookup_via_registry, registry_id) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {resouce_finder, payload })
+        :ok
+      [] ->
+        Logger.warning("No registry entry for, cannot maybe_start_mother")
+        :error
+    end
+  end
 
 end
