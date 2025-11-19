@@ -2,6 +2,7 @@ defmodule Chat.ResumeSignal do
   alias Queue.Injection
   alias Until.UniPosTime
   alias ThrowMessageSchema
+  alias Route.{SignalCommunication}
 
   @partition_id 1
 
@@ -10,6 +11,7 @@ defmodule Chat.ResumeSignal do
         to: %{eid: to_eid},
       } = _payload) do
 
+    # IO.inspect(from)
     queue_id = "#{from_eid}_#{to_eid}"
 
     case Injection.fetch_messages(queue_id, device_id, @partition_id) do
@@ -21,6 +23,7 @@ defmodule Chat.ResumeSignal do
           |> Map.put(:signal_offset_state, false)
           |> Map.put(:timestamp, UniPosTime.uni_pos_time())
           |> ThrowMessageSchema.build_message()
+          |> send_signal_to_sender(%{eid: from_eid, connection_resource_id: device_id})
 
         IO.inspect(msg)
 
@@ -67,5 +70,9 @@ defmodule Chat.ResumeSignal do
           String.to_integer(signal_offset)
         )
     }
+  end
+
+  defp send_signal_to_sender(binary_payload, from) do
+    SignalCommunication.single_signal_communication(from, binary_payload)
   end
 end
