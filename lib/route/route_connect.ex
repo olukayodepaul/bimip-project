@@ -92,16 +92,6 @@ defmodule Route.Connect do
     end
   end
 
-  def receive_awareness_from_server(device_id, eid, binary) do
-    case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
-      [{pid, _}] ->
-        GenServer.cast(pid, {:receive_awareness_from_server, {eid, device_id, binary}})
-        :ok
-      [] ->
-        :error
-    end
-  end
-
   def route_awareness_to_client(eid, device_id, data) do
     case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
       [{pid, _}] ->
@@ -228,6 +218,19 @@ defmodule Route.Connect do
         :ok
       [] ->
         Logger.warning("No registry entry for, cannot maybe_start_mother")
+        :error
+    end
+  end
+
+  # ----------------------------------------
+  # ROUTE TO SOCKET THEN TO CLIENT DEVICE
+  # ----------------------------------------
+  def outbouce(device_id, binary) do
+    case Horde.Registry.lookup(@deviceid_registry, device_id) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:outbouce,  binary})
+        :ok
+      [] ->
         :error
     end
   end

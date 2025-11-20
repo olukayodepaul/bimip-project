@@ -4,5 +4,7 @@ defmodule Chat.ResumeStruct do
     :to,
     :from,
     :type,
+    :eid,
+    :device,
   ]
 end

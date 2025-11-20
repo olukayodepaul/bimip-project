@@ -33,3 +33,6 @@ defmodule Queue.QueueLog do
     end
   end
 end
+
+
+# Injection.advance_offset("a@domain.com_b@domain.com", "aaaaa1", 1, 3)

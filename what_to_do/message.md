@@ -389,21 +389,44 @@ signal_offset: "",  # server-assigned global offset
 user_offset: "0",    # per-user offset (A's own queue offset)
 
 
+
+
+payload = %{
+  text: "Hello! Check out these items 👋",
+  images: [
+    %{url: "https://example.com/image1.png", caption: "Sunset view"},
+    %{url: "https://example.com/image2.png", caption: "Coffee moment"}
+  ],
+  files: [
+    %{url: "https://example.com/report.pdf", filename: "MonthlyReport.pdf", size: 1_024_000}
+  ],
+  reactions: [
+    %{emoji: "👍", user: "bob@domain.com"},
+    %{emoji: "❤️", user: "carol@domain.com"}
+  ],
+  mentions: [
+    %{eid: "dave@domain.com", display_name: "Dave"}
+  ],
+  custom_data: %{
+    poll: %{
+      question: "Which framework do you prefer?",
+      options: ["Elixir", "Go", "Rust"],
+      votes: %{"alice@domain.com" => "Elixir", "bob@domain.com" => "Go"}
+    }
+  }
+}
 request = %Bimip.Message{
   id: "1",
-  from: %Bimip.Identity{
+  to: %Bimip.Identity{
     eid: "a@domain.com",
-    connection_resource_id: "aaaaa2"
+    connection_resource_id: "aaaaa1"
   },
- to: %Bimip.Identity{
+ from: %Bimip.Identity{
     eid: "b@domain.com",
     connection_resource_id: "bbbbb1"
   },
   timestamp: System.system_time(:millisecond),
-  payload: Jason.encode!(%{
-    text: "Hello from BIMIP 👋",
-    attachments: []
-  }),
+  payload: Jason.encode!(payload),
   encryption_type: "none",
   encrypted: "",
   signature: "",
@@ -495,3 +518,11 @@ message Message {
   bool signal_offset_state = 13;            // 
   SignalAckState signal_ack_state = 14;     //
 }
+
+
+
+
+
+
+
+

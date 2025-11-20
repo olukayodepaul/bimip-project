@@ -9,23 +9,24 @@ defmodule Chat.ResumeSignal do
   def resume(%Chat.ResumeStruct{
         from: %{eid: from_eid, connection_resource_id: device_id},
         to: %{eid: to_eid},
+        eid: eid,
+        device: device
       } = _payload) do
 
-    # IO.inspect(from)
     queue_id = "#{from_eid}_#{to_eid}"
 
     case Injection.fetch_messages(queue_id, device_id, @partition_id) do
       {:ok, %{messages: [message]}} ->
 
-        msg =
+        if message != %{} do
           message
           |> set_message_fields()
+          |> set_signal_type(eid)
           |> Map.put(:signal_offset_state, false)
           |> Map.put(:timestamp, UniPosTime.uni_pos_time())
           |> ThrowMessageSchema.build_message()
           |> send_signal_to_sender(%{eid: from_eid, connection_resource_id: device_id})
-
-        IO.inspect(msg)
+        end
 
       {:error, reason} ->
         IO.puts("Failed to fetch messages: #{inspect(reason)}")
@@ -48,7 +49,6 @@ defmodule Chat.ResumeSignal do
         }
       }) do
 
-    signal_type = if eid == from.eid, do: 2, else: 3
     queue_id = "#{from.eid}_#{to.eid}"
 
     %{
@@ -61,7 +61,7 @@ defmodule Chat.ResumeSignal do
       signature: signature,
       user_offset: String.to_integer(user_offset),
       signal_offset: String.to_integer(signal_offset),
-      signal_type: signal_type,
+      signal_request: 1,
       signal_ack_state:
         Injection.get_ack_status(
           queue_id,
@@ -72,7 +72,14 @@ defmodule Chat.ResumeSignal do
     }
   end
 
+  def set_signal_type(payload, eid) do
+    %{from: %{eid: message_eid}} = payload
+    signal_type = if eid == message_eid, do: 2, else: 3
+    payload
+    |> Map.put(:signal_type, signal_type)
+  end
+
   defp send_signal_to_sender(binary_payload, from) do
-    SignalCommunication.single_signal_communication(from, binary_payload)
+    SignalCommunication.outbouce(from, binary_payload)
   end
 end

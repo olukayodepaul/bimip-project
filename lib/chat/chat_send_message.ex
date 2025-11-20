@@ -71,7 +71,7 @@ defmodule Chat.SendMessage do
 
   defp send_signal_to_sender({from, to, status,  offset, id}) do
     binary_payload = ThrowSignalSchema.success(from, to, status, offset,offset,id)
-    SignalCommunication.single_signal_communication(from, binary_payload)
+    SignalCommunication.outbouce(from, binary_payload)
   end
 
   defp send_message_to_sender_other_devices(new_payload) do
@@ -84,6 +84,7 @@ defmodule Chat.SendMessage do
     |> Map.put(:signal_offset, signal_offset)
     |> Map.put(:user_offset, user_offset)
     |> Map.put(:signal_type, signal_type)
+    |> Map.put(:signal_request, 2)
     |> Map.put(:signal_offset_state, false)
     |> Map.put(:signal_ack_state, Injection.get_ack_status(queue_id, device_id, @partition_id, signal_offset))
   end

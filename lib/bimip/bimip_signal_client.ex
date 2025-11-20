@@ -46,7 +46,7 @@ defmodule Bimip.SignalClient do
       }}
   end
 
-  def handle_cast({:receive_awareness_from_server, {_eid, _device_id, binary}}, %{ws_pid: ws_pid} = state) do
+  def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
     send(ws_pid, {:binary, binary})
     {:noreply, state}
   end
@@ -376,7 +376,7 @@ defmodule Bimip.SignalClient do
       end
   end
 
-  def handle_cast({:signal_to_client, payload}, state) do
+  def handle_cast({:signal_to_client, payload}, %{eid: eid, device_id: device_id} = state) do
     msg = Bimip.MessageScheme.decode(payload)
 
     case msg.payload do
@@ -386,7 +386,9 @@ defmodule Bimip.SignalClient do
           to: %{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id},
           from: %{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id},
           status: signal.status,
-          type: signal.type
+          type: signal.type,
+          eid: eid,
+          device: device_id
         }
 
         transmit_signal_to_server
