@@ -29,11 +29,11 @@ defmodule Chat.SendMessage do
         send_signal_to_sender({from, to, @status, offset, id})
 
         payload
-        |> set_message_fields(offset, offset, @sender_push_type, queue_id, from_device_id)
+        |> set_message_fields(offset, offset, @sender_push_type, queue_id, from_device_id, to_eid)
         |> send_message_to_sender_other_devices
 
         payload
-        |> set_message_fields(recv_offset, offset, @receiver_push_type, reverse_queue_id, to_device_id)
+        |> set_message_fields(recv_offset, offset, @receiver_push_type, reverse_queue_id, to_device_id, from_eid)
         |> Connect.send_message_to_receiver_server
 
       else
@@ -78,7 +78,7 @@ defmodule Chat.SendMessage do
     SignalCommunication.send_message_to_sender_other_devices(new_payload)
   end
 
-  defp set_message_fields(payload, signal_offset, user_offset, signal_type, queue_id, device_id) do
+  defp set_message_fields(payload, signal_offset, user_offset, signal_type, queue_id, device_id, conversation_owner) do
     payload
     |> Map.put(:signal_request, @signal_request)
     |> Map.put(:signal_offset, signal_offset)
@@ -86,6 +86,8 @@ defmodule Chat.SendMessage do
     |> Map.put(:signal_type, signal_type)
     |> Map.put(:signal_request, 2)
     |> Map.put(:signal_offset_state, false)
+    |> Map.put(:conversation_owner, conversation_owner)
     |> Map.put(:signal_ack_state, Injection.get_ack_status(queue_id, device_id, @partition_id, signal_offset))
   end
+
 end

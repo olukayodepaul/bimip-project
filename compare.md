@@ -77,7 +77,6 @@ Compare
   __unknown_fields__: []
 }}
 
-
 %Bimip.MessageScheme{
   route: 6,
   payload: {:message,
@@ -102,7 +101,7 @@ Compare
      encryption_type: "none",
      encrypted: "",
      signature: "",
-     signal_type: 2,
+     signal_type: 3,
      signal_offset_state: false,
      signal_ack_state: %Bimip.SignalAckState{
        send: true,

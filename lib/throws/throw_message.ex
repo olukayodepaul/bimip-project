@@ -75,7 +75,8 @@ end
       signal_offset_state: signal_offset_state,
       signal_request: signal_request,
       signal_ack_state: %{read: read, sent: sent, delivered: delivered},
-      timestamp:  timestamp
+      timestamp:  timestamp,
+      conversation_owner: conversation_owner
       }) do
 
       # Normalize payload: encode map -> JSON, or use string directly
@@ -98,6 +99,7 @@ end
           signature: signature,
           signal_type: signal_type,
           signal_request: signal_request,
+          conversation_owner: conversation_owner,
           signal_ack_state:
           %SignalAckState{
             send: sent,

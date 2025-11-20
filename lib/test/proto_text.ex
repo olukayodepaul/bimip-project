@@ -2,11 +2,11 @@ defmodule ProtoTest do
   def test() do
     binary =
       "
-08 06 32 AE 05 0A 01 31 10 02 18 02 22 16 0A 0C
+08 06 32 BD 05 0A 01 31 10 02 18 02 22 16 0A 0C
 62 40 64 6F 6D 61 69 6E 2E 63 6F 6D 12 06 62 62
 62 62 62 31 2A 16 0A 0C 61 40 64 6F 6D 61 69 6E
-2E 63 6F 6D 12 06 61 61 61 61 61 31 38 99 E9 F9
-80 AA 33 42 DF 04 7B 22 74 65 78 74 22 3A 22 48
+2E 63 6F 6D 12 06 61 61 61 61 61 31 38 F9 DB F1
+8B AA 33 42 DF 04 7B 22 74 65 78 74 22 3A 22 48
 65 6C 6C 6F 21 20 43 68 65 63 6B 20 6F 75 74 20
 74 68 65 73 65 20 69 74 65 6D 73 20 F0 9F 91 8B
 22 2C 22 66 69 6C 65 73 22 3A 5B 7B 22 73 69 7A
@@ -44,9 +44,9 @@ B8 8F 22 7D 5D 2C 22 6D 65 6E 74 69 6F 6E 73 22
 22 61 6C 69 63 65 40 64 6F 6D 61 69 6E 2E 63 6F
 6D 22 3A 22 45 6C 69 78 69 72 22 2C 22 62 6F 62
 40 64 6F 6D 61 69 6E 2E 63 6F 6D 22 3A 22 47 6F
-22 7D 7D 7D 7D 4A 04 6E 6F 6E 65 60 02 72 02 08
-01 78 01
-
+22 7D 7D 7D 7D 4A 04 6E 6F 6E 65 60 03 72 02 08
+01 78 01 82 01 0C 62 40 64 6F 6D 61 69 6E 2E 63
+6F 6D
 
       "
       |> String.split
@@ -63,7 +63,10 @@ end
 # ProtoTest.test()
 
 
-
-
-
 # JWT.generate_tokens(%{device_id: "bbbbb1", eid: "b@domain.com", user_id: "1"})
+
+
+
+
+
+# Here’s the cleaned-up version with all offsets (`00000000:`) and right-side ASCII removed, keeping only the center data:

@@ -71,13 +71,6 @@ defmodule Route.Connect do
     end
   end
 
-  def send_message_to_receiver_server(%{to: %{eid: eid}} = message) do
-    case Horde.Registry.lookup(EidRegistry, eid) do
-      [{pid, _}] ->
-        GenServer.cast(pid, {:send_message_to_receiver_server,  message})
-      [] -> :error
-    end
-  end
 
   # Stick to this
   @spec route_awareness_visibility_to_server(map()) :: :ok | :error
@@ -234,5 +227,17 @@ defmodule Route.Connect do
         :error
     end
   end
+
+  # ----------------------------------------
+  # WORK ON THIS
+  # ----------------------------------------
+  def send_message_to_receiver_server(%{to: %{eid: eid}} = message) do
+    case Horde.Registry.lookup(EidRegistry, eid) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:send_message_to_receiver_server,  message})
+      [] -> :error
+    end
+  end
+
 
 end

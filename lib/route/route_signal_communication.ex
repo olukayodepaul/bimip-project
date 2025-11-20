@@ -37,10 +37,10 @@ defmodule Route.SignalCommunication do
             |> Task.async_stream(
               fn device ->
 
-                  payload
-                  |> Map.put(:from, %{eid: device.eid, connection_resource_id: device.device_id})
-                  |> ThrowMessageSchema.build_message
-                  |> then(fn data -> outbouce(%{eid: device.eid, connection_resource_id: device.device_id}, data) end)
+                payload
+                |> set_from(device.eid, device.device_id)
+                |> ThrowMessageSchema.build_message
+                |> then(fn data -> outbouce(%{eid: device.eid, connection_resource_id: device.device_id}, data) end)
 
               end,
               max_concurrency: 10,
@@ -78,6 +78,7 @@ defmodule Route.SignalCommunication do
               fn device ->
 
                   payload
+                  |> set_from(device.eid, device.device_id)
                   |> ThrowMessageSchema.build_message
                   |> then(fn data -> outbouce(%{eid: device.eid, connection_resource_id: device.device_id}, data) end)
 
@@ -90,6 +91,16 @@ defmodule Route.SignalCommunication do
             :ok
         end
       end
+  end
+
+  def set_from(payload, eid, device_id) do
+    result = %{payload |
+      to: %{
+        eid: eid,
+        connection_resource_id: device_id
+      }
+    }
+    result
   end
 
   def outbouce(from, binary_payload) do

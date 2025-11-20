@@ -8,8 +8,6 @@ defmodule Bimip.SignalServer do
 
 
 
-
-
   alias Storage.DeviceStorage
   alias Storage.Registration
   alias Bimip.Broker
