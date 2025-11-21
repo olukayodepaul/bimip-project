@@ -41,8 +41,22 @@ defmodule Chat.AckSignal do
 
   end
 
-  def device(payload) do
-    IO.inspect(payload, label: "DEVICE handler received")
+  def device(%Chat.SignalStruct{
+      id: id,
+      to: %{eid: to_eid},
+      from: %{eid: from_id},
+      device: device,
+      signal_offset: signal_offset,
+      user_offset: user_offset
+  } = payload) do
+
+    queue_id = "#{from_id}_#{to_eid}"
+
+    {:ok, _adv_offset} = Injection.advance_offset(queue_id, device, @partition_id, signal_offset)
+
+    ack_state = Injection.get_ack_status(queue_id, device, @partition_id, signal_offset)
+
+    send_signal_to_sender(id, signal_offset, user_offset, @status, payload.from, payload.to,ack_state)
   end
 
   def receiver(payload) do
@@ -50,12 +64,6 @@ defmodule Chat.AckSignal do
   end
 
   defp send_signal_to_sender(id, offset, user_offset, status, from, to, %{sent: sent, delivered: delivered, read: read}) do
-    # Normalize keys to match ThrowSignalSchema.success/1
-    normalized_ack_state = %{
-      send: sent,
-      received: delivered,
-      read: read
-    }
     %{
       id: id,
       signal_offset: offset,
@@ -64,8 +72,8 @@ defmodule Chat.AckSignal do
       from: from,
       to: to,
       signal_type: 1,
-      signal_ack_state: normalized_ack_state,
-      signal_request: 2
+      signal_ack_state: %{send: sent, received: delivered, read: read},
+      signal_request: 1
     }
     |> ThrowSignalSchema.success()
     |> then(&SignalCommunication.outbouce(from, &1))
