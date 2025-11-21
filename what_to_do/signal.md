@@ -64,3 +64,23 @@ hex_ack = Base.encode16(binary_ack, case: :upper)
 
 
 ```
+
+
+
+````
+
+What you need in your resume / signal handler
+
+Detect status == 1.
+
+Instead of fetching messages (like RESUME/pull), you:
+
+Call your ACK/commit function in BimipLog (or Injection) to mark the message as acknowledged.
+
+Move the offset forward.
+
+Optionally, send a delivery notification to other devices or the sender.
+
+Keep track of signal_ack_state per device so that the client knows the message was acknowledged.
+
+```

@@ -46,10 +46,7 @@ defmodule Bimip.SignalClient do
       }}
   end
 
-  def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
-    send(ws_pid, {:binary, binary})
-    {:noreply, state}
-  end
+
 
   # Handle ping/pong
   @impl true
@@ -376,23 +373,36 @@ defmodule Bimip.SignalClient do
       end
   end
 
+  #--- WOEKING AND COMPLETED
+  def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
+    send(ws_pid, {:binary, binary})
+    {:noreply, state}
+  end
+  #--- WORKING
+
+  # validation next
   def handle_cast({:signal_to_client, payload}, %{eid: eid, device_id: device_id} = state) do
+
     msg = Bimip.MessageScheme.decode(payload)
 
     case msg.payload do
       {:signal, %Bimip.Signal{} = signal} ->
 
-        transmit_signal_to_server = %Chat.ResumeStruct{
+        transmit_signal_to_server = %Chat.SignalStruct{
           to: %{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id},
           from: %{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id},
           status: signal.status,
           type: signal.type,
+          signal_offset: signal_offset,
+          user_offset: user_offset,
+          signal_type: signal_type,
+          signal_lifecycle_state: signal_lifecycle_state,
           eid: eid,
           device: device_id
         }
 
         transmit_signal_to_server
-        |> render
+        |> server_route(:eid, :signal_to_server)
         |> Connect.handle_inbouce_signal
 
       _ ->
@@ -402,8 +412,11 @@ defmodule Bimip.SignalClient do
     {:noreply, state}
   end
 
-  defp render(%Chat.ResumeStruct{} = payload) do
-    {:eid, payload.from.eid, :signal_to_server, payload}
+  #----------------------------------------------
+  # This is route to the server. Single route
+  #----------------------------------------------
+  defp server_route(%Chat.SignalStruct{} = payload, eid, signal_to_server) do
+    {eid, payload.from.eid, signal_to_server, payload}
   end
 
 

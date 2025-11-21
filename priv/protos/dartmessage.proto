@@ -57,7 +57,7 @@ message Message {
   string encrypted = 10;       // base64 encrypted content (if any)
   string signature = 11;                      // base64 signature for integrity 
   int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
-  bool signal_offset_state = 13;            // 
+  string signal_lifecycle_state = 13;            // 
   SignalAckState signal_ack_state = 14;     //
   int32 signal_request = 15;
   string conversation_owner = 16;         // keep the original owner

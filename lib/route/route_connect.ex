@@ -190,21 +190,28 @@ defmodule Route.Connect do
   defp extract_registry_id({:new, {device_id, _, _, _}}), do: device_id
   defp extract_registry_id(_), do: :unknown
 
+  def send_message_to_receiver_server(%{to: %{eid: eid}} = message) do
+    case Horde.Registry.lookup(EidRegistry, eid) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:send_message_to_receiver_server,  message})
+      [] -> :error
+    end
+  end
+
 
   # -------------------------------
-  # ONLY HERE IS WORKING
   # ROUTE BETWEEN CLIENT AND SERVER
   # -------------------------------
   def handle_inbouce_signal({identifier, registry_id, resouce_finder, payload}) do
     case identifier do
       :eid ->
-        horde_route({@eid_registry, registry_id, resouce_finder, payload})
+        consolidated_route({@eid_registry, registry_id, resouce_finder, payload})
       :device_id ->
-        horde_route({@deviceid_registry, registry_id, resouce_finder, payload})
+        consolidated_route({@deviceid_registry, registry_id, resouce_finder, payload})
     end
   end
 
-  defp horde_route({lookup_via_registry, registry_id, resouce_finder, payload}) do
+  defp consolidated_route({lookup_via_registry, registry_id, resouce_finder, payload}) do
     case Horde.Registry.lookup(lookup_via_registry, registry_id) do
       [{pid, _}] ->
         GenServer.cast(pid, {resouce_finder, payload })
@@ -215,9 +222,6 @@ defmodule Route.Connect do
     end
   end
 
-  # ----------------------------------------
-  # ROUTE TO SOCKET THEN TO CLIENT DEVICE
-  # ----------------------------------------
   def outbouce(device_id, binary) do
     case Horde.Registry.lookup(@deviceid_registry, device_id) do
       [{pid, _}] ->
@@ -228,16 +232,8 @@ defmodule Route.Connect do
     end
   end
 
-  # ----------------------------------------
-  # WORK ON THIS
-  # ----------------------------------------
-  def send_message_to_receiver_server(%{to: %{eid: eid}} = message) do
-    case Horde.Registry.lookup(EidRegistry, eid) do
-      [{pid, _}] ->
-        GenServer.cast(pid, {:send_message_to_receiver_server,  message})
-      [] -> :error
-    end
-  end
+
+
 
 
 end
