@@ -1,5 +1,6 @@
 defmodule Chat.SignalStruct do
   defstruct [
+    :id,
     :status,
     :to,
     :from,

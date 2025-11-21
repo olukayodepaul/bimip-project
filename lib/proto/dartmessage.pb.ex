@@ -90,7 +90,12 @@ defmodule Bimip.Signal do
   field :type, 8, type: :int32
   field :signal_type, 9, type: :int32, json_name: "signalType"
   field :error, 10, proto3_optional: true, type: :string
-  field :signal_offset_state, 11, type: :bool, json_name: "signalOffsetState"
+
+  field :signal_lifecycle_state, 11,
+    proto3_optional: true,
+    type: :string,
+    json_name: "signalLifecycleState"
+
   field :signal_ack_state, 12, type: Bimip.SignalAckState, json_name: "signalAckState"
   field :signal_request, 13, type: :int32, json_name: "signalRequest"
 end

@@ -389,14 +389,15 @@ defmodule Bimip.SignalClient do
       {:signal, %Bimip.Signal{} = signal} ->
 
         transmit_signal_to_server = %Chat.SignalStruct{
+          id: signal.id,
           to: %{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id},
           from: %{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id},
           status: signal.status,
           type: signal.type,
-          signal_offset: signal_offset,
-          user_offset: user_offset,
-          signal_type: signal_type,
-          signal_lifecycle_state: signal_lifecycle_state,
+          signal_offset: signal.signal_offset,
+          user_offset: signal.user_offset,
+          signal_type: signal.signal_type,
+          signal_lifecycle_state: signal.signal_lifecycle_state,
           eid: eid,
           device: device_id
         }

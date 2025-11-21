@@ -24,7 +24,7 @@ Used to track the message before the server assigns offsets.
 
 ---
 
-## **2. `signal_offset`**
+## **2. `signal_offset `**
 
 **Type:** `int32`
 **Description:**
@@ -134,7 +134,7 @@ Separates new requests from server responses and error events.
 
 ---
 
-## **9. `signal_type`**
+## **9. `signal_type (optional)`**
 
 **Type:** `int32`
 **Description:**
@@ -153,7 +153,7 @@ Allows proper handling in multi-device, multi-session, or mirrored conversations
 
 ---
 
-## **10. `error`**
+## **10. `error (optional)->Response`**
 
 **Type:** `optional string`
 **Description:**
@@ -164,7 +164,7 @@ Provides details on invalid requests or system errors.
 
 ---
 
-## **11. `signal_lifecycle_state`**
+## **11. `signal_lifecycle_state (optional)->request only`**
 
 **Type:** `string`
 **Description:**

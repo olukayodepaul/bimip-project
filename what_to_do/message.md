@@ -2,11 +2,11 @@
 
 request = %Bimip.Message{
   id: "4637829384765473892",
-  to: %Bimip.Identity{
+  from: %Bimip.Identity{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa1"
   },
-  from: %Bimip.Identity{
+  to: %Bimip.Identity{
     eid: "b@domain.com",
     connection_resource_id: "bbbbb1"
   },

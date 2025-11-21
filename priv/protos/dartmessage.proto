@@ -69,7 +69,7 @@ message Message {
 // -------------------------------------------------------------
 // status defines the real-time user activity or system state
 // -------------------------------------------------------------
-// 1 = CHATING        → User is actively chatting
+// 1 = ACKNOWLEDMENT  → User is actively chatting
 // 2 = RECORDING      → User is recording audio/video
 // 3 = PLAYED/VIEWED  → Media or message has been viewed/played
 // 4 = TYPING         → User is typing
@@ -92,7 +92,7 @@ message Signal {
   int32 type = 8;           // 1=REQUEST, 2=RESPONSE, 3=ERROR
   int32 signal_type = 9;    // 1=SENDER  2=DEVICE  3=RECEIVER
   optional string error = 10;// optional error message if type=3
-  bool signal_offset_state = 11 ;   // use to forward offset.
+  optional string signal_lifecycle_state = 11 ;   // use to forward offset.
   SignalAckState signal_ack_state = 12;     //
   int32 signal_request = 13;
 }

@@ -30,13 +30,14 @@ hex_ack = Base.encode16(binary_ack, case: :upper)
 
 ```
 
+----
+**ACK AND SENDER for pulling message ack stat**
 ```
-
 ack_signal = %Bimip.Signal{
   id: "1",
-  signal_offset: 1,
-  user_offset: 1,
-  status: 7,
+  signal_offset: 33,
+  user_offset: 22,
+  status: 1,
   timestamp: System.system_time(:second),
   to: %Bimip.Identity{
     eid: "b@domain.com",
@@ -47,11 +48,7 @@ ack_signal = %Bimip.Signal{
     connection_resource_id: "aaaaa1"
   },
   type: 1,               # 1 = REQUEST (signal sent to server)
-  signal_type: 3,        # 3 = RECEIVER (acknowledgment from receiver)
-  signal_offset_state: true,
-  signal_ack_state: %Bimip.SignalAckState{
-    received: true        # receiver confirms receipt
-  }
+  signal_type: 1,        # 1 = SENDER (acknowledgment from receiver)
 }
 
 ack_message = %Bimip.MessageScheme{
@@ -62,25 +59,4 @@ ack_message = %Bimip.MessageScheme{
 binary_ack = Bimip.MessageScheme.encode(ack_message)
 hex_ack = Base.encode16(binary_ack, case: :upper)
 
-
-```
-
-
-
-````
-
-What you need in your resume / signal handler
-
-Detect status == 1.
-
-Instead of fetching messages (like RESUME/pull), you:
-
-Call your ACK/commit function in BimipLog (or Injection) to mark the message as acknowledged.
-
-Move the offset forward.
-
-Optionally, send a delivery notification to other devices or the sender.
-
-Keep track of signal_ack_state per device so that the client knows the message was acknowledged.
-
-```
+----

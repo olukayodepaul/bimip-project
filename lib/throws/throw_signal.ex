@@ -9,33 +9,35 @@ defmodule ThrowSignalSchema do
   @type_response 2
   @type_error 3
 
+  alias Until.UniPosTime
+
   # ------------------------------------------------------------------------
   # SUCCESS / NORMAL STANZAS
   # ------------------------------------------------------------------------
   def success(
-        from,
-        to,
-        status,
-        signal_offset,
-        user_offset,
-        id,
-        signal_offset_state \\ true,
-        signal_type \\ 1,
-        error \\ ""
-      ) do
+      %{
+        id: id,
+        signal_offset: signal_offset,
+        user_offset: user_offset,
+        status: status,
+        from: from,
+        to: to,
+        signal_type: signal_type,
+        signal_ack_state: %{send: send, received: received, read: read},
+        signal_request: signal_request
+      }) do
     signal = %Bimip.Signal{
       id: id,
       signal_offset: signal_offset,
       user_offset: user_offset,
       status: status,
-      timestamp: System.system_time(:millisecond),
       from: %Bimip.Identity{eid: from.eid, connection_resource_id: from.connection_resource_id},
       to: %Bimip.Identity{eid: to.eid, connection_resource_id: to.connection_resource_id},
-      type: @type_response,
       signal_type: signal_type,
-      signal_offset_state: signal_offset_state,
-      signal_ack_state: %Bimip.SignalAckState{send: true, received: false, read: false },
-      error: error
+      signal_ack_state: %Bimip.SignalAckState{send: send, received: received, read: read },
+      signal_request: signal_request,
+      type: @type_response,
+      timestamp: UniPosTime.uni_pos_time(),
     }
 
     %Bimip.MessageScheme{
