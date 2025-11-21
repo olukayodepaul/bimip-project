@@ -53,6 +53,7 @@ defmodule Chat.ResumeSignal do
   defp ack_status(%{payload: payload}, partition_id) do
     queue_id = "#{payload.from.eid}_#{payload.to.eid}"
     Injection.get_ack_status(queue_id, "", partition_id, String.to_integer(payload.signal_offset))
+    |> Map.put(:advance_offset, false)
   end
 
   defp send_signal(binary_payload, from), do: SignalCommunication.outbouce(from, binary_payload)

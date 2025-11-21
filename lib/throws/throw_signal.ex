@@ -23,7 +23,7 @@ defmodule ThrowSignalSchema do
         from: from,
         to: to,
         signal_type: signal_type,
-        signal_ack_state: %{send: send, received: received, read: read},
+        signal_ack_state: %{send: send, received: received, read: read, advance_offset: advance_offset},
         signal_request: signal_request
       }) do
     signal = %Bimip.Signal{
@@ -34,7 +34,7 @@ defmodule ThrowSignalSchema do
       from: %Bimip.Identity{eid: from.eid, connection_resource_id: from.connection_resource_id},
       to: %Bimip.Identity{eid: to.eid, connection_resource_id: to.connection_resource_id},
       signal_type: signal_type,
-      signal_ack_state: %Bimip.SignalAckState{send: send, received: received, read: read },
+      signal_ack_state: %Bimip.SignalAckState{send: send, received: received, read: read, advance_offset: advance_offset },
       signal_request: signal_request,
       type: @type_response,
       timestamp: UniPosTime.uni_pos_time(),

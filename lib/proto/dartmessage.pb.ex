@@ -51,6 +51,7 @@ defmodule Bimip.SignalAckState do
   field :send, 1, type: :bool
   field :received, 2, type: :bool
   field :read, 3, type: :bool
+  field :advance_offset, 4, type: :bool, json_name: "advanceOffset"
 end
 
 defmodule Bimip.Message do

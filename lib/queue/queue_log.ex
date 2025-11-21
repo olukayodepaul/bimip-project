@@ -35,4 +35,5 @@ defmodule Queue.QueueLog do
 end
 
 
-# Injection.advance_offset("a@domain.com_b@domain.com", "aaaaa1", 1, 3)
+# Queue.Injection.fetch_messages("a@domain.com_b@domain.com", "aaaaa1", 1, 100)
+# Queue.Injection.fetch_messages("b@domain.com_a@domain.com", "aaaaa1", 1, 100)

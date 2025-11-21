@@ -28,42 +28,84 @@ defmodule Chat.AckSignal do
   def sender(%Chat.SignalStruct{
       id: id,
       to: %{eid: to_eid},
-      from: %{eid: from_id},
+      from: %{eid: from_eid},
       device: device,
       signal_offset: signal_offset,
       user_offset: user_offset
 
   } = payload) do
 
-    queue_id = "#{from_id}_#{to_eid}"
+    queue_id = "#{from_eid}_#{to_eid}"
     ack_state = Injection.get_ack_status(queue_id, device, @partition_id, signal_offset)
-    send_signal_to_sender(id, signal_offset, user_offset, @status, payload.from, payload.to, ack_state)
+    reply =  send_signal_to_sender(id, signal_offset, user_offset, @status, payload.from, payload.to, true, ack_state)
+
+    reply
+    |> ThrowSignalSchema.success()
+    |> then(&SignalCommunication.outbouce(payload.from, &1))
 
   end
 
   def device(%Chat.SignalStruct{
       id: id,
       to: %{eid: to_eid},
-      from: %{eid: from_id},
+      from: %{eid: from_eid},
       device: device,
       signal_offset: signal_offset,
       user_offset: user_offset
   } = payload) do
 
-    queue_id = "#{from_id}_#{to_eid}"
+    queue_id = "#{from_eid}_#{to_eid}"
 
     {:ok, _adv_offset} = Injection.advance_offset(queue_id, device, @partition_id, signal_offset)
-
     ack_state = Injection.get_ack_status(queue_id, device, @partition_id, signal_offset)
+    reply = send_signal_to_sender(id, signal_offset, user_offset, @status, payload.from, payload.to, true, ack_state)
 
-    send_signal_to_sender(id, signal_offset, user_offset, @status, payload.from, payload.to,ack_state)
+    reply
+    |> ThrowSignalSchema.success()
+    |> then(&SignalCommunication.outbouce(payload.from, &1))
+
   end
 
-  def receiver(payload) do
-    IO.inspect(payload, label: "RECEIVER handler received")
+  def receiver(%Chat.SignalStruct{
+        id: id,
+        to: %{eid: to_eid, connection_resource_id: to_device_id},
+        from: %{eid: from_eid, connection_resource_id: from_device_id},
+        device: device,
+        signal_offset: signal_offset,
+        user_offset: user_offset,
+        signal_lifecycle_state: signal_lifecycle_state
+    } = payload) do
+
+    queue_id = "#{from_eid}_#{to_eid}"          # A → B queue (sender queue)
+    reverse_queue_id = "#{to_eid}_#{from_eid}"  # B → A queue (receiver queue)
+    ack_atom = String.to_existing_atom(signal_lifecycle_state)
+
+    with {:atomic, _} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, signal_offset, ack_atom),
+        {:atomic, _} <- Injection.mark_ack_status(reverse_queue_id, to_device_id, @partition_id, user_offset, ack_atom) do
+
+        case ack_atom do
+          :read -> IO.inspect(:read)
+          :delivered ->
+
+            with {:ok, _ } <- Injection.advance_offset(queue_id, from_device_id, @partition_id, signal_offset) do
+
+            else
+              error ->
+              IO.inspect(error, label: "Receiver ACK failed")
+              {:error, error}
+            end
+
+          :sent -> IO.inspect(:sent)
+        end
+
+    else
+      error ->
+        IO.inspect(error, label: "Receiver ACK failed")
+        {:error, error}
+    end
   end
 
-  defp send_signal_to_sender(id, offset, user_offset, status, from, to, %{sent: sent, delivered: delivered, read: read}) do
+  defp send_signal_to_sender(id, offset, user_offset, status, from, to, advance_offset,  %{sent: sent, delivered: delivered, read: read}) do
     %{
       id: id,
       signal_offset: offset,
@@ -72,11 +114,9 @@ defmodule Chat.AckSignal do
       from: from,
       to: to,
       signal_type: 1,
-      signal_ack_state: %{send: sent, received: delivered, read: read},
+      signal_ack_state: %{send: sent, received: delivered, read: read, advance_offset: advance_offset},
       signal_request: 1
     }
-    |> ThrowSignalSchema.success()
-    |> then(&SignalCommunication.outbouce(from, &1))
   end
 
 

@@ -82,7 +82,7 @@ defmodule Chat.SendMessage do
     |> Map.put(:signal_request, 2)
     |> Map.put(:signal_offset_state, false)
     |> Map.put(:conversation_owner, conversation_owner)
-    |> Map.put(:signal_ack_state, Injection.get_ack_status(queue_id, device_id, @partition_id, signal_offset))
+    |> Map.put(:signal_ack_state, %{send: true, received: false, read: false, advance_offset: true})
   end
 
   defp send_signal_to_sender(id, offset, status, from, to) do
@@ -94,11 +94,12 @@ defmodule Chat.SendMessage do
         from: from,
         to: to,
         signal_type: 1,
-        signal_ack_state: %{sent: false, delivered: false, read: false},
+        signal_ack_state: %{send: true, received: false, read: false, advance_offset: true},
         signal_request: 2
       }
       |> ThrowSignalSchema.success
       |> then(&SignalCommunication.outbouce(from, &1))
   end
+
 
 end

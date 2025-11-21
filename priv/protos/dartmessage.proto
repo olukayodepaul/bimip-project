@@ -38,6 +38,7 @@ message SignalAckState {
   bool send = 1;
   bool received = 2;
   bool read = 3;
+  bool advance_offset = 4;
 }
 
 // ---------------- Message ----------------
