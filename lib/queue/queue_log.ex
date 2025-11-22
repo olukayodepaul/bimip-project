@@ -27,6 +27,9 @@ defmodule Queue.QueueLog do
       def get_ack_status(user, device, partition, offset),
         do: QueueLogImpl.message_status(user, device, partition, offset)
 
+      def get_commit_offset(user, device, partition, offset),
+        do: QueueLogImpl.offset_processed?(user, device, partition, offset)
+
       def mark_ack_status(user, device, partition, offset, status),
         do: QueueLogImpl.ack_status(user, device, partition, offset, status)
 
@@ -34,6 +37,7 @@ defmodule Queue.QueueLog do
   end
 end
 
-
-# Queue.Injection.fetch_messages("a@domain.com_b@domain.com", "aaaaa1", 1, 100)
+# Queue.Injection.get_commit_offset("b@domain.com_a@domain.com", "bbbbb1", 1, 1)
+# Queue.Injection.get_commit_offset("a@domain.com_b@domain.com", "aaaaa1", 1, 2)
 # Queue.Injection.fetch_messages("b@domain.com_a@domain.com", "aaaaa1", 1, 100)
+# Queue.Injection.advance_offset("b@domain.com_a@domain.com", "bbbbb1", 1, 1)

@@ -166,13 +166,11 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-
   defp finalize_write_state(user, partition_id, current_seg, offset, pos_before, do_rollover) do
     if do_rollover do
       new_seg = current_seg + 1
       set_current_segment(user, partition_id, new_seg)
       File.touch(queue_file(user, partition_id, new_seg))
-      Logger.info("✅ Segment rolled over: #{current_seg} → #{new_seg}")
     end
 
     if rem(offset, @index_granularity) == 0 do
@@ -268,8 +266,6 @@ defmodule Queue.QueueLogImpl do
       {:error, reason} -> {:error, reason}
     end
   end
-
-  # defp lookup_sparse_index(_user, _partition_id, _target_offset), do: {0, 1, 0} # Simplified for now
 
   defp lookup_sparse_index(user, partition_id, target_offset) do
     idx = index_file(user, partition_id)
@@ -392,11 +388,21 @@ end
   # -------------------------------------------------------------------
   # Helper to advance commit only through contiguous offsets
   # -------------------------------------------------------------------
+  # defp advance_commit_to_max(pending, commit) do
+  #   next = commit + 1
+  #   if MapSet.member?(pending, next) do
+  #     advance_commit_to_max(MapSet.delete(pending, next), next)
+  #   else
+  #     commit
+  #   end
+  # end
   defp advance_commit_to_max(pending, commit) do
     next = commit + 1
+
     if MapSet.member?(pending, next) do
       advance_commit_to_max(MapSet.delete(pending, next), next)
     else
+      # FIXED: return the advanced commit, NOT the old commit
       commit
     end
   end
@@ -521,5 +527,29 @@ end
     }
   end
 
+  def offset_processed?(user, device, partition, offset) do
+    key = {user, device, partition}
+
+    :mnesia.transaction(fn ->
+      commit =
+        case :mnesia.read(:commit_offsets, key) do
+          [{:commit_offsets, ^key, c}] -> c
+          [] -> 0
+        end
+
+      pending =
+        case :mnesia.read(:pending_acks, key) do
+          [{:pending_acks, ^key, set}] -> set
+          [] -> MapSet.new()
+        end
+
+      # True if offset is <= commit (contiguous) OR is in pending ACKs
+      offset <= commit or MapSet.member?(pending, offset)
+    end)
+    |> case do
+      {:atomic, result} -> result
+      {:aborted, _} -> false
+    end
+  end
 
 end

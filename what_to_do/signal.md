@@ -49,7 +49,7 @@ ack_signal = %Bimip.Signal{
   },
   type: 1,               # 1 = REQUEST (signal sent to server)
   signal_type: 3,        # 1 = SENDER (acknowledgment from receiver)
-  signal_lifecycle_state: "delivered"
+  signal_lifecycle_state: "read"
 }
 
 ack_message = %Bimip.MessageScheme{

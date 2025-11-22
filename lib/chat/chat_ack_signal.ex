@@ -89,13 +89,24 @@ defmodule Chat.AckSignal do
 
             with {:ok, _ } <- Injection.advance_offset(queue_id, from_device_id, @partition_id, signal_offset) do
 
+              # 1.  receiver send to it self first
+              ack_state = Injection.get_ack_status(queue_id, device, @partition_id, signal_offset)
+              reply = send_signal_to_sender(id, signal_offset, user_offset, 1, payload.from, payload.to, true, ack_state)
+
+              # receiver send to is other online device by filtering it self
+              # send to sender genserver while genserver send to other devices......
+
+              reply
+                |> ThrowSignalSchema.success()
+                |> then(&SignalCommunication.outbouce(payload.from, &1))
+
             else
-              error ->
-              IO.inspect(error, label: "Receiver ACK failed")
-              {:error, error}
+                error ->
+                IO.inspect(error, label: "Receiver ACK failed")
+                {:error, error}
             end
 
-          :sent -> IO.inspect(:sent)
+          :sent -> :ok
         end
 
     else
@@ -112,7 +123,7 @@ defmodule Chat.AckSignal do
       user_offset: user_offset,
       status: status,
       from: from,
-      to: to,
+      to: from,
       signal_type: 1,
       signal_ack_state: %{send: sent, received: delivered, read: read, advance_offset: advance_offset},
       signal_request: 1
