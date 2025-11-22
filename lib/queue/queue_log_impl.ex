@@ -527,7 +527,7 @@ end
     }
   end
 
-  def offset_processed?(user, device, partition, offset) do
+  def confirm_adv_offset?(user, device, partition, offset) do
     key = {user, device, partition}
 
     :mnesia.transaction(fn ->
@@ -549,6 +549,40 @@ end
     |> case do
       {:atomic, result} -> result
       {:aborted, _} -> false
+    end
+  end
+
+  def insert_message_id(user, device, partition_id, message_id, offset) do
+    key = {user, device, partition_id, message_id}
+
+    :mnesia.transaction(fn ->
+      case :mnesia.read(:message_offset, key) do
+        [{:message_offset, ^key, _existing_offset}] ->
+          {:error, :exists}
+
+        [] ->
+          :mnesia.write({:message_offset, key, offset})
+          {:ok, true}
+      end
+    end)
+    |> case do
+      {:atomic, result} -> result
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  def get_message_offset(user, device, partition_id, message_id) do
+    key = {user, device, partition_id, message_id}
+
+    :mnesia.transaction(fn ->
+      case :mnesia.read(:message_offset, key) do
+        [{:message_offset, ^key, offset}] -> {:ok, offset}
+        [] -> {:error, :not_found}
+      end
+    end)
+    |> case do
+      {:atomic, result} -> result
+      {:aborted, reason} -> {:error, reason}
     end
   end
 

@@ -72,11 +72,10 @@ end
       signal_type: signal_type,
       user_offset: user_offset,
       signal_offset: signal_offset,
-      signal_offset_state: signal_offset_state,
       signal_request: signal_request,
-      signal_ack_state: %{read: read, sent: sent, delivered: delivered},
+      signal_ack_state: %{send: send, delivered: delivered, read: read, advance_offset: advance_offset},
       timestamp:  timestamp,
-      conversation_owner: conversation_owner
+      owner: %{eid: owner_eid, connection_resource_id: owner_device_id},
       }) do
 
       # Normalize payload: encode map -> JSON, or use string directly
@@ -86,34 +85,30 @@ end
           map when is_map(map) -> Jason.encode!(map)
         end
 
-      message =  %Message {
-          id: id,
-          signal_offset: signal_offset,
-          user_offset: user_offset,
-          from: %Identity{eid: from_eid, connection_resource_id: from_device_id}, # the device_id of sender
-          to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
-          timestamp: timestamp,
-          payload: payload_json,
-          encryption_type: encryption_type,
-          encrypted: encrypted,
-          signature: signature,
-          signal_type: signal_type,
-          signal_request: signal_request,
-          conversation_owner: conversation_owner,
-          signal_ack_state:
-          %SignalAckState{
-            send: sent,
-            received: delivered,
-            read: read
-          }
-        }
-
-      %MessageScheme{
-        route: 6,
-        payload: {:message, message}
+    message =  %Message {
+        id: id,
+        signal_offset: signal_offset,
+        user_offset: user_offset,
+        from: %Identity{eid: from_eid, connection_resource_id: from_device_id}, # the device_id of sender
+        to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
+        timestamp: timestamp,
+        payload: payload_json,
+        encryption_type: encryption_type,
+        encrypted: encrypted,
+        signature: signature,
+        signal_type: signal_type,
+        signal_request: signal_request,
+        owner: %Identity{eid: owner_eid, connection_resource_id: owner_device_id},
+        signal_ack_state:
+        %SignalAckState{send: send, delivered: delivered, read: read, advance_offset: advance_offset}
       }
-      |> MessageScheme.encode()
-    end
+
+    %MessageScheme{
+      route: 6,
+      payload: {:message, message}
+    }
+    |> MessageScheme.encode()
+  end
 
 
   # ------------------------------------------------------------------------

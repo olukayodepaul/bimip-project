@@ -4,7 +4,7 @@ request = %Bimip.Message{
   id: "4637829384765473892",
   from: %Bimip.Identity{
     eid: "a@domain.com",
-    connection_resource_id: "aaaaa2"
+    connection_resource_id: "aaaaa1"
   },
   to: %Bimip.Identity{
     eid: "b@domain.com",
@@ -30,3 +30,5 @@ binary_ack = Bimip.MessageScheme.encode(ack_message)
 hex_ack = Base.encode16(binary_ack, case: :upper)
 
 ```
+
+

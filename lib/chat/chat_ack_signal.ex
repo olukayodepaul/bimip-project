@@ -37,7 +37,8 @@ defmodule Chat.AckSignal do
 
     queue_id = "#{from_eid}_#{to_eid}"
     ack_state = Injection.get_ack_status(queue_id, device, @partition_id, signal_offset)
-    reply =  send_signal_to_sender(id, signal_offset, user_offset, @status, payload.from, payload.to, true, ack_state)
+    get_commit_offset = Injection.get_commit_offset(queue_id, device, @partition_id, signal_offset)
+    reply =  send_signal_to_sender(id, signal_offset, user_offset, @status, payload.from, payload.to, get_commit_offset, ack_state)
 
     reply
     |> ThrowSignalSchema.success()
@@ -58,7 +59,8 @@ defmodule Chat.AckSignal do
 
     {:ok, _adv_offset} = Injection.advance_offset(queue_id, device, @partition_id, signal_offset)
     ack_state = Injection.get_ack_status(queue_id, device, @partition_id, signal_offset)
-    reply = send_signal_to_sender(id, signal_offset, user_offset, @status, payload.from, payload.to, true, ack_state)
+    get_commit_offset = Injection.get_commit_offset(queue_id, device, @partition_id, signal_offset)
+    reply = send_signal_to_sender(id, signal_offset, user_offset, @status, payload.from, payload.to, get_commit_offset, ack_state)
 
     reply
     |> ThrowSignalSchema.success()
@@ -91,7 +93,8 @@ defmodule Chat.AckSignal do
 
               # 1.  receiver send to it self first
               ack_state = Injection.get_ack_status(queue_id, device, @partition_id, signal_offset)
-              reply = send_signal_to_sender(id, signal_offset, user_offset, 1, payload.from, payload.to, true, ack_state)
+              get_commit_offset = Injection.get_commit_offset(queue_id, device, @partition_id, signal_offset)
+              reply = send_signal_to_sender(id, signal_offset, user_offset, 1, payload.from, payload.to, get_commit_offset, ack_state)
 
               # receiver send to is other online device by filtering it self
               # send to sender genserver while genserver send to other devices......

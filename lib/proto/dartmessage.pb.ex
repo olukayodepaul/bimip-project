@@ -49,7 +49,7 @@ defmodule Bimip.SignalAckState do
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
   field :send, 1, type: :bool
-  field :received, 2, type: :bool
+  field :delivered, 2, type: :bool
   field :read, 3, type: :bool
   field :advance_offset, 4, type: :bool, json_name: "advanceOffset"
 end
@@ -70,10 +70,9 @@ defmodule Bimip.Message do
   field :encrypted, 10, type: :string
   field :signature, 11, type: :string
   field :signal_type, 12, type: :int32, json_name: "signalType"
-  field :signal_lifecycle_state, 13, type: :string, json_name: "signalLifecycleState"
-  field :signal_ack_state, 14, type: Bimip.SignalAckState, json_name: "signalAckState"
-  field :signal_request, 15, type: :int32, json_name: "signalRequest"
-  field :conversation_owner, 16, type: :string, json_name: "conversationOwner"
+  field :signal_ack_state, 13, type: Bimip.SignalAckState, json_name: "signalAckState"
+  field :signal_request, 14, type: :int32, json_name: "signalRequest"
+  field :owner, 15, type: Bimip.Identity
 end
 
 defmodule Bimip.Signal do

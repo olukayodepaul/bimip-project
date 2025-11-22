@@ -24,20 +24,28 @@ defmodule Queue.QueueLog do
       def  advance_offset(user, device, partition, offset),
         do: QueueLogImpl.ack_message(user, device, partition, offset)
 
+      def confirm_advance_offset(user, device, partition, offset),
+        do: QueueLogImpl.confirm_adv_offset?(user, device, partition, offset)
+
       def get_ack_status(user, device, partition, offset),
         do: QueueLogImpl.message_status(user, device, partition, offset)
 
-      def get_commit_offset(user, device, partition, offset),
-        do: QueueLogImpl.offset_processed?(user, device, partition, offset)
-
       def mark_ack_status(user, device, partition, offset, status),
         do: QueueLogImpl.ack_status(user, device, partition, offset, status)
+
+      def get_message_offset(user, device, partition, message_id),
+        do: QueueLogImpl.get_message_offset(user, device, partition, message_id)
+
+      def insert_message_id(user, device, partition, message_id, offset),
+        do: QueueLogImpl.insert_message_id(user, device, partition, message_id, offset)
 
     end
   end
 end
 
-# Queue.Injection.get_commit_offset("b@domain.com_a@domain.com", "bbbbb1", 1, 1)
-# Queue.Injection.get_commit_offset("a@domain.com_b@domain.com", "aaaaa1", 1, 2)
-# Queue.Injection.fetch_messages("b@domain.com_a@domain.com", "aaaaa1", 1, 100)
-# Queue.Injection.advance_offset("b@domain.com_a@domain.com", "bbbbb1", 1, 1)
+
+# Queue.Injection.insert_message_id("a@domain.com_b@domain.com", "aaaaa1", 1, "4637829384765473892", 3)
+# Injection.fetch_messages("b@domain.com_a@domain.com", "aaaaa1", 1, 3)
+# Queue.Injection.confirm_advance_offset("a@domain.com_b@domain.com", "aaaaa1", 1, 1)
+
+# Queue.Injection.get_message_offset("a@domain.com_b@domain.com", "aaaaa1", 1, "4637829384765473892")
