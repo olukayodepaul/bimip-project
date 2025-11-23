@@ -252,15 +252,16 @@ message Signal {
 **ACK AND SENDER for pulling message ack statt**
 ```
 ack_signal = %Bimip.Signal{
-  id: "2",
-  signal_offset: 2,
-  user_offset: 2,
+  id: "1",
+  signal_offset: 1,
+  user_offset: 1,
   status: 1,  
   timestamp: System.system_time(:second),
-  to: %Bimip.Identity{eid: "b@domain.com"},
-  from: %Bimip.Identity{eid: "a@domain.com"},
+  from: %Bimip.Identity{eid: "b@domain.com"},
+  to: %Bimip.Identity{eid: "a@domain.com"},
   type: 1,            # 1 = REQUEST
-  signal_type: 2      # 2 = DEVICE
+  signal_type: 3,      # 2 = DEVICE
+  signal_lifecycle_state: "delivered"
 }
 
 ack_message = %Bimip.MessageScheme{

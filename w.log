@@ -705,6 +705,46 @@ Resume A1
   __unknown_fields__: []
 }
 
+
+%Bimip.MessageScheme{
+  route: 7,
+  payload: {:signal,
+   %Bimip.Signal{
+     id: "2",
+     signal_offset: 2,
+     user_offset: 2,
+     status: 1,
+     timestamp: 1763908084259,
+     from: %Bimip.Identity{
+       eid: "b@domain.com",
+       connection_resource_id: nil,
+       node: nil,
+       __unknown_fields__: []
+     },
+     to: %Bimip.Identity{
+       eid: "a@domain.com",
+       connection_resource_id: "aaaaa1",
+       node: nil,
+       __unknown_fields__: []
+     },
+     type: 2,
+     signal_type: 1,
+     error: nil,
+     signal_lifecycle_state: nil,
+     signal_ack_state: %Bimip.SignalAckState{
+       send: true,
+       delivered: false,
+       read: false,
+       advance_offset: true,
+       __unknown_fields__: []
+     },
+     signal_request: 2,
+     __unknown_fields__: []
+   }},
+  __unknown_fields__: []
+}
+
+
 resume A2 PULL
 %Bimip.MessageScheme{
   route: 6,
