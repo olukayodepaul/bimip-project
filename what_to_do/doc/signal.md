@@ -248,5 +248,30 @@ message Signal {
 
 ```
 
+----
+**ACK AND SENDER for pulling message ack statt**
+```
+ack_signal = %Bimip.Signal{
+  id: "2",
+  signal_offset: 2,
+  user_offset: 2,
+  status: 1,  
+  timestamp: System.system_time(:second),
+  to: %Bimip.Identity{eid: "b@domain.com"},
+  from: %Bimip.Identity{eid: "a@domain.com"},
+  type: 1,            # 1 = REQUEST
+  signal_type: 2      # 2 = DEVICE
+}
+
+ack_message = %Bimip.MessageScheme{
+  route: 7,           # ACK signaling route
+  payload: {:signal, ack_signal}
+}
+
+binary_ack = Bimip.MessageScheme.encode(ack_message)
+hex_ack = Base.encode16(binary_ack, case: :upper)
+
+```
+
 
 

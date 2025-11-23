@@ -55,7 +55,7 @@ defmodule Chat.ResumeSignal do
     |> Map.put(:signal_request, @signal_request)
     |> Map.put(:owner, payload.from)
     |> Map.put(:timestamp, UniPosTime.uni_pos_time())
-    |> Map.put(:signal_ack_state, %{send: true, delivered: false, read: false, advance_offset: false})
+    |> Map.put(:signal_ack_state, %{send: true, delivered: false, read: false, advance_offset: adv})
   end
 
 

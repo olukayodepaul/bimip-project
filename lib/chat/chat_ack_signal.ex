@@ -63,21 +63,31 @@ defmodule Chat.AckSignal do
   } = payload) do
 
     queue_id = "#{from_eid}_#{to_eid}"
+    commit_status =
+    if confirm_advance_offset(queue_id, device, @partition_id, signal_offset) do
+        :ok
+    else
+        case maybe_advance_offset(queue_id, device, @partition_id, signal_offset, false) do
+          {:ok, _commit} ->
+            :ok
+          {:error, _reason} -> :skip
+        end
+    end
 
-    adv_offset(queue_id, device, @partition_id, signal_offset)
-    send_signal_to_sender(
-      id,
-      signal_offset,
-      user_offset,
-      @status,
-      %{eid: eid, connection_resource_id: device},
-      payload.to,
-      queue_id,
-      device,
-      @partition_id,
-      signal_lifecycle_state
-    )
-
+    if commit_status == :ok do
+      send_signal_to_sender(
+        id,
+        signal_offset,
+        user_offset,
+        @status,
+        %{eid: eid, connection_resource_id: device},
+        payload.to,
+        queue_id,
+        device,
+        @partition_id,
+        signal_lifecycle_state
+      )
+    end
   end
 
   def receiver(%Chat.SignalStruct{
@@ -136,7 +146,10 @@ defmodule Chat.AckSignal do
   # ----------------------
   defp get_ack_status(user, device, partition, offset), do: Injection.get_ack_status(user, device, partition, offset)
   defp confirm_advance_offset(user, device, partition, offset), do: Injection.confirm_advance_offset(user, device, partition, offset)
-  defp adv_offset(user, device, partition, offset), do: Injection.advance_offset(user, device, partition, offset)
+
+  defp maybe_advance_offset(queue_id, device_id, partition, offset, true), do: {:ok, offset}
+  defp maybe_advance_offset(queue_id, device_id, partition, offset, false), do: Injection.advance_offset(queue_id, device_id, partition, offset)
+
 
   # ---------------------------
   # Send signal to sender

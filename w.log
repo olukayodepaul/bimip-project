@@ -205,7 +205,7 @@ B2 receive the message
   __unknown_fields__: []
 }
 
-A1 send a message 
+A2 send a message 
 %Bimip.MessageScheme{
   route: 6,
   payload: {:message,
@@ -705,75 +705,53 @@ Resume A1
   __unknown_fields__: []
 }
 
-resume a2
+resume A2 PULL
 %Bimip.MessageScheme{
-  route: 7,
-  payload: {:signal,
-   %Bimip.Signal{
-     id: "",
-     signal_offset: 0,
-     user_offset: 0,
-     status: 7,
-     timestamp: 1763895376,
+  route: 6,
+  payload: {:message,
+   %Bimip.Message{
+     id: "1",
+     signal_offset: 1,
+     user_offset: 1,
      from: %Bimip.Identity{
+       eid: "a@domain.com",
+       connection_resource_id: "aaaaa1",
+       node: nil,
+       __unknown_fields__: []
+     },
+     to: %Bimip.Identity{
        eid: "a@domain.com",
        connection_resource_id: "aaaaa2",
        node: nil,
        __unknown_fields__: []
      },
-     to: %Bimip.Identity{
-       eid: "b@domain.com",
-       connection_resource_id: "",
+     timestamp: 1763900582884,
+     payload: "{\"text\":\"Hello from BIMIP 👋\",\"attachments\":[]}",
+     encryption_type: "none",
+     encrypted: "",
+     signature: "",
+     signal_type: 2,
+     signal_ack_state: %Bimip.SignalAckState{
+       send: true,
+       delivered: false,
+       read: false,
+       advance_offset: false,
+       __unknown_fields__: []
+     },
+     signal_request: 2,
+     owner: %Bimip.Identity{
+       eid: "a@domain.com",
+       connection_resource_id: "aaaaa1",
        node: nil,
        __unknown_fields__: []
      },
-     type: 1,
-     signal_type: 0,
-     error: nil,
-     signal_lifecycle_state: nil,
-     signal_ack_state: nil,
-     signal_request: 0,
      __unknown_fields__: []
    }},
   __unknown_fields__: []
 }
 iex(2)> 
 
-
-
-resume B1
-%Bimip.MessageScheme{
-  route: 7,
-  payload: {:signal,
-   %Bimip.Signal{
-     id: "",
-     signal_offset: 0,
-     user_offset: 0,
-     status: 7,
-     timestamp: 1763897638,
-     from: %Bimip.Identity{
-       eid: "b@domain.com",
-       connection_resource_id: "bbbbb1",
-       node: nil,
-       __unknown_fields__: []
-     },
-     to: %Bimip.Identity{
-       eid: "a@domain.com",
-       connection_resource_id: "",
-       node: nil,
-       __unknown_fields__: []
-     },
-     type: 1,
-     signal_type: 0,
-     error: nil,
-     signal_lifecycle_state: nil,
-     signal_ack_state: nil,
-     signal_request: 0,
-     __unknown_fields__: []
-   }},
-  __unknown_fields__: []
-}
-
+resume B1 pull
 %Bimip.MessageScheme{
   route: 6,
   payload: {:message,
@@ -793,7 +771,7 @@ resume B1
        node: nil,
        __unknown_fields__: []
      },
-     timestamp: 1763897660389,
+     timestamp: 1763900587343,
      payload: "{\"text\":\"Hello from BIMIP 👋\",\"attachments\":[]}",
      encryption_type: "none",
      encrypted: "",
@@ -808,8 +786,8 @@ resume B1
      },
      signal_request: 2,
      owner: %Bimip.Identity{
-       eid: "b@domain.com",
-       connection_resource_id: "bbbbb1",
+       eid: "a@domain.com",
+       connection_resource_id: "aaaaa1",
        node: nil,
        __unknown_fields__: []
      },
