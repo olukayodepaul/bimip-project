@@ -7,13 +7,13 @@
 ack_signal = %Bimip.Signal{
   status: 7,
   timestamp: System.system_time(:second),
-  to: %Bimip.Identity{
-    eid: "b@domain.com",
-    connection_resource_id: ""
-  },
   from: %Bimip.Identity{
+    eid: "b@domain.com",
+    connection_resource_id: "bbbbb1"
+  },
+  to: %Bimip.Identity{
     eid: "a@domain.com",
-    connection_resource_id: "aaaaa2"
+    connection_resource_id: ""
   },
   type: 1
 }
@@ -48,8 +48,8 @@ ack_signal = %Bimip.Signal{
     connection_resource_id: "aaaaa1"
   },
   type: 1,               # 1 = REQUEST (signal sent to server)
-  signal_type: 3,        # 1 = SENDER (acknowledgment from receiver)
-  signal_lifecycle_state: "read"
+  signal_type: 1,        # 1 = SENDER (acknowledgment from receiver)
+ 
 }
 
 ack_message = %Bimip.MessageScheme{
@@ -59,5 +59,5 @@ ack_message = %Bimip.MessageScheme{
 
 binary_ack = Bimip.MessageScheme.encode(ack_message)
 hex_ack = Base.encode16(binary_ack, case: :upper)
-
+ signal_lifecycle_state: "read"
 ----

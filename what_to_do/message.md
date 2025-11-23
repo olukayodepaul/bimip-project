@@ -1,14 +1,14 @@
 ```Message data
 
 request = %Bimip.Message{
-  id: "4637829384765473892",
-  from: %Bimip.Identity{
+  id: "4",
+  to: %Bimip.Identity{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa1"
   },
-  to: %Bimip.Identity{
+  from: %Bimip.Identity{
     eid: "b@domain.com",
-    connection_resource_id: "bbbbb1"
+    connection_resource_id: "bbbbb2"
   },
   timestamp: System.system_time(:millisecond),
   payload: Jason.encode!(%{
