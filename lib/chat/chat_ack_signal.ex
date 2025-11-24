@@ -225,7 +225,6 @@ defmodule Chat.AckSignal do
         end
 
         set_signal(id, so, uo, status, mt.new_to, mt.new_from, state, s, d, r, adv, mt.new_signal_type)
-
         |> ThrowSignalSchema.success()
         |> then(&SignalCommunication.outbouce(%{eid: device.eid, connection_resource_id: device.device_id}, &1))
 

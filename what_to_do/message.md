@@ -3,12 +3,10 @@
 request = %Bimip.Message{
   id: "5",
   from: %Bimip.Identity{
-    eid: "a@domain.com",
-    connection_resource_id: "aaaaa1"
+    eid: "a@domain.com"
   },
   to: %Bimip.Identity{
-    eid: "b@domain.com",
-    connection_resource_id: "bbbbb2"
+    eid: "b@domain.com"
   },
   timestamp: System.system_time(:millisecond),
   payload: Jason.encode!(%{

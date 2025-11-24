@@ -294,7 +294,7 @@ defmodule Bimip.SignalClient do
 
   def handle_cast(
         {:client_message, _eid, _device_id, data},
-        %{ws_pid: ws_pid} = state
+        %{ws_pid: ws_pid, device_id: device_id} = state
       ) do
 
     # Decode the incoming message binary
@@ -302,18 +302,17 @@ defmodule Bimip.SignalClient do
 
     case msg.payload do
       {:message, %Bimip.Message{} = message} ->
-        # ✅ Validate the Message
         case Bimip.Validators.MessageValidator.validate(message) do
           :ok ->
 
             # Extract full message data into a post map
-            post = %{
+            payload = %Chat.MessageStruct{
               id: message.id,
-              from: %{
+              from: %Chat.EntityStruct{
                 eid: message.from.eid,
-                connection_resource_id: message.from.connection_resource_id
+                connection_resource_id: device_id
               },
-              to: %{
+              to: %Chat.EntityStruct{
                 eid: message.to.eid,
                 connection_resource_id: message.to.connection_resource_id
               },
@@ -322,9 +321,12 @@ defmodule Bimip.SignalClient do
               encryption_type: message.encryption_type,
               encrypted: message.encrypted,
               signature: message.signature,
+              device_id: device_id
             }
 
-            Connect.route_message_to_server(post)
+            payload
+            |> server_route(:eid, :route_message)
+            |> Connect.handle_inbouce_signal
 
             {:noreply,
             %{
@@ -338,7 +340,7 @@ defmodule Bimip.SignalClient do
             }}
 
           {:error, err} ->
-            IO.inspect("2sncjsdncjdns")
+
             reason = "Field '#{err.field}' → #{err.description}"
 
             error_binary =
@@ -416,7 +418,7 @@ defmodule Bimip.SignalClient do
   #----------------------------------------------
   # This is route to the server. Single route
   #----------------------------------------------
-  defp server_route(%Chat.SignalStruct{} = payload, eid, signal_to_server) do
+  defp server_route(payload, eid, signal_to_server) do
     {eid, payload.from.eid, signal_to_server, payload}
   end
 

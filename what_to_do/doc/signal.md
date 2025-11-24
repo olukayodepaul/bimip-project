@@ -164,7 +164,7 @@ Provides details on invalid requests or system errors.
 
 ---
 
-## **11. `signal_lifecycle_state (optional)->request only`**
+## **11. `signal_lifecycle_state (optional)`**
 
 **Type:** `string`
 **Description:**

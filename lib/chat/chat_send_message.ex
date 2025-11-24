@@ -1,111 +1,133 @@
 defmodule Chat.SendMessage do
+  @moduledoc """
+  Handles message storage, acknowledgment, and delivery to sender/receiver devices.
+
+  Responsibilities:
+  - Store incoming messages in per-user queues
+  - Acknowledge message offsets
+  - Send signals back to sender
+  - Deliver messages to sender's other devices and receiver devices
+  """
+
+  require Logger
+
   alias Queue.Injection
-  alias Route.{SignalCommunication, Connect}
+  alias Route.Connect
+  alias Settings.ServerState
+  alias Storage.DeviceStorage
 
   @partition_id 1
   @sender_signal_type 2
   @receiver_signal_type 3
   @status 1
   @signal_request 2
+  @stale_threshold_seconds ServerState.stale_threshold_seconds()
 
-  # Entry point
-  def store_message({%{eid: from_eid, connection_resource_id: from_device_id} = from,
-                    %{eid: to_eid, connection_resource_id: to_device_id} = to,
-                    id, payload}, state) do
+  # ----------------------
+  # Public API
+  # ----------------------
+  def store_message(%Chat.MessageStruct{
+        id: id,
+        from: %Chat.EntityStruct{eid: from_eid},
+        to: %Chat.EntityStruct{eid: to_eid},
+        device_id: device_id
+      } = payload) do
+    from = Map.from_struct(payload.from)
+    to = Map.from_struct(payload.to)
+
     queue_id = "#{from_eid}_#{to_eid}"
     reverse_queue_id = "#{to_eid}_#{from_eid}"
 
-    IO.inspect(payload)
-
-    case get_message_offset(queue_id, from_device_id, @partition_id, id) do
+    case get_message_offset(queue_id, device_id, @partition_id, "jhrfuarhfur") do
       {:ok, ft_offset} ->
-        send_signal_to_sender(id, ft_offset, @status, from, to, queue_id, from_device_id, @partition_id)
+        send_signal_to_sender(id, ft_offset, @status, from, to, queue_id, device_id, @partition_id)
 
       {:error, :not_found} ->
-        handle_new_message(payload, id, queue_id, reverse_queue_id, from, to, from_device_id, to_device_id)
+        handle_new_message(payload, id, queue_id, reverse_queue_id, from, to, device_id)
     end
+  end
 
-    {:noreply, state}
+  def process_receiver_message(%Chat.MessageStruct{to: %Chat.EntityStruct{eid: eid}} = payload) do
+    deliver_to_online_devices(eid, payload)
+    :ok
+  end
+
+  def send_message_to_sender_other_devices(%Chat.MessageStruct{
+        from: %Chat.EntityStruct{eid: eid},
+        device_id: device_id
+      } = payload) do
+    deliver_to_online_devices(eid, payload, exclude_device: device_id)
+    :ok
   end
 
   # ----------------------
-  # Handle new message flow
+  # Internal pipeline
   # ----------------------
-  defp handle_new_message(payload, id, queue_id, reverse_queue_id, from, to, from_device_id, to_device_id) do
+  defp handle_new_message(payload, id, queue_id, reverse_queue_id, from, to, from_device_id) do
     with {:ok, offset} <- store_and_ack(payload, queue_id, from, to, from_device_id),
-        {:ok, recv_offset} <- store_and_ack(payload, reverse_queue_id, from, to, from_device_id, receiver: true) do
-
-      # Send signal back to original sender
+         {:ok, recv_offset} <- store_and_ack(payload, reverse_queue_id, from, to, from_device_id, receiver: true) do
       send_signal_to_sender(id, offset, @status, from, to, queue_id, from_device_id, @partition_id)
-      insert_message_id(queue_id, from_device_id, @partition_id, id, offset)
+      insert_message_id(queue_id, from_device_id, @partition_id, payload.id, offset)
 
-      # Deliver message to sender's other devices
       push_to_device(payload, offset, offset, @sender_signal_type, queue_id, from_device_id)
-
-      # Deliver message to the receiver
-      push_to_device(payload, recv_offset, offset, @receiver_signal_type, reverse_queue_id, to_device_id, receiver: true)
+      push_to_device(payload, recv_offset, offset, @receiver_signal_type, reverse_queue_id, "", receiver: true)
     else
       {:error, reason} ->
         Logger.error("Message pipeline failed: #{inspect(reason)}")
     end
   end
 
-  # ----------------------
-  # Store and ACK helper
-  # ----------------------
   defp store_and_ack(payload, queue_id, from, to, from_device_id, opts \\ []) do
     is_receiver = Keyword.get(opts, :receiver, false)
 
     with {:ok, offset} <- Injection.store_message(queue_id, @partition_id, from, to, payload),
-        {:ok, _adv_offset} <- maybe_advance_offset(queue_id, from_device_id, @partition_id, offset, is_receiver),
-        {:atomic, _ack_id} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
+         {:ok, _} <- maybe_advance_offset(queue_id, from_device_id, @partition_id, offset, is_receiver),
+         {:atomic, _} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
       {:ok, offset}
     end
   end
 
-  defp maybe_advance_offset(queue_id, device_id, partition, offset, true), do: {:ok, offset}
-  defp maybe_advance_offset(queue_id, device_id, partition, offset, false), do: Injection.advance_offset(queue_id, device_id, partition, offset)
+  defp maybe_advance_offset(_queue, _device, _partition, offset, true), do: {:ok, offset}
+  defp maybe_advance_offset(queue, device, partition, offset, false),
+    do: Injection.advance_offset(queue, device, partition, offset)
 
-  # ----------------------
-  # Push message to device
-  # ----------------------
   defp push_to_device(payload, signal_offset, user_offset, signal_type, queue_id, device_id, opts \\ []) do
     is_receiver = Keyword.get(opts, :receiver, false)
 
     payload
-    |> set_message_fields(signal_offset, user_offset, signal_type, queue_id, device_id)
+    |> set_message_fields(signal_offset, user_offset, signal_type)
     |> send_to_device(is_receiver)
   end
 
-  defp send_to_device(payload, false), do: SignalCommunication.send_message_to_sender_other_devices(payload)
-  defp send_to_device(payload, true) do
-    server_route(payload, :eid, :send_message_to_receiver_server)
-  end
+  defp send_to_device(payload, false), do: send_message_to_sender_other_devices(payload)
+  defp send_to_device(payload, true), do: server_route(payload, :eid, :send_message_to_receiver_server)
 
   # ----------------------
   # Helpers
   # ----------------------
-  defp get_message_offset(user, device, partition, message_id), do: Injection.get_message_offset(user, device, partition, message_id)
-  defp insert_message_id(user, device, partition, message_id, offset), do: Injection.insert_message_id(user, device, partition, message_id, offset)
-  defp get_ack_status(user, device, partition, offset), do: Injection.get_ack_status(user, device, partition, offset)
-  defp confirm_advance_offset(user, device, partition, offset), do: Injection.confirm_advance_offset(user, device, partition, offset)
+  defp get_message_offset(user, device, partition, message_id),
+    do: Injection.get_message_offset(user, device, partition, message_id)
 
-  # ----------------------
-  # Prepare payload fields
-  # ----------------------
-  defp set_message_fields(payload, signal_offset, user_offset, signal_type, queue_id, device_id) do
-    payload
-    |> Map.put(:signal_type, signal_type)
-    |> Map.put(:user_offset, user_offset)
-    |> Map.put(:signal_offset, signal_offset)
-    |> Map.put(:signal_request, @signal_request)
-    |> Map.put(:owner, payload.from)
-    |> Map.put(:signal_ack_state, %{send: true, delivered: false, read: false, advance_offset: false})
+  defp insert_message_id(user, device, partition, message_id, offset),
+    do: Injection.insert_message_id(user, device, partition, message_id, offset)
+
+  defp get_ack_status(user, device, partition, offset),
+    do: Injection.get_ack_status(user, device, partition, offset)
+
+  defp confirm_advance_offset(user, device, partition, offset),
+    do: Injection.confirm_advance_offset(user, device, partition, offset)
+
+  defp set_message_fields(payload, signal_offset, user_offset, signal_type) do
+    Map.merge(payload, %{
+      signal_type: signal_type,
+      user_offset: user_offset,
+      signal_offset: signal_offset,
+      signal_request: @signal_request,
+      owner: payload.from,
+      signal_ack_state: %{send: true, delivered: false, read: false, advance_offset: false}
+    })
   end
 
-  # ----------------------
-  # Send signal to sender
-  # ----------------------
   defp send_signal_to_sender(id, offset, status, from, to, user, from_device_id, partition_id) do
     %{read: read, sent: sent, delivered: delivered} = get_ack_status(user, from_device_id, partition_id, offset)
     adv = confirm_advance_offset(user, from_device_id, partition_id, offset)
@@ -122,15 +144,33 @@ defmodule Chat.SendMessage do
       signal_ack_state: %{send: sent, delivered: delivered, read: read, advance_offset: adv}
     }
     |> ThrowSignalSchema.success()
-    |> then(&SignalCommunication.outbouce(from, &1))
+    |> then(&Connect.outbouce(from_device_id, &1))
   end
 
-  #----------------------------------------------
-  # This is route to the server. Single route
-  #----------------------------------------------
-  defp server_route(payload, eid, server) do
-    {eid, payload.to.eid, server, payload}
-    |> Connect.handle_inbouce_signal
+  defp deliver_to_online_devices(eid, payload, opts \\ []) do
+    exclude_device = Keyword.get(opts, :exclude_device, nil)
+    now = DateTime.utc_now()
+
+    DeviceStorage.fetch_devices_by_eid(eid)
+    |> Stream.filter(fn device ->
+      device.status == "ONLINE" and DateTime.diff(now, device.last_seen) <= @stale_threshold_seconds and
+        (is_nil(exclude_device) or device.device_id != exclude_device)
+    end)
+    |> Task.async_stream(
+      fn device ->
+        payload
+        |> set_from(device.eid, device.device_id)
+        |> ThrowMessageSchema.build_message()
+        |> then(&Connect.outbouce(device.device_id, &1))
+      end,
+      max_concurrency: 10,
+      timeout: 5_000,
+      on_timeout: :kill_task
+    )
+    |> Stream.run()
   end
 
+  defp set_from(payload, eid, device_id), do: %{payload | to: %{eid: eid, connection_resource_id: device_id}}
+
+  defp server_route(payload, _eid, server), do: { :eid, payload.to.eid, server, payload } |> Connect.handle_inbouce_signal()
 end

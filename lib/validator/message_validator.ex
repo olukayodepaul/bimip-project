@@ -22,8 +22,8 @@ defmodule Bimip.Validators.MessageValidator do
   @spec validate(Message.t()) :: :ok | {:error, map()}
   def validate(%Message{} = msg) do
     with :ok <- validate_id(msg.id),
-         :ok <- validate_identity(msg.from, "from"),
-         :ok <- validate_identity(msg.to, "to"),
+        #  :ok <- validate_identity(msg.from, "from"),
+        #  :ok <- validate_identity(msg.to, "to"),
          :ok <- validate_timestamp(msg.timestamp),
          :ok <- validate_payload(msg.payload),
          :ok <- validate_binary_field(msg.encrypted, "encrypted"),

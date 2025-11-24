@@ -54,15 +54,6 @@ defmodule Route.Connect do
     end
   end
 
-  def route_message_to_server(%{from: %{eid: eid, connection_resource_id: device_id}} = post) do
-    case Horde.Registry.lookup(EidRegistry, eid) do
-      [{pid, _}] ->
-        GenServer.cast(pid, {:route_message, eid, device_id, post})
-      [] ->
-        :error
-    end
-  end
-
   def route_ping_pong_to_server(eid, device_id) do
     case Horde.Registry.lookup(EidRegistry, eid) do
       [{pid, _}] ->
@@ -190,13 +181,6 @@ defmodule Route.Connect do
   defp extract_registry_id({:new, {device_id, _, _, _}}), do: device_id
   defp extract_registry_id(_), do: :unknown
 
-  # def send_message_to_receiver_server(%{to: %{eid: eid}} = message) do
-  #   case Horde.Registry.lookup(EidRegistry, eid) do
-  #     [{pid, _}] ->
-  #       GenServer.cast(pid, {:send_message_to_receiver_server,  message})
-  #     [] -> :error
-  #   end
-  # end
 
   # -------------------------------
   # ROUTE BETWEEN CLIENT AND SERVER

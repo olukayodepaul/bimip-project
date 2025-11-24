@@ -315,20 +315,25 @@ defmodule Bimip.SignalServer do
 
 
   # -------------------------------
-  # Route and persist message
+  # Messages
   # -------------------------------
   @impl true
-  def handle_cast({:route_message, eid, device_id, post}, state) do
-    GenServer.cast(self(), {:chat_queue, post.from, post.to, post.id, post})
+  def handle_cast({:route_message, payload}, state) do
+    GenServer.cast(self(), {:chat_queue, payload})
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:chat_queue, from, to, id, payload},  state) do
-    SendMessage.store_message({from, to, id, payload}, state)
+  def handle_cast({:chat_queue, payload},  state) do
+    SendMessage.store_message(payload)
+    {:noreply, state}
   end
 
-
+  @impl true
+  def handle_cast({:send_message_to_receiver_server,  payload}, state) do
+    SendMessage.process_receiver_message(payload)
+    {:noreply, state}
+  end
 
   # -------------------------------
   # Signal
@@ -339,19 +344,12 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
-  # -------------------------------
-  # Signal
-  # -------------------------------
   @impl true
   def handle_cast({:signal_to_server_ack, payload}, %{eid: eid} = state) do
     IO.inspect({payload, eid})
     {:noreply, state}
   end
 
-  @impl true
-  def handle_cast({:send_message_to_receiver_server,  payload}, state) do
-    SignalCommunication.send_message_to_all_receiver_devices(payload)
-    {:noreply, state}
-  end
+
 
 end
