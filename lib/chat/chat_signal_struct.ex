@@ -11,5 +11,6 @@ defmodule Chat.SignalStruct do
     :user_offset,
     :signal_type,
     :signal_lifecycle_state,
+    :ack_action,
   ]
 end

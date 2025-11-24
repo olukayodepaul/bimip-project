@@ -78,7 +78,9 @@ defmodule Chat.SendMessage do
   end
 
   defp send_to_device(payload, false), do: SignalCommunication.send_message_to_sender_other_devices(payload)
-  defp send_to_device(payload, true), do: Connect.send_message_to_receiver_server(payload)
+  defp send_to_device(payload, true) do
+    server_route(payload, :eid, :send_message_to_receiver_server)
+  end
 
   # ----------------------
   # Helpers
@@ -122,4 +124,13 @@ defmodule Chat.SendMessage do
     |> ThrowSignalSchema.success()
     |> then(&SignalCommunication.outbouce(from, &1))
   end
+
+  #----------------------------------------------
+  # This is route to the server. Single route
+  #----------------------------------------------
+  defp server_route(payload, eid, server) do
+    {eid, payload.to.eid, server, payload}
+    |> Connect.handle_inbouce_signal
+  end
+
 end

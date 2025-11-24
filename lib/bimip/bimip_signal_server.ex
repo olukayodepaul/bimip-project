@@ -328,11 +328,7 @@ defmodule Bimip.SignalServer do
     SendMessage.store_message({from, to, id, payload}, state)
   end
 
-  @impl true
-  def handle_cast({:send_message_to_receiver_server,  payload}, state) do
-    SignalCommunication.send_message_to_all_receiver_devices(payload)
-    {:noreply, state}
-  end
+
 
   # -------------------------------
   # Signal
@@ -340,6 +336,21 @@ defmodule Bimip.SignalServer do
   @impl true
   def handle_cast({:signal_to_server, payload}, state) do
     ReceivedSignal.handle_received_signal(payload)
+    {:noreply, state}
+  end
+
+  # -------------------------------
+  # Signal
+  # -------------------------------
+  @impl true
+  def handle_cast({:signal_to_server_ack, payload}, %{eid: eid} = state) do
+    IO.inspect({payload, eid})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:send_message_to_receiver_server,  payload}, state) do
+    SignalCommunication.send_message_to_all_receiver_devices(payload)
     {:noreply, state}
   end
 

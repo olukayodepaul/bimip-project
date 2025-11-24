@@ -190,14 +190,13 @@ defmodule Route.Connect do
   defp extract_registry_id({:new, {device_id, _, _, _}}), do: device_id
   defp extract_registry_id(_), do: :unknown
 
-  def send_message_to_receiver_server(%{to: %{eid: eid}} = message) do
-    case Horde.Registry.lookup(EidRegistry, eid) do
-      [{pid, _}] ->
-        GenServer.cast(pid, {:send_message_to_receiver_server,  message})
-      [] -> :error
-    end
-  end
-
+  # def send_message_to_receiver_server(%{to: %{eid: eid}} = message) do
+  #   case Horde.Registry.lookup(EidRegistry, eid) do
+  #     [{pid, _}] ->
+  #       GenServer.cast(pid, {:send_message_to_receiver_server,  message})
+  #     [] -> :error
+  #   end
+  # end
 
   # -------------------------------
   # ROUTE BETWEEN CLIENT AND SERVER
@@ -214,7 +213,7 @@ defmodule Route.Connect do
   defp consolidated_route({lookup_via_registry, registry_id, resouce_finder, payload}) do
     case Horde.Registry.lookup(lookup_via_registry, registry_id) do
       [{pid, _}] ->
-        GenServer.cast(pid, {resouce_finder, payload })
+        GenServer.cast(pid, {resouce_finder, payload})
         :ok
       [] ->
         Logger.warning("No registry entry for, cannot maybe_start_mother")
@@ -231,9 +230,5 @@ defmodule Route.Connect do
         :error
     end
   end
-
-
-
-
 
 end

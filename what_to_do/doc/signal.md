@@ -261,7 +261,7 @@ ack_signal = %Bimip.Signal{
   to: %Bimip.Identity{eid: "a@domain.com"},
   type: 1,            # 1 = REQUEST
   signal_type: 3,      # 2 = DEVICE
-  signal_lifecycle_state: "delivered"
+  signal_lifecycle_state: "read"
 }
 
 ack_message = %Bimip.MessageScheme{

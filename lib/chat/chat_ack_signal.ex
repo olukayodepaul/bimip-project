@@ -4,6 +4,7 @@ defmodule Chat.AckSignal do
   alias ThrowSignalSchema
   alias Storage.DeviceStorage
   alias Settings.ServerState
+  alias Route.{Connect}
 
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
 
@@ -37,7 +38,6 @@ defmodule Chat.AckSignal do
       } = payload) do
 
     queue = "#{from_eid}_#{to_eid}"
-     IO.inspect(3)
 
     send_signal(
       id, so, uo, @status,
@@ -111,19 +111,21 @@ defmodule Chat.AckSignal do
           mark_ack_status(queue, "", @partition_id, so, :delivered)
           mark_ack_status(rev, "", @partition_id, uo, :delivered)
           maybe_advance_offset(queue, device, @partition_id, so, false)
-          :ok
+          {:ok, :delivered}
 
         :read ->
           mark_ack_status(queue, "", @partition_id, so, :read)
           mark_ack_status(rev, "", @partition_id, uo, :read)
           maybe_advance_offset(queue, device, @partition_id, so, false)
-          :ok
+          {:ok, :read}
 
         _ ->
-          :error
+          {:error, :error}
       end
 
-    if commit == :ok do
+
+    if elem(commit, 0) == :ok do
+
       fan_out_sender_devices(
         id, so, uo, @status,
         %{eid: from_eid, connection_resource_id: device},
@@ -133,6 +135,10 @@ defmodule Chat.AckSignal do
         @partition_id,
         state
       )
+
+      payload
+      |> Map.put(:ack_action, elem(commit, 1))
+      |> server_route(:eid, :signal_to_server_ack)
 
     end
   end
@@ -153,10 +159,15 @@ defmodule Chat.AckSignal do
   defp mark_ack_status(q, d, p, o, state),
     do: Injection.mark_ack_status(q, d, p, o, state)
 
+  defp signal_to_sender(payload, true), do: Connect.handle_inbouce_signal(payload)
+
   # ---------------------------------------------------
   # Build ack signal
   # ---------------------------------------------------
   defp send_signal(id, so, uo, status, from, to, user, dev, part, state) do
+
+    # REMEMEBER TO WORK ON SIGNAL TYPE
+    signal_type = 1
 
     %{read: r, sent: s, delivered: d} =
       get_ack_status(user, dev, part, so)
@@ -164,7 +175,7 @@ defmodule Chat.AckSignal do
     adv = confirm_advance_offset(user, dev, part, so)
 
     rt = set_signal(
-      id, so, uo, status, to, from, state, s, d, r, adv
+      id, so, uo, status, to, from, state, s, d, r, adv, signal_type
     )
 
     rt
@@ -172,15 +183,15 @@ defmodule Chat.AckSignal do
 
   end
 
-  def set_signal(id, so, uo, status, to, from, state, s, d, r, adv) do
+  def set_signal(id, so, uo, status, to, from, state, s, d, r, adv, st) do
     %{
       id: id,
       signal_offset: so,
       user_offset: uo,
       status: status,
-      from: to,
-      to: from,
-      signal_type: 1,
+      from: from,
+      to: to,
+      signal_type: st,
       signal_request: 2,
       signal_lifecycle_state: state,
       signal_ack_state: %{send: s, delivered: d, read: r, advance_offset: adv}
@@ -207,7 +218,14 @@ defmodule Chat.AckSignal do
         %{read: r, sent: s, delivered: d} = get_ack_status(user, "", part, so)
         adv = confirm_advance_offset(user, device.device_id, part, so)
 
-        set_signal(id, so, uo, status, to, from, state, s, d, r, adv)
+        mt = if dev == device.device_id do
+          %{new_from: to, new_to: from, new_signal_type: 3}
+        else
+          %{new_from: from, new_to: %{eid: device.eid, connection_resource_id: device.device_id}, new_signal_type: 2}
+        end
+
+        set_signal(id, so, uo, status, mt.new_to, mt.new_from, state, s, d, r, adv, mt.new_signal_type)
+
         |> ThrowSignalSchema.success()
         |> then(&SignalCommunication.outbouce(%{eid: device.eid, connection_resource_id: device.device_id}, &1))
 
@@ -220,5 +238,12 @@ defmodule Chat.AckSignal do
     :ok
   end
 
+  #----------------------------------------------
+  # This is route to the server. Single route
+  #----------------------------------------------
+  defp server_route(%Chat.SignalStruct{} = payload, eid, server) do
+    {eid, payload.to.eid, server, payload}
+    |> Connect.handle_inbouce_signal
+  end
 
 end

@@ -1,12 +1,12 @@
 ```Message data
 
 request = %Bimip.Message{
-  id: "4",
-  to: %Bimip.Identity{
+  id: "5",
+  from: %Bimip.Identity{
     eid: "a@domain.com",
     connection_resource_id: "aaaaa1"
   },
-  from: %Bimip.Identity{
+  to: %Bimip.Identity{
     eid: "b@domain.com",
     connection_resource_id: "bbbbb2"
   },
