@@ -24,9 +24,13 @@ defmodule Util.StatusMapper do
       9 -> "DELIVERED"
       10 -> "READ"
       11 -> "RESUME"
+      12 -> "SENT"
       _ -> "UNKNOWN"
     end
   end
+
+
+  
 
 end
 

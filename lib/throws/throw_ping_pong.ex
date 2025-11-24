@@ -4,7 +4,7 @@ defmodule ThrowPingPongSchema do
 
   message PingPong {
       string id = 1;                 // Unique message or request ID
-      Identity to = 2;               // Target identity
+      Identity from = 2;               // Target identity
       int32 type = 3;                // 1 = PING, 2 = PONG, 3 = ERROR
       int64 timestamp = 4;           // Unix UTC timestamp in milliseconds
       string details = 5;            // Optional: used only when type = 3 (ERROR)
@@ -13,10 +13,10 @@ defmodule ThrowPingPongSchema do
 
   alias Bimip.{PingPong, Identity, MessageScheme}
 
-  def success(to_eid, to_device_id, id, type) do
+  def success(from_eid, from_device_id, id, type) do
     ping_pong = %PingPong{
       id: id,
-      to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
+      from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
       type: type, # 1 = PING, 2 = PONG
       timestamp: System.system_time(:millisecond),
       details: ""
@@ -31,10 +31,10 @@ defmodule ThrowPingPongSchema do
 
 
   # Inline error response
-  def error(to_eid, to_device_id, id, description) do
+  def error(from_eid, from_device_id, id, description) do
     ping_pong = %PingPong{
       id: id,
-      to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
+      from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
       type: 3, # ERROR
       timestamp: System.system_time(:millisecond),
       details: description

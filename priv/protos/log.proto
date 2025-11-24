@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package bimip_log;
+
+// Represents a single log record (message) in BimipLog
+message Media {
+  uint64 offset = 1;
+  uint32 partition_id = 2;
+  string from = 3;
+  string to = 4;
+  bytes payload = 5;
+  uint64 timestamp = 6;
+}
