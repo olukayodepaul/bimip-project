@@ -389,65 +389,6 @@ defmodule Queue.QueueLogImpl do
   end
 
 
-
-  # # -------------------------------------------------------------------
-  # # Acknowledge (commit) message offset — moves contiguous commit forward
-  # # -------------------------------------------------------------------
-  # def ack_message(user, device, partition, offset) do
-  #   key = {user, device, partition}
-
-  #   result =
-  #     :mnesia.transaction(fn ->
-  #       # Get current commit offset
-  #       commit =
-  #         case :mnesia.read(:commit_offsets, key) do
-  #           [{:commit_offsets, ^key, c}] -> c
-  #           [] -> 0
-  #         end
-
-  #       # Get current pending set
-  #       pending =
-  #         case :mnesia.read(:pending_acks, key) do
-  #           [{:pending_acks, ^key, set}] -> set
-  #           [] -> MapSet.new()
-  #         end
-
-  #       # Only add if it's ahead of commit
-  #       pending =
-  #         if offset > commit do
-  #           MapSet.put(pending, offset)
-  #         else
-  #           pending
-  #         end
-
-  #       # Advance commit forward if contiguous
-  #       new_commit = advance_commit_to_max(pending, commit)
-  #       new_pending = MapSet.filter(pending, fn x -> x > new_commit end)
-
-  #       # Persist
-  #       :mnesia.write({:commit_offsets, key, new_commit})
-  #       :mnesia.write({:pending_acks, key, new_pending})
-
-  #       new_commit
-  #     end)
-
-  #   case result do
-  #     {:atomic, commit} -> {:ok, commit}
-  #     {:aborted, reason} -> {:error, reason}
-  #   end
-  # end
-
-  # -------------------------------------------------------------------
-  # Helper to advance commit only through contiguous offsets
-  # -------------------------------------------------------------------
-  # defp advance_commit_to_max(pending, commit) do
-  #   next = commit + 1
-  #   if MapSet.member?(pending, next) do
-  #     advance_commit_to_max(MapSet.delete(pending, next), next)
-  #   else
-  #     commit
-  #   end
-  # end
   defp advance_commit_to_max(pending, commit) do
     next = commit + 1
 
@@ -678,6 +619,51 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
+  def ack_message_batched(user, device, partition, offset_or_range, batch_size \\ 1_000) do
+    key = {user, device, partition}
 
+    offsets_stream =
+      case offset_or_range do
+        %Range{} = r -> Stream.chunk_every(Enum.to_list(r), batch_size)
+        offset when is_integer(offset) -> [[offset]]
+      end
+
+    Enum.reduce_while(offsets_stream, {:ok, 0}, fn batch, {:ok, _last_commit} ->
+      case :mnesia.transaction(fn ->
+        # Get current commit offset
+        commit =
+          case :mnesia.read(:commit_offsets, key) do
+            [{:commit_offsets, ^key, c}] -> c
+            [] -> 0
+          end
+
+        # Get current pending set
+        pending =
+          case :mnesia.read(:pending_acks, key) do
+            [{:pending_acks, ^key, set}] -> set
+            [] -> MapSet.new()
+          end
+
+        # Merge batch offsets safely
+        new_pending =
+          Enum.reduce(batch, pending, fn off, acc ->
+            if off > commit, do: MapSet.put(acc, off), else: acc
+          end)
+
+        # Advance commit
+        new_commit = advance_commit_to_max(new_pending, commit)
+        remaining = MapSet.filter(new_pending, fn x -> x > new_commit end)
+
+        # Persist
+        :mnesia.write({:commit_offsets, key, new_commit})
+        :mnesia.write({:pending_acks, key, remaining})
+
+        new_commit
+      end) do
+        {:atomic, commit} -> {:cont, {:ok, commit}}
+        {:aborted, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
 
 end
