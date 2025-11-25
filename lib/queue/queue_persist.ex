@@ -7,6 +7,7 @@ defmodule Queue.Persist do
 
   @spec build(map(), integer(), integer() | nil) :: map()
   def build(%{from: from, to: to, payload: payload} = _attrs, signal_offset, user_offset \\ nil) do
+
     per_user_offset = user_offset || signal_offset
 
     # Merge the given payload with our added offsets and device id

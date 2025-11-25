@@ -6,29 +6,37 @@ defmodule Chat.ResumeSignal do
 
   @partition_id 1
   @signal_request 2
+  @limit 100
 
   def resume(%Chat.SignalStruct{
-        from: %{eid: from_eid, connection_resource_id: device_id},
-        to: %{eid: to_eid},
+        from: %Chat.EntityStruct{eid: eid_from},
         eid: eid,
         device: device
       }) do
 
-    queue_id = "#{from_eid}_#{to_eid}"
+    queue_id = "#{eid_from}"
 
-    with {:ok, %{messages: [message]}} <- Injection.fetch_messages(queue_id, device_id, @partition_id),
-        true <- message != %{} do
+  with {:ok, %{messages: messages}} <-
+          Injection.fetch_messages(queue_id, device, @partition_id, @limit),
+        false <- messages == [] do
 
-          message.payload
-          |> set_message_fields(queue_id, eid,  device)
-          |> ThrowMessageSchema.build_message()
-          |> publish_pull_message(%{eid: eid, connection_resource_id: device})
+
+      # Now 'bodies' is the list of message bodies from the queue
+      IO.inspect(messages, label: "MESSAGE BODIES")
 
     else
-      {:error, reason} -> IO.puts("Failed to fetch messages: #{inspect(reason)}")
-      _ -> nil
+      {:error, reason} ->
+        IO.puts("Failed to fetch messages: #{inspect(reason)}")
+
+      true ->
+        # messages == []
+        nil
+
+      _ ->
+        nil
     end
   end
+
 
   # ----------------------
   # Helpers
@@ -56,6 +64,7 @@ defmodule Chat.ResumeSignal do
     |> Map.put(:owner, payload.from)
     |> Map.put(:timestamp, UniPosTime.uni_pos_time())
     |> Map.put(:signal_ack_state, %{send: true, delivered: false, read: false, advance_offset: adv})
+
   end
 
 

@@ -58,9 +58,8 @@ message Message {
   string encrypted = 10;       // base64 encrypted content (if any)
   string signature = 11;                      // base64 signature for integrity 
   int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
-  SignalAckState signal_ack_state = 13;     //
-  int32 signal_request = 14;
-  Identity owner = 15; 
+  int32 signal_request = 13;
+  Identity owner = 14; 
 }
 
 // when Device receive sent ack. it update the local message with 

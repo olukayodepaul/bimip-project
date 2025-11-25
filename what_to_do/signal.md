@@ -8,12 +8,7 @@ ack_signal = %Bimip.Signal{
   status: 7,
   timestamp: System.system_time(:second),
   from: %Bimip.Identity{
-    eid: "b@domain.com",
-    connection_resource_id: "bbbbb1"
-  },
-  to: %Bimip.Identity{
-    eid: "a@domain.com",
-    connection_resource_id: ""
+    eid: "b@domain.com"
   },
   type: 1
 }

@@ -73,7 +73,6 @@ end
       user_offset: user_offset,
       signal_offset: signal_offset,
       signal_request: signal_request,
-      signal_ack_state: %{send: send, delivered: delivered, read: read, advance_offset: advance_offset},
       timestamp:  timestamp,
       owner: %{eid: owner_eid, connection_resource_id: owner_device_id},
       }) do
@@ -99,8 +98,6 @@ end
         signal_type: signal_type,
         signal_request: signal_request,
         owner: %Identity{eid: owner_eid, connection_resource_id: owner_device_id},
-        signal_ack_state:
-        %SignalAckState{send: send, delivered: delivered, read: read, advance_offset: advance_offset}
       }
 
     %MessageScheme{

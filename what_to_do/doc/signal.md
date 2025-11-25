@@ -234,21 +234,6 @@ message Signal {
 }
 ```
 ---
-***ack request data ***
-
-```
-  int32 signal_offset = 2; 
-  int32 user_offset = 3;   
-  int32 status = 4;   // 1  ack   
-  Identity from = 6;        
-  Identity to = 7;   
-  int32 type = 8; //1 request
-  int32 signal_type = 9;   // device and reciever
-  string signal_lifecycle_state = 11;   //optional
-
-```
-
-----
 **ACK AND SENDER for pulling message ack statt**
 ```
 ack_signal = %Bimip.Signal{
@@ -275,4 +260,22 @@ hex_ack = Base.encode16(binary_ack, case: :upper)
 ```
 
 
+***Resume data***
+```proto 
+ack_signal = %Bimip.Signal{
+  status: 7,
+  timestamp: System.system_time(:second),
+  from: %Bimip.Identity{
+    eid: "a@domain.com"
+  },
+  type: 1
+}
 
+ack_message = %Bimip.MessageScheme{
+  route: 7,               # route for signaling/ack messages
+  payload: {:signal, ack_signal}
+}
+
+binary_ack = Bimip.MessageScheme.encode(ack_message)
+hex_ack = Base.encode16(binary_ack, case: :upper)
+```

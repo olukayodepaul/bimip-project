@@ -35,10 +35,10 @@ defmodule Chat.SendMessage do
     from = Map.from_struct(payload.from)
     to = Map.from_struct(payload.to)
 
-    queue_id = "#{from_eid}_#{to_eid}"
-    reverse_queue_id = "#{to_eid}_#{from_eid}"
+    queue_id = "#{from_eid}"
+    reverse_queue_id = "#{to_eid}"
 
-    case get_message_offset(queue_id, device_id, @partition_id, "jhrfuarhfur") do
+    case get_message_offset(queue_id, device_id, @partition_id, id) do
       {:ok, ft_offset} ->
         send_signal_to_sender(id, ft_offset, @status, from, to, queue_id, device_id, @partition_id)
 
@@ -123,14 +123,11 @@ defmodule Chat.SendMessage do
       user_offset: user_offset,
       signal_offset: signal_offset,
       signal_request: @signal_request,
-      owner: payload.from,
-      signal_ack_state: %{send: true, delivered: false, read: false, advance_offset: false}
+      owner: payload.from
     })
   end
 
   defp send_signal_to_sender(id, offset, status, from, to, user, from_device_id, partition_id) do
-    %{read: read, sent: sent, delivered: delivered} = get_ack_status(user, from_device_id, partition_id, offset)
-    adv = confirm_advance_offset(user, from_device_id, partition_id, offset)
 
     %{
       id: id,
@@ -141,7 +138,7 @@ defmodule Chat.SendMessage do
       to: from,
       signal_type: 1,
       signal_request: 2,
-      signal_ack_state: %{send: sent, delivered: delivered, read: read, advance_offset: adv}
+      signal_ack_state: %{send: true, delivered: false, read: false, advance_offset: true}
     }
     |> ThrowSignalSchema.success()
     |> then(&Connect.outbouce(from_device_id, &1))

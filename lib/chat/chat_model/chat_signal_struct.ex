@@ -2,8 +2,6 @@ defmodule Chat.SignalStruct do
   defstruct [
     :id,
     :status,
-    :to,
-    :from,
     :type,
     :eid,
     :device,
@@ -12,5 +10,7 @@ defmodule Chat.SignalStruct do
     :signal_type,
     :signal_lifecycle_state,
     :ack_action,
+    to: [],
+    from: [],
   ]
 end

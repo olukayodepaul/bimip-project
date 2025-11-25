@@ -70,9 +70,8 @@ defmodule Bimip.Message do
   field :encrypted, 10, type: :string
   field :signature, 11, type: :string
   field :signal_type, 12, type: :int32, json_name: "signalType"
-  field :signal_ack_state, 13, type: Bimip.SignalAckState, json_name: "signalAckState"
-  field :signal_request, 14, type: :int32, json_name: "signalRequest"
-  field :owner, 15, type: Bimip.Identity
+  field :signal_request, 13, type: :int32, json_name: "signalRequest"
+  field :owner, 14, type: Bimip.Identity
 end
 
 defmodule Bimip.Signal do

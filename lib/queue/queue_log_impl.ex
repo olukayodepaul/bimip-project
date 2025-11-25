@@ -27,6 +27,7 @@ defmodule Queue.QueueLogImpl do
 
       qfile = queue_file(user, partition_id, seg)
 
+
       case File.open(qfile, [:append, :binary]) do
         {:ok, fd} ->
           {:ok, pos_before} = :file.position(fd, :eof)
@@ -35,6 +36,7 @@ defmodule Queue.QueueLogImpl do
           offset_payload = Persist.build(%{from: from, to: to, payload: payload}, next_offset, user_offset)
 
           record = %{
+            device_id: payload.device_id,
             offset: next_offset,
             merge_offset: merge_offset || 0,
             partition_id: partition_id,
@@ -106,7 +108,6 @@ defmodule Queue.QueueLogImpl do
                     seg,
                     index_start_pos_for_seg
                   )
-
                 File.close(fd)
                 if length(new_acc) >= limit, do: {:halt, {new_acc, new_last}}, else: {:cont, {new_acc, new_last}}
 
@@ -197,7 +198,7 @@ defmodule Queue.QueueLogImpl do
 
     msgs =
       stream
-      |> Stream.filter(fn m -> m.offset >= target_offset end)
+      |> Stream.filter(fn m -> m.offset >= target_offset and m.device_id != device_id end)
       |> Enum.take(limit - length(acc))
 
     new_acc = acc ++ msgs

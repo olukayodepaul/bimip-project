@@ -390,10 +390,16 @@ defmodule Bimip.SignalClient do
     case msg.payload do
       {:signal, %Bimip.Signal{} = signal} ->
 
+        new_to = if signal.to != nil do
+                %Chat.EntityStruct{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id}
+              else
+                []
+              end
+
         transmit_signal_to_server = %Chat.SignalStruct{
           id: signal.id,
-          to: %{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id},
-          from: %{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id},
+          from: %Chat.EntityStruct{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id},
+          to: new_to,
           status: signal.status,
           type: signal.type,
           signal_offset: signal.signal_offset,
