@@ -50,7 +50,7 @@ end
 
 # QueueLogImpl.fetch(user, device_id, partition_id, limit)
 
-# Queue.Injection.fetch_messages("a@domain.com", "aaaaa1", 1, 1)
+# Queue.Injection.fetch_messages("a@domain.com", "aaaaa1", 1, 100)
 # Queue.Injection.advance_offset("a@domain.com_b@domain.com", "mmmmm", 1, 0..3)
 # Queue.Injection.get_last_seen_offset("a@domain.com_b@domain.com", "mmmmm", 1)
 

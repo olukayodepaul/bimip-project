@@ -27,6 +27,13 @@ ack_message = %Bimip.MessageScheme{
 binary_ack = Bimip.MessageScheme.encode(ack_message)
 hex_ack = Base.encode16(binary_ack, case: :upper)
 
+
+
+
+
 ```
+
+Note sending message 
+only to is need.
 
 

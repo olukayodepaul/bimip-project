@@ -199,6 +199,7 @@ defmodule Queue.QueueLogImpl do
     msgs =
       stream
       |> Stream.filter(fn m -> m.offset >= target_offset and m.device_id != device_id end)
+      |> Stream.map(&map_to(&1, user, device_id))
       |> Enum.take(limit - length(acc))
 
     new_acc = acc ++ msgs
@@ -209,6 +210,32 @@ defmodule Queue.QueueLogImpl do
 
     {new_acc, new_last}
   end
+
+def map_to(entry, user, device_id) do
+  case entry.payload.payload do
+    {:message, msg} ->
+      updated_to =
+        %Bimip.Identity{
+          msg.to
+          | eid: user,
+            connection_resource_id: device_id
+        }
+
+      updated_msg = %Bimip.Message{msg | to: updated_to}
+
+      updated_scheme =
+        %Bimip.MessageScheme{
+          entry.payload
+          | payload: {:message, updated_msg}
+        }
+
+      %{entry | payload: updated_scheme}
+
+    _ ->
+      entry
+  end
+end
+
 
   # ----------------------
   # Segment helpers

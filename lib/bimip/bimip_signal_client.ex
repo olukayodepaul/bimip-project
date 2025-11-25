@@ -428,5 +428,8 @@ defmodule Bimip.SignalClient do
     {eid, payload.from.eid, signal_to_server, payload}
   end
 
-
 end
+
+
+
+# message = %{message | to: %{message.to | connection_resource_id: device_id}}

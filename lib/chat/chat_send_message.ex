@@ -38,7 +38,7 @@ defmodule Chat.SendMessage do
     queue_id = "#{from_eid}"
     reverse_queue_id = "#{to_eid}"
 
-    case get_message_offset(queue_id, device_id, @partition_id, id) do
+    case get_message_offset(queue_id, device_id, @partition_id, "jjjjjs") do
       {:ok, ft_offset} ->
         send_signal_to_sender(id, ft_offset, @status, from, to, queue_id, device_id, @partition_id)
 
