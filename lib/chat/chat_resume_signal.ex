@@ -6,7 +6,7 @@ defmodule Chat.ResumeSignal do
 
   @partition_id 1
   @signal_request 2
-  @limit 100
+  @limit 2
 
   def resume(%Chat.SignalStruct{
         from: %Chat.EntityStruct{eid: eid_from},
@@ -16,25 +16,29 @@ defmodule Chat.ResumeSignal do
 
     queue_id = "#{eid_from}"
 
-  with {:ok, %{messages: messages}} <-
-          Injection.fetch_messages(queue_id, device, @partition_id, @limit),
-        false <- messages == [] do
+    IO.inspect(Injection.fetch_messages(queue_id, device, @partition_id, @limit) )
+
+    # case Injection.fetch_messages(queue_id, device, @partition_id, @limit) do
+    #   {:ok, %{messages: messages}} when is_list(messages) and messages != [] ->
+
+    #     lady = messages
+    #     |> Stream.map(fn %{payload: payload} -> payload end)
+    #     # |> Stream.each(fn payload ->
+    #     #   payload
+    #     # end)
+    #     |> Stream.run()
+    #     |> Enum.to_list()
 
 
-      # Now 'bodies' is the list of message bodies from the queue
-      IO.inspect(messages, label: "MESSAGE BODIES")
+    #     IO.inspect(lady)
 
-    else
-      {:error, reason} ->
-        IO.puts("Failed to fetch messages: #{inspect(reason)}")
+    #   {:ok, %{messages: []}} ->
+    #     IO.puts("No messages found for this batch")
 
-      true ->
-        # messages == []
-        nil
+    #   {:error, reason} ->
+    #     IO.puts("Failed to fetch messages: #{inspect(reason)}")
+    # end
 
-      _ ->
-        nil
-    end
   end
 
 

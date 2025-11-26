@@ -181,37 +181,41 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
-  # ----------------------
-  # Read segment from file
-  # ----------------------
-  defp read_segment_from_fd(fd, target_offset, acc, last, limit, user, device_id, partition_id, seg, start_pos) do
-    :file.position(fd, start_pos)
+defp read_segment_from_fd(fd, target_offset, acc, last, limit, _user, device_id, _partition_id, _seg, start_pos) do
+  # Move file pointer to start position
+  :file.position(fd, start_pos)
 
-    stream =
-      Stream.unfold(fd, fn fd_state ->
-        case read_log_entry(fd_state) do
-          :eof -> nil
-          {:corrupt, _} -> nil
-          {:ok, msg} -> {msg, fd_state}
-        end
-      end)
+  stream =
+    Stream.unfold(fd, fn fd_state ->
+      case read_log_entry(fd_state) do
+        :eof -> nil
+        {:corrupt, _} -> nil
+        {:ok, msg} -> {msg, fd_state}
+      end
+    end)
 
-    msgs =
-      stream
-      |> Stream.filter(fn m -> m.offset >= target_offset and m.device_id != device_id end)
-      |> Stream.map(&map_to(&1, user, device_id))
-      |> Enum.take(limit - length(acc))
+  # Lazy filter and extract only the payloads
+  msgs =
+    stream
+    |> Stream.filter(fn m -> m.offset >= target_offset and m.device_id != device_id end)
+    |> Stream.map(& &1.payload)          # direct payload extraction
+    |> Enum.take(limit - length(acc))    # take only needed
 
-    new_acc = acc ++ msgs
-    new_last = List.last(msgs) |> case do nil -> last; msg -> msg.offset end
-
-    {:ok, cur_pos} = :file.position(fd, :cur)
-    set_segment_cache(user, device_id, partition_id, seg, cur_pos)
-
-    {new_acc, new_last}
+  new_acc = acc ++ msgs
+  new_last = List.last(msgs) |> case do
+    nil -> last
+    msg -> msg.offset
   end
 
-def map_to(entry, user, device_id) do
+  {:ok, cur_pos} = :file.position(fd, :cur)
+  # Optionally update segment cache
+  {new_acc, new_last}
+end
+
+def map_to(entry, user, device_id, user_device_id) do
+
+  # Make sure the signal_type use eid..... MAY BE IF THERE IS NO NEED FOR IT, JUST REMOVE IT
+  # mt = if device_id != device_id do 3 else 2 end
   case entry.payload.payload do
     {:message, msg} ->
       updated_to =
@@ -221,7 +225,12 @@ def map_to(entry, user, device_id) do
             connection_resource_id: device_id
         }
 
-      updated_msg = %Bimip.Message{msg | to: updated_to}
+      updated_msg = %Bimip.Message{
+        msg |
+        # signal_type: mt,
+        timestamp: Until.UniPosTime.uni_pos_time(),
+        to: updated_to
+    }
 
       updated_scheme =
         %Bimip.MessageScheme{
