@@ -71,65 +71,99 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  @doc """
-  Fetch up to `limit` messages for a device starting at its commit_offset + 1
-  """
   def fetch(user, device_id, partition_id, limit \\ 10) when limit > 0 do
     with :ok <- ensure_files_exist(user, partition_id),
-        :ok <- ensure_device_files_exist(user, device_id, partition_id),
-        {:ok, commit_offset} <- get_commit_offset(user, device_id, partition_id),
-        {:ok, current_seg} <- get_current_segment(user, partition_id),
-        {:ok, first_seg} <- get_first_segment(user, partition_id) do
+         :ok <- ensure_device_files_exist(user, device_id, partition_id),
+         {:ok, commit_offset} <- get_commit_offset(user, device_id, partition_id),
+         {:ok, current_seg} <- get_current_segment(user, partition_id),
+         {:ok, first_seg} <- get_first_segment(user, partition_id) do
 
       target_offset = commit_offset + 1
-      {_indexed_offset, start_seg_from_idx, start_pos_from_idx} = lookup_sparse_index(user, partition_id, target_offset)
+      {_indexed_offset, start_seg_from_idx, start_pos_from_idx} =
+        lookup_sparse_index(user, partition_id, target_offset)
+
       start_seg = max(start_seg_from_idx, first_seg)
 
-      {messages, last_offset_read} =
-        Enum.reduce_while(start_seg..current_seg, {[], commit_offset}, fn seg, {acc, last} ->
+      # Lazy stream across segments
+      payload_stream =
+        start_seg..current_seg
+        |> Stream.flat_map(fn seg ->
           qfile = queue_file(user, partition_id, seg)
 
-          if not File.exists?(qfile) do
-            {:cont, {acc, last}}
-          else
+          if File.exists?(qfile) do
             case File.open(qfile, [:read, :binary]) do
               {:ok, fd} ->
-                index_start_pos_for_seg = if seg == start_seg, do: start_pos_from_idx, else: 0
-                {new_acc, new_last} =
-                  read_segment_from_fd(
-                    fd,
-                    target_offset,
-                    acc,
-                    last,
-                    limit,
-                    user,
-                    device_id,
-                    partition_id,
-                    seg,
-                    index_start_pos_for_seg
-                  )
-                File.close(fd)
-                if length(new_acc) >= limit, do: {:halt, {new_acc, new_last}}, else: {:cont, {new_acc, new_last}}
+                start_pos = if seg == start_seg, do: start_pos_from_idx, else: 0
+
+                read_segment_from_fd_lazy(fd, target_offset, device_id, limit)
+                |> Stream.take(limit) # limit per fetch
+                |> tap_close_file(fd)
 
               {:error, reason} ->
                 Logger.error("Failed to open segment file #{qfile}: #{inspect(reason)}")
-                {:cont, {acc, last}}
+                []
             end
+          else
+            []
           end
         end)
+        |> Enum.take(limit) # materialize batch
 
       {:ok,
-      %{
-        messages: messages,
-        device_offset: commit_offset,
-        target_offset: target_offset,
-        current_segment: current_seg,
-        first_segment: first_seg
-      }}
+       %{
+         messages: payload_stream,
+         device_offset: commit_offset,
+         target_offset: target_offset,
+         current_segment: current_seg,
+         first_segment: first_seg
+       }}
     else
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # ----------------------
+  # Fully lazy read from file descriptor
+  # ----------------------
+  defp read_segment_from_fd_lazy(fd, target_offset, device_id, limit) do
+    :file.position(fd, 0)
+
+    Stream.unfold({fd, 0}, fn
+      {fd_state, count} when count < limit ->
+        case read_log_entry(fd_state) do
+          :eof -> nil
+          {:corrupt, _} -> nil
+          {:ok, msg} ->
+            if msg.offset >= target_offset and msg.device_id != device_id do
+              {{msg.offset, msg.payload}, {fd_state, count + 1}}
+            else
+              {nil, {fd_state, count}}
+            end
+        end
+
+      _ -> nil
+    end)
+    |> Stream.filter(& &1) # remove nils
+    |> Stream.map(fn {_offset, payload} -> payload end)
+  end
+
+  # ----------------------
+  # Helper to close file after stream processing
+  # ----------------------
+  defp tap_close_file(stream, fd) do
+    Stream.resource(
+      fn -> stream end,
+      fn
+        s ->
+          case Enum.split(s, 1) do
+            {[], _} -> {:halt, s}
+            {[h], t} -> {[h], t}
+          end
+      end,
+      fn _ -> File.close(fd) end
+    )
+  end
+
 
   # ----------------------
   # Atomic write helpers
@@ -181,40 +215,9 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
-defp read_segment_from_fd(fd, target_offset, acc, last, limit, _user, device_id, _partition_id, _seg, start_pos) do
-  # Move file pointer to start position
-  :file.position(fd, start_pos)
-
-  stream =
-    Stream.unfold(fd, fn fd_state ->
-      case read_log_entry(fd_state) do
-        :eof -> nil
-        {:corrupt, _} -> nil
-        {:ok, msg} -> {msg, fd_state}
-      end
-    end)
-
-  # Lazy filter and extract only the payloads
-  msgs =
-    stream
-    |> Stream.filter(fn m -> m.offset >= target_offset and m.device_id != device_id end)
-    |> Stream.map(& &1.payload)          # direct payload extraction
-    |> Enum.take(limit - length(acc))    # take only needed
-
-  new_acc = acc ++ msgs
-  new_last = List.last(msgs) |> case do
-    nil -> last
-    msg -> msg.offset
-  end
-
-  {:ok, cur_pos} = :file.position(fd, :cur)
-  # Optionally update segment cache
-  {new_acc, new_last}
-end
-
 def map_to(entry, user, device_id, user_device_id) do
 
-  # Make sure the signal_type use eid..... MAY BE IF THERE IS NO NEED FOR IT, JUST REMOVE IT
+  # Make sure the signal_type use eid..... MAY BE IF THERE IS NO NEED FOR IT, JUST REMOVE
   # mt = if device_id != device_id do 3 else 2 end
   case entry.payload.payload do
     {:message, msg} ->
