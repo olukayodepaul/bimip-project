@@ -16,8 +16,8 @@ defmodule Chat.ResumeSignal do
 
     queue_id = "#{eid_from}"
 
-    IO.inspect(Injection.fetch_messages(queue_id, device, @partition_id, @limit) )
-
+    {:ok, %{messages: message }} = (Injection.fetch_messages(queue_id, device, @partition_id, @limit) )
+      IO.inspect(message)
     # case Injection.fetch_messages(queue_id, device, @partition_id, @limit) do
     #   {:ok, %{messages: messages}} when is_list(messages) and messages != [] ->
 

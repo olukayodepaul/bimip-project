@@ -95,7 +95,7 @@ defmodule Queue.QueueLogImpl do
               {:ok, fd} ->
                 start_pos = if seg == start_seg, do: start_pos_from_idx, else: 0
 
-                read_segment_from_fd_lazy(fd, target_offset, device_id, limit)
+                read_segment_from_fd_lazy(fd, target_offset, user, device_id, limit)
                 |> Stream.take(limit) # limit per fetch
                 |> tap_close_file(fd)
 
@@ -122,30 +122,46 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  # ----------------------
-  # Fully lazy read from file descriptor
-  # ----------------------
-  defp read_segment_from_fd_lazy(fd, target_offset, device_id, limit) do
-    :file.position(fd, 0)
+  defp read_segment_from_fd_lazy(fd, target_offset, eid, device_id, limit) do
+  :file.position(fd, 0)
 
-    Stream.unfold({fd, 0}, fn
-      {fd_state, count} when count < limit ->
-        case read_log_entry(fd_state) do
-          :eof -> nil
-          {:corrupt, _} -> nil
-          {:ok, msg} ->
-            if msg.offset >= target_offset and msg.device_id != device_id do
-              {{msg.offset, msg.payload}, {fd_state, count + 1}}
-            else
-              {nil, {fd_state, count}}
-            end
-        end
+  Stream.unfold({fd, 0}, fn
+    {fd_state, count} when count < limit ->
+      case read_log_entry(fd_state) do
+        :eof -> nil
+        {:corrupt, _} -> nil
+        {:ok, msg} ->
+          if msg.offset >= target_offset and msg.device_id != device_id do
+            {{msg.offset, msg.payload}, {fd_state, count + 1}}
+          else
+            {nil, {fd_state, count}}
+          end
+      end
 
-      _ -> nil
+    _ -> nil
+  end)
+  |> Stream.filter(& &1) # remove nils
+  |> Stream.map(fn {_offset, %Bimip.MessageScheme{payload: {:message, msg}} = msg_scheme} ->
+      # Replace the `to` field here
+
+
+      intended_to = %Bimip.Identity{
+        eid: eid,
+        connection_resource_id: device_id,
+        node: nil,
+        __unknown_fields__: []
+      }
+
+      new_msg = %Bimip.Message{
+        msg |
+        to: intended_to,
+        timestamp: Until.UniPosTime.uni_pos_time(),
+        signal_type: if msg.from.eid == eid do 2 else 3 end
+      }
+      %Bimip.MessageScheme{msg_scheme | payload: {:message, new_msg}}
     end)
-    |> Stream.filter(& &1) # remove nils
-    |> Stream.map(fn {_offset, payload} -> payload end)
-  end
+end
+
 
   # ----------------------
   # Helper to close file after stream processing
