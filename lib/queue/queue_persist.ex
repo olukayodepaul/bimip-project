@@ -10,23 +10,19 @@ defmodule Queue.Persist do
 
     per_user_offset = user_offset || signal_offset
 
-    %Bimip.MessageScheme{
-      route: 6,
-      payload: {:message,
-      %Bimip.Message{
-        id: payload.id,
-        signal_offset: "#{signal_offset}",
-        user_offset: "#{per_user_offset}",
-        from: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
-        to: %Bimip.Identity{ eid: payload.to.eid, connection_resource_id: payload.to.connection_resource_id},
-        payload: payload.payload,
-        encryption_type: payload.encryption_type,
-        encrypted: payload.encrypted,
-        signature: payload.signature,
-        signal_request: 2,
-        owner: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
-        }
+    %Bimip.Message{
+      id: payload.id,
+      signal_offset: signal_offset,
+      user_offset: per_user_offset,
+      from: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
+      to: %Bimip.Identity{ eid: payload.to.eid, connection_resource_id: payload.to.connection_resource_id},
+      payload: payload.payload,
+      encryption_type: payload.encryption_type,
+      encrypted: payload.encrypted,
+      signature: payload.signature,
+      signal_request: 2,
+      owner: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
       }
-    }
+
   end
 end

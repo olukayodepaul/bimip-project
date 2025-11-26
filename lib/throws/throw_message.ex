@@ -1,61 +1,22 @@
 defmodule ThrowMessageSchema do
 
   alias Bimip.{Message, MessageScheme, Identity, Body, SignalAckState}
-
   @route 6
 
-  # ------------------------------------------------------------------------
-  # BUILD INDIVIDUAL MESSAGE STRUCT
-  # ------------------------------------------------------------------------
-  def build_all_message(%{
-      id: id,
-      from: %{eid: from_eid, connection_resource_id: from_device_id},
-      to: %{eid: to_eid, connection_resource_id: to_device_id},
-      payload: payload,
-      encryption_type: encryption_type,
-      encrypted: encrypted,
-      signature: signature,
-      signal_offset: signal_offset,
-      user_offset: user_offset,
-      signal_type: signal_type
-    }) do
-  %Message{
-    id: id,
-    signal_offset: signal_offset,
-    user_offset: user_offset,
-    from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
-    to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
-    timestamp: System.system_time(:millisecond),
-    payload:
-      case payload do
-        bin when is_binary(bin) -> bin
-        map when is_map(map) -> Jason.encode!(map)
-      end,
-    encryption_type: encryption_type,
-    encrypted: encrypted,
-    signature: signature,
-    signal_type: signal_type
-  }
-end
+  # def success(message_list) when is_list(message_list) do
+  #   body = %Body{
+  #     route: 6,
+  #     message: message_list,
+  #     timestamp: System.system_time(:millisecond)
+  #   }
 
+  #     %MessageScheme{
+  #       route: 10,
+  #       payload: {:body, body}
+  #     }
+  #     |> MessageScheme.encode()
 
-  # ------------------------------------------------------------------------
-  # SUCCESS / NORMAL MESSAGE — WRAP ONLY
-  # ------------------------------------------------------------------------
-  def success(message_list) when is_list(message_list) do
-    body = %Body{
-      route: 6,
-      message: message_list,
-      timestamp: System.system_time(:millisecond)
-    }
-
-      %MessageScheme{
-        route: 10,
-        payload: {:body, body}
-      }
-      |> MessageScheme.encode()
-
-  end
+  # end
 
   # ------------------------------------------------------------------------
   # SUCCESS / NORMAL MESSAGE

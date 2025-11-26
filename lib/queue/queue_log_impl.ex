@@ -123,28 +123,26 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp read_segment_from_fd_lazy(fd, target_offset, eid, device_id, limit) do
-  :file.position(fd, 0)
+    :file.position(fd, 0)
 
-  Stream.unfold({fd, 0}, fn
-    {fd_state, count} when count < limit ->
-      case read_log_entry(fd_state) do
-        :eof -> nil
-        {:corrupt, _} -> nil
-        {:ok, msg} ->
-          if msg.offset >= target_offset and msg.device_id != device_id do
-            {{msg.offset, msg.payload}, {fd_state, count + 1}}
-          else
-            {nil, {fd_state, count}}
-          end
-      end
+    Stream.unfold({fd, 0}, fn
+      {fd_state, count} when count < limit ->
+        case read_log_entry(fd_state) do
+          :eof -> nil
+          {:corrupt, _} -> nil
+          {:ok, msg} ->
+            if msg.offset >= target_offset and msg.device_id != device_id do
+              {{msg.offset, msg.payload}, {fd_state, count + 1}}
+            else
+              {nil, {fd_state, count}}
+            end
+        end
 
-    _ -> nil
-  end)
-  |> Stream.filter(& &1) # remove nils
-  |> Stream.map(fn {_offset, %Bimip.MessageScheme{payload: {:message, msg}} = msg_scheme} ->
-      # Replace the `to` field here
-
-
+      _ -> nil
+    end)
+    |> Stream.filter(& &1) # remove nils
+    |> Stream.map(fn {_offset, msg} ->
+      # msg is already a %Bimip.Message{}
       intended_to = %Bimip.Identity{
         eid: eid,
         connection_resource_id: device_id,
@@ -152,15 +150,14 @@ defmodule Queue.QueueLogImpl do
         __unknown_fields__: []
       }
 
-      new_msg = %Bimip.Message{
+      %Bimip.Message{
         msg |
         to: intended_to,
         timestamp: Until.UniPosTime.uni_pos_time(),
-        signal_type: if msg.from.eid == eid do 2 else 3 end
+        signal_type: if msg.from.eid == eid do 2  else 3 end
       }
-      %Bimip.MessageScheme{msg_scheme | payload: {:message, new_msg}}
     end)
-end
+  end
 
 
   # ----------------------
@@ -179,7 +176,6 @@ end
       fn _ -> File.close(fd) end
     )
   end
-
 
   # ----------------------
   # Atomic write helpers
@@ -230,40 +226,6 @@ end
 
     :ok
   end
-
-def map_to(entry, user, device_id, user_device_id) do
-
-  # Make sure the signal_type use eid..... MAY BE IF THERE IS NO NEED FOR IT, JUST REMOVE
-  # mt = if device_id != device_id do 3 else 2 end
-  case entry.payload.payload do
-    {:message, msg} ->
-      updated_to =
-        %Bimip.Identity{
-          msg.to
-          | eid: user,
-            connection_resource_id: device_id
-        }
-
-      updated_msg = %Bimip.Message{
-        msg |
-        # signal_type: mt,
-        timestamp: Until.UniPosTime.uni_pos_time(),
-        to: updated_to
-    }
-
-      updated_scheme =
-        %Bimip.MessageScheme{
-          entry.payload
-          | payload: {:message, updated_msg}
-        }
-
-      %{entry | payload: updated_scheme}
-
-    _ ->
-      entry
-  end
-end
-
 
   # ----------------------
   # Segment helpers
