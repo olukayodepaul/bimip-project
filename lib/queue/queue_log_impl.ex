@@ -21,7 +21,7 @@ defmodule Queue.QueueLogImpl do
   # ----------------------
 
   @doc "Append a message to a user's partition log"
-  def write(user, partition_id, from, to, payload, user_offset \\ nil, merge_offset \\ nil) do
+  def write(user, partition_id, from, to, payload, message_id,  user_offset \\ nil, merge_offset \\ nil) do
     with :ok <- ensure_files_exist(user, partition_id),
         {:ok, %{seg: seg, next_offset: next_offset, do_rollover: do_rollover}} <- get_atomic_write_state(user, partition_id) do
 
@@ -36,6 +36,7 @@ defmodule Queue.QueueLogImpl do
           offset_payload = Persist.build(%{from: from, to: to, payload: payload}, next_offset, user_offset)
 
           record = %{
+            message_id: message_id,
             device_id: payload.device_id,
             offset: next_offset,
             merge_offset: merge_offset || 0,
@@ -73,10 +74,10 @@ defmodule Queue.QueueLogImpl do
 
   def fetch(user, device_id, partition_id, limit \\ 10) when limit > 0 do
     with :ok <- ensure_files_exist(user, partition_id),
-         :ok <- ensure_device_files_exist(user, device_id, partition_id),
-         {:ok, commit_offset} <- get_commit_offset(user, device_id, partition_id),
-         {:ok, current_seg} <- get_current_segment(user, partition_id),
-         {:ok, first_seg} <- get_first_segment(user, partition_id) do
+        :ok <- ensure_device_files_exist(user, device_id, partition_id),
+        {:ok, commit_offset} <- get_commit_offset(user, device_id, partition_id),
+        {:ok, current_seg} <- get_current_segment(user, partition_id),
+        {:ok, first_seg} <- get_first_segment(user, partition_id) do
 
       target_offset = commit_offset + 1
       {_indexed_offset, start_seg_from_idx, start_pos_from_idx} =
@@ -110,13 +111,13 @@ defmodule Queue.QueueLogImpl do
         |> Enum.take(limit) # materialize batch
 
       {:ok,
-       %{
-         messages: payload_stream,
-         device_offset: commit_offset,
-         target_offset: target_offset,
-         current_segment: current_seg,
-         first_segment: first_seg
-       }}
+        %{
+          messages: payload_stream,
+          device_offset: commit_offset,
+          target_offset: target_offset,
+          current_segment: current_seg,
+          first_segment: first_seg
+        }}
     else
       {:error, reason} -> {:error, reason}
     end
@@ -576,8 +577,8 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  def insert_message_id(user, device, partition_id, message_id, offset) do
-    key = {user, device, partition_id, message_id}
+  def insert_message_id(user, partition_id, message_id, offset) do
+    key = {user, partition_id, message_id}
 
     :mnesia.transaction(fn ->
       case :mnesia.read(:message_offset, key) do
@@ -595,8 +596,8 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  def get_message_offset(user, device, partition_id, message_id) do
-    key = {user, device, partition_id, message_id}
+  def get_message_offset(user,  partition_id, message_id) do
+    key = {user,  partition_id, message_id}
 
     :mnesia.transaction(fn ->
       case :mnesia.read(:message_offset, key) do

@@ -38,12 +38,12 @@ defmodule Chat.SendMessage do
     queue_id = "#{from_eid}"
     reverse_queue_id = "#{to_eid}"
 
-    case get_message_offset(queue_id, device_id, @partition_id, "jjjjjs") do
+    # exactly once
+    case get_message_offset(queue_id,  @partition_id, "id") do
       {:ok, ft_offset} ->
         send_signal_to_sender(id, ft_offset, @status, from, to, queue_id, device_id, @partition_id)
-
       {:error, :not_found} ->
-        handle_new_message(payload, id, queue_id, reverse_queue_id, from, to, device_id)
+        handle_new_message(id, payload,  queue_id, reverse_queue_id, from, to, device_id)
     end
   end
 
@@ -60,29 +60,47 @@ defmodule Chat.SendMessage do
     :ok
   end
 
-  # ----------------------
-  # Internal pipeline
-  # ----------------------
-  defp handle_new_message(payload, id, queue_id, reverse_queue_id, from, to, from_device_id) do
-    with {:ok, offset} <- store_and_ack(payload, queue_id, from, to, from_device_id),
-         {:ok, recv_offset} <- store_and_ack(payload, reverse_queue_id, from, to, from_device_id, receiver: true) do
-      send_signal_to_sender(id, offset, @status, from, to, queue_id, from_device_id, @partition_id)
-      insert_message_id(queue_id, from_device_id, @partition_id, payload.id, offset)
-
-      push_to_device(payload, offset, offset, @sender_signal_type, queue_id, from_device_id)
-      push_to_device(payload, recv_offset, offset, @receiver_signal_type, reverse_queue_id, "", receiver: true)
+defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, from_device_id) do
+    with {:ok, offset} <- store_and_ack(id, payload, queue_id, from, to, from_device_id),
+         {:ok, recv_offset} <- store_and_ack(id, payload, reverse_queue_id, from, to, from_device_id, receiver: true),
+         {:ok, true} <- insert_message_id(queue_id, @partition_id, id, offset),
+         {:ok, true} <- insert_message_id(reverse_queue_id, @partition_id, id, recv_offset) do
+      # ... success code ...
     else
+      # 1. Failure during store_and_ack for A_queue (must be defined by the helper)
+      {:error, :a_queue_failed} = err ->
+        Logger.error("TBOX_ERROR: [1/4] Queue A Store failed: #{inspect(err)}")
+        {:error, :tbox_a_store_failed}
+
+      # 2. Failure during store_and_ack for B_queue
+      {:error, :b_queue_failed} = err ->
+        Logger.error("TBOX_ERROR: [2/4] Queue B Store failed (A committed): #{inspect(err)}")
+        {:error, :tbox_b_store_failed}
+
+      # 3. *** NEW MATCH FOR A_QUEUE INDEX FAILURE (The :exists Error) ***
+      {:error, :exists} = err -> # Note: This assumes 'offset' is bound *before* the failing step
+        Logger.error("TBOX_ERROR: [3/4] Index A insertion failed (Key already exists): #{inspect(err)}. Possible producer retry.")
+        {:error, :tbox_a_index_exists}
+
+      # 4. *** NEW MATCH FOR B_QUEUE INDEX FAILURE (The :exists Error) ***
+      #    This would only be hit if the previous step failed with a DIFFERENT error.
+      {:error, :exists} = err ->
+        Logger.error("TBOX_ERROR: [4/4] Index B insertion failed (Key already exists): #{inspect(err)}. Possible producer retry.")
+        {:error, :tbox_b_index_exists}
+
+      # CATCH-ALL: For any other unhandled {:error, reason}
       {:error, reason} ->
-        Logger.error("Message pipeline failed: #{inspect(reason)}")
+        Logger.error("TBOX_ERROR: [UNK] Unhandled error during TBox commit phase: #{inspect(reason)}")
+        {:error, :tbox_unknown_commit_error}
     end
   end
 
-  defp store_and_ack(payload, queue_id, from, to, from_device_id, opts \\ []) do
+  defp store_and_ack(id, payload, queue_id, from, to, from_device_id, opts \\ []) do
     is_receiver = Keyword.get(opts, :receiver, false)
 
-    with {:ok, offset} <- Injection.store_message(queue_id, @partition_id, from, to, payload),
-         {:ok, _} <- maybe_advance_offset(queue_id, from_device_id, @partition_id, offset, is_receiver),
-         {:atomic, _} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
+    with {:ok, offset} <- Injection.store_message(queue_id, @partition_id, from, to, payload, id),
+        {:ok, _} <- maybe_advance_offset(queue_id, from_device_id, @partition_id, offset, is_receiver),
+        {:atomic, _} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
       {:ok, offset}
     end
   end
@@ -105,11 +123,11 @@ defmodule Chat.SendMessage do
   # ----------------------
   # Helpers
   # ----------------------
-  defp get_message_offset(user, device, partition, message_id),
-    do: Injection.get_message_offset(user, device, partition, message_id)
+  defp get_message_offset(user, partition, message_id),
+    do: Injection.get_message_offset(user, partition, message_id)
 
-  defp insert_message_id(user, device, partition, message_id, offset),
-    do: Injection.insert_message_id(user, device, partition, message_id, offset)
+  defp insert_message_id(user,  partition, message_id, offset),
+    do: Injection.insert_message_id(user, partition, message_id, offset)
 
   defp get_ack_status(user, device, partition, offset),
     do: Injection.get_ack_status(user, device, partition, offset)

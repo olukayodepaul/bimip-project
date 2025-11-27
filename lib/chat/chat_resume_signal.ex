@@ -1,26 +1,21 @@
 defmodule Chat.ResumeSignal do
   alias Queue.Injection
-  alias Until.UniPosTime
   alias ThrowMessageSchema
-  alias Route.SignalCommunication
-  alias Bimip.{Message, MessageScheme, Identity, Body}
+  alias Route.Connect
 
   @partition_id 1
-  @signal_request 2
-  @limit 1
+  @limit 100
 
   def resume(%Chat.SignalStruct{
-        from: %Chat.EntityStruct{eid: eid_from},
         eid: eid,
         device: device
       }) do
 
-    queue_id = "#{eid_from}"
-
-    case Injection.fetch_messages(queue_id, device, @partition_id, 1) do
+    case Injection.fetch_messages(eid, device, @partition_id, @limit) do
       {:ok, %{messages: messages}} when is_list(messages) and messages != [] ->
 
-        build_bulk_message(messages)
+        ThrowMessageSchema.build_bulk_message(messages)
+        |> then(&Connect.outbouce(device, &1))
 
       {:ok, %{messages: []}} ->
         :ok

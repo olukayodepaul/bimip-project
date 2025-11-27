@@ -1,22 +1,23 @@
 defmodule ThrowMessageSchema do
 
-  alias Bimip.{Message, MessageScheme, Identity, Body, SignalAckState}
+  alias Bimip.{Message, MessageScheme, Identity, Body}
   @route 6
 
-  # def success(message_list) when is_list(message_list) do
-  #   body = %Body{
-  #     route: 6,
-  #     message: message_list,
-  #     timestamp: System.system_time(:millisecond)
-  #   }
+    def build_bulk_message(message_list) when is_list(message_list) do
 
-  #     %MessageScheme{
-  #       route: 10,
-  #       payload: {:body, body}
-  #     }
-  #     |> MessageScheme.encode()
+    body = %Body{
+      route: 6,
+      messages: message_list,   # <-- MUST BE plural
+      timestamp: System.system_time(:millisecond)
+    }
 
-  # end
+    %MessageScheme{
+      route: 10,
+      payload: {:body, body}
+    }
+    |> MessageScheme.encode()
+  end
+
 
   # ------------------------------------------------------------------------
   # SUCCESS / NORMAL MESSAGE
