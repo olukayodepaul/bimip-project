@@ -96,7 +96,7 @@ defmodule Queue.QueueLogImpl do
               {:ok, fd} ->
                 start_pos = if seg == start_seg, do: start_pos_from_idx, else: 0
 
-                read_segment_from_fd_lazy(fd, target_offset, user, device_id, limit)
+                read_segment_from_fd_lazy(fd, start_pos, target_offset, user, device_id, limit)
                 |> Stream.take(limit) # limit per fetch
                 |> tap_close_file(fd)
 
@@ -123,42 +123,42 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  defp read_segment_from_fd_lazy(fd, target_offset, eid, device_id, limit) do
-    :file.position(fd, 0)
+defp read_segment_from_fd_lazy(fd, start_pos, target_offset, eid, device_id, limit) do
+  :file.position(fd, start_pos)
 
-    Stream.unfold({fd, 0}, fn
-      {fd_state, count} when count < limit ->
-        case read_log_entry(fd_state) do
-          :eof -> nil
-          {:corrupt, _} -> nil
-          {:ok, msg} ->
-            if msg.offset >= target_offset and msg.device_id != device_id do
-              {{msg.offset, msg.payload}, {fd_state, count + 1}}
-            else
-              {nil, {fd_state, count}}
-            end
-        end
+  Stream.unfold({fd, 0}, fn
+    {fd_state, count} when count < limit ->
+      case read_log_entry(fd_state) do
+        :eof -> nil
+        {:corrupt, _} -> nil
+        {:ok, msg} ->
+          if msg.offset >= target_offset and msg.device_id != device_id do
+            {{msg.offset, msg.payload}, {fd_state, count + 1}}
+          else
+            {nil, {fd_state, count}}
+          end
+      end
 
-      _ -> nil
-    end)
-    |> Stream.filter(& &1) # remove nils
-    |> Stream.map(fn {_offset, msg} ->
-      # msg is already a %Bimip.Message{}
-      intended_to = %Bimip.Identity{
-        eid: eid,
-        connection_resource_id: device_id,
-        node: nil,
-        __unknown_fields__: []
-      }
+    _ ->
+      nil
+  end)
+  |> Stream.reject(&is_nil/1)
+  |> Stream.map(fn {_offset, msg} ->
+    intended_to = %Bimip.Identity{
+      eid: eid,
+      connection_resource_id: device_id,
+      node: nil,
+      __unknown_fields__: []
+    }
 
-      %Bimip.Message{
-        msg |
-        to: intended_to,
-        timestamp: Until.UniPosTime.uni_pos_time(),
-        signal_type: if msg.from.eid == eid do 2  else 3 end
-      }
-    end)
-  end
+    %Bimip.Message{
+      msg |
+      to: intended_to,
+      timestamp: Until.UniPosTime.uni_pos_time(),
+      signal_type: if msg.from.eid == eid do 2 else 3 end
+    }
+  end)
+end
 
 
   # ----------------------
