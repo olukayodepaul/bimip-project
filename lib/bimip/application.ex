@@ -64,7 +64,6 @@ defmodule Bimip.Application do
     create(:current_segment, [:key, :segment], :set)
     create(:first_segment, [:key, :segment], :set)
     create(:next_offsets, [:key, :offset], :set)
-    create(:segment_cache, [:key, :segment, :position], :set)
     create(:commit_offsets, [:key, :offset], :set)
     create(:pending_acks, [:key, :offsets], :set)   # original pending
 
@@ -78,7 +77,6 @@ defmodule Bimip.Application do
     create(:resume_grace, [:key, :timestamp], :set)
     create(:resume_grace, [:key, :timestamp], :set)
     create(:message_offset, [:key, :offset], :set)
-
 
   end
 

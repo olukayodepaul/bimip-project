@@ -39,7 +39,7 @@ defmodule Chat.SendMessage do
     reverse_queue_id = "#{to_eid}"
 
     # exactly once
-    case get_message_offset(queue_id,  @partition_id, "id") do
+    case get_message_offset(queue_id,  @partition_id, id) do
       {:ok, ft_offset} ->
         send_signal_to_sender(id, ft_offset, @status, from, to, queue_id, device_id, @partition_id)
       {:error, :not_found} ->
@@ -60,38 +60,46 @@ defmodule Chat.SendMessage do
     :ok
   end
 
-defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, from_device_id) do
-    with {:ok, offset} <- store_and_ack(id, payload, queue_id, from, to, from_device_id),
-         {:ok, recv_offset} <- store_and_ack(id, payload, reverse_queue_id, from, to, from_device_id, receiver: true),
-         {:ok, true} <- insert_message_id(queue_id, @partition_id, id, offset),
-         {:ok, true} <- insert_message_id(reverse_queue_id, @partition_id, id, recv_offset) do
-      # ... success code ...
-    else
-      # 1. Failure during store_and_ack for A_queue (must be defined by the helper)
-      {:error, :a_queue_failed} = err ->
-        Logger.error("TBOX_ERROR: [1/4] Queue A Store failed: #{inspect(err)}")
-        {:error, :tbox_a_store_failed}
+  defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, from_device_id) do
+    case store_and_ack(id, payload, queue_id, from, to, from_device_id) do
+      {:ok, offset} ->
+        case store_and_ack(id, payload, reverse_queue_id, from, to, from_device_id, receiver: true) do
+          {:ok, recv_offset} ->
+            # Check the result of the atomic insert
+            case insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset) do
+              {:ok, _offsets} ->
+                # send message to device and sender
+                  send_signal_to_sender(id, offset, @status, from, to, queue_id, from_device_id, @partition_id)
+                  push_to_device(payload, offset, offset, @sender_signal_type)
+                  push_to_device(payload, recv_offset, offset, @receiver_signal_type, receiver: true)
+              {:error, _reason} ->
 
-      # 2. Failure during store_and_ack for B_queue
-      {:error, :b_queue_failed} = err ->
-        Logger.error("TBOX_ERROR: [2/4] Queue B Store failed (A committed): #{inspect(err)}")
-        {:error, :tbox_b_store_failed}
+              _recovery_data = [
+                  %{
+                    message_id: id,
+                    queue: queue_id,
+                    offset: offset,
+                    retries: 0,
+                    inserted_at: Until.UniPosTime.uni_pos_time()
+                  },
+                  %{
+                    message_id: id,
+                    queue: reverse_queue_id,
+                    offset: recv_offset,
+                    retries: 0,
+                    inserted_at: Until.UniPosTime.uni_pos_time()
+                  },
+                ]
+                # Queue.Recovery.enqueue_id_link_failure(recovery_data)
+                :ok
+            end
 
-      # 3. *** NEW MATCH FOR A_QUEUE INDEX FAILURE (The :exists Error) ***
-      {:error, :exists} = err -> # Note: This assumes 'offset' is bound *before* the failing step
-        Logger.error("TBOX_ERROR: [3/4] Index A insertion failed (Key already exists): #{inspect(err)}. Possible producer retry.")
-        {:error, :tbox_a_index_exists}
-
-      # 4. *** NEW MATCH FOR B_QUEUE INDEX FAILURE (The :exists Error) ***
-      #    This would only be hit if the previous step failed with a DIFFERENT error.
-      {:error, :exists} = err ->
-        Logger.error("TBOX_ERROR: [4/4] Index B insertion failed (Key already exists): #{inspect(err)}. Possible producer retry.")
-        {:error, :tbox_b_index_exists}
-
-      # CATCH-ALL: For any other unhandled {:error, reason}
-      {:error, reason} ->
-        Logger.error("TBOX_ERROR: [UNK] Unhandled error during TBox commit phase: #{inspect(reason)}")
-        {:error, :tbox_unknown_commit_error}
+          {:error, _reason} ->
+            # Queue.Recovery.enqueue_id_link_failure(recovery_data)
+            :ok
+        end
+      {:error, _reason} ->
+        :ok
     end
   end
 
@@ -109,7 +117,7 @@ defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, from_
   defp maybe_advance_offset(queue, device, partition, offset, false),
     do: Injection.advance_offset(queue, device, partition, offset)
 
-  defp push_to_device(payload, signal_offset, user_offset, signal_type, queue_id, device_id, opts \\ []) do
+  defp push_to_device(payload, signal_offset, user_offset, signal_type,  opts \\ []) do
     is_receiver = Keyword.get(opts, :receiver, false)
 
     payload
@@ -126,14 +134,9 @@ defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, from_
   defp get_message_offset(user, partition, message_id),
     do: Injection.get_message_offset(user, partition, message_id)
 
-  defp insert_message_id(user,  partition, message_id, offset),
-    do: Injection.insert_message_id(user, partition, message_id, offset)
+  defp insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset),
+    do: Injection.insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset)
 
-  defp get_ack_status(user, device, partition, offset),
-    do: Injection.get_ack_status(user, device, partition, offset)
-
-  defp confirm_advance_offset(user, device, partition, offset),
-    do: Injection.confirm_advance_offset(user, device, partition, offset)
 
   defp set_message_fields(payload, signal_offset, user_offset, signal_type) do
     Map.merge(payload, %{
@@ -156,7 +159,11 @@ defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, from_
       to: from,
       signal_type: 1,
       signal_request: 2,
-      signal_ack_state: %{send: true, delivered: false, read: false, advance_offset: true}
+      ack: %{
+          advance_offset: true, advance_offset_timestamp: Until.UniPosTime.uni_pos_time(),
+          sent: true, delivered: false, read: false, sent_timestamp: Until.UniPosTime.uni_pos_time(),
+          delivered_timestamp: nil, read_timestamp: nil
+        }
     }
     |> ThrowSignalSchema.success()
     |> then(&Connect.outbouce(from_device_id, &1))
@@ -186,6 +193,5 @@ defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, from_
   end
 
   defp set_from(payload, eid, device_id), do: %{payload | to: %{eid: eid, connection_resource_id: device_id}}
-
   defp server_route(payload, _eid, server), do: { :eid, payload.to.eid, server, payload } |> Connect.handle_inbouce_signal()
 end

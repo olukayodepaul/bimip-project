@@ -7,8 +7,8 @@ defmodule ThrowMessageSchema do
 
     body = %Body{
       route: 6,
-      messages: message_list,   # <-- MUST BE plural
-      timestamp: System.system_time(:millisecond)
+      messages: message_list,
+      timestamp: Until.UniPosTime.uni_pos_time()
     }
 
     %MessageScheme{
@@ -84,7 +84,7 @@ defmodule ThrowMessageSchema do
     message = %Message{
       id: id,
       from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
-      timestamp: System.system_time(:millisecond),
+      timestamp: Until.UniPosTime.uni_pos_time(),
       payload: Jason.encode!(%{error: description}),
       encryption_type: "none",
       encrypted: "",

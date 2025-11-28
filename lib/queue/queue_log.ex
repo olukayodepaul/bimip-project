@@ -36,8 +36,8 @@ defmodule Queue.QueueLog do
       def get_message_offset(user,  partition, message_id),
         do: QueueLogImpl.get_message_offset(user,  partition, message_id)
 
-      def insert_message_id(user, partition, message_id, offset),
-        do: QueueLogImpl.insert_message_id(user, partition, message_id, offset)
+      def insert_message_id(snd_id, rec_id, partition_id, message_id, snd_offset, rec_offset),
+        do: QueueLogImpl.insert_message_id(snd_id, rec_id, partition_id, message_id, snd_offset, rec_offset)
 
       def get_last_seen_offset(user, device, partition),
         do: QueueLogImpl.get_last_seen_offset(user, device, partition)

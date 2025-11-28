@@ -43,17 +43,6 @@ defmodule Bimip.Awareness do
   field :visibility, 12, type: :int32
 end
 
-defmodule Bimip.SignalAckState do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :send, 1, type: :bool
-  field :delivered, 2, type: :bool
-  field :read, 3, type: :bool
-  field :advance_offset, 4, type: :bool, json_name: "advanceOffset"
-end
-
 defmodule Bimip.Message do
   @moduledoc false
 
@@ -89,14 +78,31 @@ defmodule Bimip.Signal do
   field :type, 8, type: :int32
   field :signal_type, 9, type: :int32, json_name: "signalType"
   field :error, 10, proto3_optional: true, type: :string
+  field :signal_request, 11, type: :int32, json_name: "signalRequest"
+  field :offset_ack, 12, type: Bimip.OffsetAck, json_name: "offsetAck"
+  field :delivery_ack, 13, type: Bimip.DeliveryAck, json_name: "deliveryAck"
+end
 
-  field :signal_lifecycle_state, 11,
-    proto3_optional: true,
-    type: :string,
-    json_name: "signalLifecycleState"
+defmodule Bimip.OffsetAck do
+  @moduledoc false
 
-  field :signal_ack_state, 12, type: Bimip.SignalAckState, json_name: "signalAckState"
-  field :signal_request, 13, type: :int32, json_name: "signalRequest"
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :advance_offset, 1, type: :bool, json_name: "advanceOffset"
+  field :advance_offset_timestamp, 2, type: :int64, json_name: "advanceOffsetTimestamp"
+end
+
+defmodule Bimip.DeliveryAck do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :sent, 1, type: :bool
+  field :delivered, 2, type: :bool
+  field :read, 3, type: :bool
+  field :sent_timestamp, 4, type: :int64, json_name: "sentTimestamp"
+  field :delivered_timestamp, 5, type: :int64, json_name: "deliveredTimestamp"
+  field :read_timestamp, 6, type: :int64, json_name: "readTimestamp"
 end
 
 defmodule Bimip.PushNotification do
