@@ -266,7 +266,7 @@ ack_signal = %Bimip.Signal{
   status: 7,
   timestamp: System.system_time(:second),
   from: %Bimip.Identity{
-    eid: "a@domain.com"
+    eid: "b@domain.com"
   },
   type: 1
 }

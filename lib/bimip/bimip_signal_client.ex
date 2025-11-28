@@ -405,7 +405,6 @@ defmodule Bimip.SignalClient do
           signal_offset: signal.signal_offset,
           user_offset: signal.user_offset,
           signal_type: signal.signal_type,
-          signal_lifecycle_state: signal.signal_lifecycle_state,
           eid: eid,
           device: device_id
         }

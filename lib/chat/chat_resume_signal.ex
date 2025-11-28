@@ -20,7 +20,7 @@ defmodule Chat.ResumeSignal do
       {:ok, %{messages: []}} ->
         :ok
 
-      {:error, reason} ->
+      {:error, _reason} ->
         :ok
     end
   end

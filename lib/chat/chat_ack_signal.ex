@@ -33,21 +33,19 @@ defmodule Chat.AckSignal do
         device: device,
         signal_offset: so,
         user_offset: uo,
-        eid: eid,
-        signal_lifecycle_state: state
+        eid: eid
       } = payload) do
 
     queue = "#{from_eid}_#{to_eid}"
 
-    send_signal(
-      id, so, uo, @status,
-      %{eid: eid, connection_resource_id: device},
-      payload.to,
-      queue,
-      device,
-      @partition_id,
-      state
-    )
+    # send_signal(
+    #   id, so, uo, @status,
+    #   %{eid: eid, connection_resource_id: device},
+    #   payload.to,
+    #   queue,
+    #   device,
+    #   @partition_id
+    # )
   end
 
   # ---------------------------------------------------
@@ -60,8 +58,7 @@ defmodule Chat.AckSignal do
         device: device,
         signal_offset: so,
         user_offset: uo,
-        eid: eid,
-        signal_lifecycle_state: state
+        eid: eid
       } = payload) do
 
     queue = "#{from_eid}_#{to_eid}"
@@ -76,17 +73,16 @@ defmodule Chat.AckSignal do
         end
       end
 
-    if commit == :ok do
-      send_signal(
-        id, so, uo, @status,
-        %{eid: eid, connection_resource_id: device},
-        payload.to,
-        queue,
-        device,
-        @partition_id,
-        state
-      )
-    end
+    # if commit == :ok do
+    #   send_signal(
+    #     id, so, uo, @status,
+    #     %{eid: eid, connection_resource_id: device},
+    #     payload.to,
+    #     queue,
+    #     device,
+    #     @partition_id
+    #   )
+    # end
   end
 
   # ---------------------------------------------------
@@ -99,48 +95,46 @@ defmodule Chat.AckSignal do
         device: device,
         signal_offset: so,
         user_offset: uo,
-        signal_lifecycle_state: state
       } = payload) do
 
     queue = "#{from_eid}_#{to_eid}"
     rev   = "#{to_eid}_#{from_eid}"
 
-    commit =
-      case String.to_existing_atom(state) do
-        :delivered ->
-          mark_ack_status(queue, "", @partition_id, so, :delivered)
-          mark_ack_status(rev, "", @partition_id, uo, :delivered)
-          maybe_advance_offset(queue, device, @partition_id, so, false)
-          {:ok, :delivered}
+    # commit =
+    #   case String.to_existing_atom(state) do
+    #     :delivered ->
+    #       mark_ack_status(queue, "", @partition_id, so, :delivered)
+    #       mark_ack_status(rev, "", @partition_id, uo, :delivered)
+    #       maybe_advance_offset(queue, device, @partition_id, so, false)
+    #       {:ok, :delivered}
 
-        :read ->
-          mark_ack_status(queue, "", @partition_id, so, :read)
-          mark_ack_status(rev, "", @partition_id, uo, :read)
-          maybe_advance_offset(queue, device, @partition_id, so, false)
-          {:ok, :read}
+    #     :read ->
+    #       mark_ack_status(queue, "", @partition_id, so, :read)
+    #       mark_ack_status(rev, "", @partition_id, uo, :read)
+    #       maybe_advance_offset(queue, device, @partition_id, so, false)
+    #       {:ok, :read}
 
-        _ ->
-          {:error, :error}
-      end
+    #     _ ->
+    #       {:error, :error}
+    #   end
 
 
-    if elem(commit, 0) == :ok do
+    # if elem(commit, 0) == :ok do
 
-      fan_out_sender_devices(
-        id, so, uo, @status,
-        %{eid: from_eid, connection_resource_id: device},
-        payload.to,
-        queue,
-        device,
-        @partition_id,
-        state
-      )
+    #   fan_out_sender_devices(
+    #     id, so, uo, @status,
+    #     %{eid: from_eid, connection_resource_id: device},
+    #     payload.to,
+    #     queue,
+    #     device,
+    #     @partition_id
+    #   )
 
-      payload
-      |> Map.put(:ack_action, elem(commit, 1))
-      |> server_route(:eid, :signal_to_server_ack)
+    #   payload
+    #   |> Map.put(:ack_action, elem(commit, 1))
+    #   |> server_route(:eid, :signal_to_server_ack)
 
-    end
+    # end
   end
 
   # ---------------------------------------------------

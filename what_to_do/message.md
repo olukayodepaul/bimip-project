@@ -1,7 +1,7 @@
 ```Message data
 
 request = %Bimip.Message{
-  id: "4",
+  id: "28",
   from: %Bimip.Identity{
     eid: "a@domain.com"
   },
