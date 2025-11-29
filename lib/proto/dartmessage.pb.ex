@@ -43,6 +43,15 @@ defmodule Bimip.Awareness do
   field :visibility, 12, type: :int32
 end
 
+defmodule Bimip.OWNERS do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :from, 1, type: :string
+  field :to, 2, type: :string
+end
+
 defmodule Bimip.Message do
   @moduledoc false
 
@@ -60,7 +69,7 @@ defmodule Bimip.Message do
   field :signature, 11, type: :string
   field :signal_type, 12, type: :int32, json_name: "signalType"
   field :signal_direction, 13, type: :int32, json_name: "signalDirection"
-  field :owner, 14, type: Bimip.Identity
+  field :owners, 14, type: Bimip.OWNERS
 end
 
 defmodule Bimip.Signal do

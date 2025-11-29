@@ -53,7 +53,7 @@ defmodule Chat.AckSignal do
   defp get_last_seen_offset(user, device, partition),
     do: Injection.get_last_seen_offset(user, device, partition)
 
-   def sender(%Chat.SignalStruct{
+  def sender(%Chat.SignalStruct{
     eid: eid,
     device: device,
     signal_offset: signal_offset,

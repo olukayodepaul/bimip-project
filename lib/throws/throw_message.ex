@@ -1,6 +1,6 @@
 defmodule ThrowMessageSchema do
 
-  alias Bimip.{Message, MessageScheme, Identity, Body}
+  alias Bimip.{Message, MessageScheme, Identity, Body, OWNERS}
   @route 6
 
     def build_bulk_message(message_list) when is_list(message_list) do
@@ -36,7 +36,7 @@ defmodule ThrowMessageSchema do
       signal_offset: signal_offset,
       signal_direction: signal_direction,
       timestamp:  timestamp,
-      owner: %{eid: owner_eid, connection_resource_id: owner_device_id},
+      owner: %{from: owner_from, to: owner_to},
       }) do
 
       # Normalize payload: encode map -> JSON, or use string directly
@@ -59,7 +59,7 @@ defmodule ThrowMessageSchema do
         signature: signature,
         signal_type: signal_type,
         signal_direction: signal_direction,
-        owner: %Identity{eid: owner_eid, connection_resource_id: owner_device_id},
+        owners: %OWNERS{from: owner_from, to: owner_to},
       }
 
     %MessageScheme{

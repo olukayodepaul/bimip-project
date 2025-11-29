@@ -23,25 +23,7 @@ defmodule Chat.AckSignal do
     end
   end
 
-  # ---------------------------------------------------
-  # SENDER → Just pull ack status
-  # ---------------------------------------------------
-  def sender(%Chat.SignalStruct{} = payload) do
-
-      IO.inspect(payload)
-
-    # queue = "#{from_eid}_#{to_eid}"
-
-    # send_signal(
-    #   id, so, uo, @status,
-    #   %{eid: eid, connection_resource_id: device},
-    #   payload.to,
-    #   queue,
-    #   device,
-    #   @partition_id
-    # )
-  end
-
+ 
   # ---------------------------------------------------
   # DEVICE → Advance offset, then reply
   # ---------------------------------------------------

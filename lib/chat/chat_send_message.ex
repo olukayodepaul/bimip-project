@@ -144,7 +144,7 @@ defmodule Chat.SendMessage do
       user_offset: user_offset,
       signal_offset: signal_offset,
       signal_direction: @signal_direction,
-      owner: payload.from
+      owner: %{from: payload.from.eid, to: payload.to.eid}
     })
   end
 

@@ -34,6 +34,11 @@ message Awareness {
   int32 visibility = 12;
 }
 
+message OWNERS {
+  string from = 1;                              // User’s global identifier (e.g., account ID or JID)
+  string to = 2; 
+}
+
 // ---------------- Message ----------------
 // Represents a chat or notification message between users.
 // Message-level ACKs are tracked via the status field.
@@ -52,7 +57,7 @@ message Message {
   string signature = 11;                      // base64 signature for integrity 
   int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
   int32 signal_direction = 13;
-  Identity owner = 14; 
+  OWNERS owners = 14; 
 }
 
 // when Device receive sent ack. it update the local message with 
