@@ -629,22 +629,10 @@ defmodule Queue.QueueLogImpl do
     key = {user, device, partition_id}
 
     :mnesia.transaction(fn ->
-      # contiguous commit offset
-      commit =
-        case :mnesia.read(:commit_offsets, key) do
-          [{:commit_offsets, ^key, offset}] -> offset
-          [] -> 0
-        end
-
-      # pending offsets (gaps)
-      pending =
-        case :mnesia.read(:pending_acks, key) do
-          [{:pending_acks, ^key, set}] -> set
-          [] -> MapSet.new()
-        end
-
-      # true last seen = max(commit, max(pending))
-      Enum.max([commit | MapSet.to_list(pending)])
+      case :mnesia.read(:commit_offsets, key) do
+        [{:commit_offsets, ^key, offset}] -> offset
+        [] -> 0
+      end
     end)
     |> case do
       {:atomic, offset} -> {:ok, offset}

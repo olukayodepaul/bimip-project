@@ -86,7 +86,7 @@ message Signal {
   optional string error = 10;// optional error message if type=3
   OffsetAck offset_ack = 12;
   DeliveryAck delivery_ack = 13;
-  int32 signal_type_ex = 14; // 1 forward-offset-, 2 ack message
+  int32 signal_type_ex = 14; // 1 forward-offset, 2 ack message
 }
 
 message OffsetAck {
