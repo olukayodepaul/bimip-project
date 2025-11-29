@@ -8,7 +8,7 @@ defmodule Chat.SignalStruct do
     :signal_offset,
     :user_offset,
     :signal_type,
-    :ack_action,
+    :signal_type_ex,
     to: [],
     from: [],
   ]

@@ -214,6 +214,20 @@ Represents message delivery channel:
 Ensures consistent UI and device synchronization.
 
 ---
+## **14. `signal_type_ex`**
+
+**Type:** `int`
+Tell server is request is to advance offset or message ack.
+
+### Purpose:
+
+Represents message delivery channel:
+
+* Advance offset (System Level): 1 -> for advancing offset
+* Message ack state (User Level): 2 -> use for message acknowledgent
+
+
+---
 ## **Proto**
 
 ```proto
@@ -265,8 +279,8 @@ hex_ack = Base.encode16(binary_ack, case: :upper)
 ack_signal = %Bimip.Signal{
   status: 7,
   timestamp: System.system_time(:second),
-  from: %Bimip.Identity{
-    eid: "b@domain.com"
+  to: %Bimip.Identity{
+    eid: "a@domain.com"
   },
   type: 1
 }
@@ -279,3 +293,29 @@ ack_message = %Bimip.MessageScheme{
 binary_ack = Bimip.MessageScheme.encode(ack_message)
 hex_ack = Base.encode16(binary_ack, case: :upper)
 ```
+
+
+***Forward/advance Offset data***
+This is to self. signal_type_ex: 1, is forward offself and it is to self..
+```proto 
+ack_signal = %Bimip.Signal{
+  signal_offset: 4,
+  status: 1,
+  type: 1,
+  timestamp: System.system_time(:second),
+  to: %Bimip.Identity{
+    eid: "@domain.com"
+  },
+  signal_type_ex: 1,
+}
+
+ack_message = %Bimip.MessageScheme{
+  route: 7,               # route for signaling/ack messages
+  payload: {:signal, ack_signal}
+}
+
+binary_ack = Bimip.MessageScheme.encode(ack_message)
+hex_ack = Base.encode16(binary_ack, case: :upper)
+```
+
+08073A1B2001288ECBABC9063A0D0A0B40646F6D61696E2E636F6D40017001

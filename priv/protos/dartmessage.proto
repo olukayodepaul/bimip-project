@@ -51,7 +51,7 @@ message Message {
   string encrypted = 10;       // base64 encrypted content (if any)
   string signature = 11;                      // base64 signature for integrity 
   int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
-  int32 signal_request = 13;
+  int32 signal_direction = 13;
   Identity owner = 14; 
 }
 
@@ -84,9 +84,9 @@ message Signal {
   int32 type = 8;           // 1=REQUEST, 2=RESPONSE, 3=ERROR
   int32 signal_type = 9;    // 1=SENDER  2=DEVICE  3=RECEIVER
   optional string error = 10;// optional error message if type=3
-  int32 signal_request = 11;
   OffsetAck offset_ack = 12;
   DeliveryAck delivery_ack = 13;
+  int32 signal_type_ex = 14; // 1 forward-offset-, 2 ack message
 }
 
 message OffsetAck {

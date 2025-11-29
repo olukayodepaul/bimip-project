@@ -23,7 +23,7 @@ defmodule ThrowSignalSchema do
       from: from,
       to: to,
       signal_type: signal_type,
-      signal_request: signal_request,
+      signal_type_ex: signal_type_ex,
       ack: %{
           advance_offset: advance_offset, advance_offset_timestamp: advance_offset_timestamp,
           sent: sent, delivered: delivered, read: read, sent_timestamp: sent_timestamp,
@@ -42,7 +42,7 @@ defmodule ThrowSignalSchema do
       signal_type: signal_type,
       delivery_ack: %Bimip.DeliveryAck{ sent: sent, delivered: delivered, read: read, sent_timestamp: sent_timestamp, delivered_timestamp: delivered_timestamp, read_timestamp: read_timestamp},
       offset_ack: %Bimip.OffsetAck{advance_offset: advance_offset, advance_offset_timestamp:  advance_offset_timestamp},
-      signal_request: signal_request,
+      signal_type_ex: signal_type_ex,
       type: @type_response,
       timestamp: UniPosTime.uni_pos_time(),
     }

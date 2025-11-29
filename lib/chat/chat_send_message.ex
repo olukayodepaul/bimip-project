@@ -20,7 +20,7 @@ defmodule Chat.SendMessage do
   @sender_signal_type 2
   @receiver_signal_type 3
   @status 1
-  @signal_request 2
+  @signal_direction 2
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
 
   # ----------------------
@@ -104,18 +104,18 @@ defmodule Chat.SendMessage do
   end
 
   defp store_and_ack(id, payload, queue_id, from, to, from_device_id, opts \\ []) do
-    is_receiver = Keyword.get(opts, :receiver, false)
+    # is_receiver = Keyword.get(opts, :receiver, false)
 
     with {:ok, offset} <- Injection.store_message(queue_id, @partition_id, from, to, payload, id),
-        {:ok, _} <- maybe_advance_offset(queue_id, from_device_id, @partition_id, offset, is_receiver),
+        # {:ok, _} <- maybe_advance_offset(queue_id, from_device_id, @partition_id, offset, is_receiver),
         {:atomic, _} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
       {:ok, offset}
     end
   end
 
-  defp maybe_advance_offset(_queue, _device, _partition, offset, true), do: {:ok, offset}
-  defp maybe_advance_offset(queue, device, partition, offset, false),
-    do: Injection.advance_offset(queue, device, partition, offset)
+  # defp maybe_advance_offset(_queue, _device, _partition, offset, true), do: {:ok, offset}
+  # defp maybe_advance_offset(queue, device, partition, offset, false),
+  #   do: Injection.advance_offset(queue, device, partition, offset)
 
   defp push_to_device(payload, signal_offset, user_offset, signal_type,  opts \\ []) do
     is_receiver = Keyword.get(opts, :receiver, false)
@@ -143,12 +143,12 @@ defmodule Chat.SendMessage do
       signal_type: signal_type,
       user_offset: user_offset,
       signal_offset: signal_offset,
-      signal_request: @signal_request,
+      signal_direction: @signal_direction,
       owner: payload.from
     })
   end
 
-  defp send_signal_to_sender(id, offset, status, from, to, user, from_device_id, partition_id) do
+  defp send_signal_to_sender(id, offset, status, from, to, _user, from_device_id, _partition_id) do
 
     %{
       id: id,
@@ -158,12 +158,12 @@ defmodule Chat.SendMessage do
       from: to,
       to: from,
       signal_type: 1,
-      signal_request: 2,
+      signal_type_ex: 1,
       ack: %{
           advance_offset: true, advance_offset_timestamp: Until.UniPosTime.uni_pos_time(),
           sent: true, delivered: false, read: false, sent_timestamp: Until.UniPosTime.uni_pos_time(),
           delivered_timestamp: nil, read_timestamp: nil
-        }
+      }
     }
     |> ThrowSignalSchema.success()
     |> then(&Connect.outbouce(from_device_id, &1))

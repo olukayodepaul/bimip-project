@@ -34,7 +34,7 @@ defmodule ThrowMessageSchema do
       signal_type: signal_type,
       user_offset: user_offset,
       signal_offset: signal_offset,
-      signal_request: signal_request,
+      signal_direction: signal_direction,
       timestamp:  timestamp,
       owner: %{eid: owner_eid, connection_resource_id: owner_device_id},
       }) do
@@ -58,7 +58,7 @@ defmodule ThrowMessageSchema do
         encrypted: encrypted,
         signature: signature,
         signal_type: signal_type,
-        signal_request: signal_request,
+        signal_direction: signal_direction,
         owner: %Identity{eid: owner_eid, connection_resource_id: owner_device_id},
       }
 

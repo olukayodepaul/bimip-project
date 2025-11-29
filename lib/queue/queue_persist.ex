@@ -20,7 +20,7 @@ defmodule Queue.Persist do
       encryption_type: payload.encryption_type,
       encrypted: payload.encrypted,
       signature: payload.signature,
-      signal_request: 2,
+      signal_direction: 2,
       owner: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
       }
 

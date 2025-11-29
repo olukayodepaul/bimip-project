@@ -59,7 +59,7 @@ defmodule Bimip.Message do
   field :encrypted, 10, type: :string
   field :signature, 11, type: :string
   field :signal_type, 12, type: :int32, json_name: "signalType"
-  field :signal_request, 13, type: :int32, json_name: "signalRequest"
+  field :signal_direction, 13, type: :int32, json_name: "signalDirection"
   field :owner, 14, type: Bimip.Identity
 end
 
@@ -78,9 +78,9 @@ defmodule Bimip.Signal do
   field :type, 8, type: :int32
   field :signal_type, 9, type: :int32, json_name: "signalType"
   field :error, 10, proto3_optional: true, type: :string
-  field :signal_request, 11, type: :int32, json_name: "signalRequest"
   field :offset_ack, 12, type: Bimip.OffsetAck, json_name: "offsetAck"
   field :delivery_ack, 13, type: Bimip.DeliveryAck, json_name: "deliveryAck"
+  field :signal_type_ex, 14, type: :int32, json_name: "signalTypeEx"
 end
 
 defmodule Bimip.OffsetAck do

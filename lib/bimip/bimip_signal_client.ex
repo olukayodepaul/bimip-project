@@ -294,7 +294,7 @@ defmodule Bimip.SignalClient do
 
   def handle_cast(
         {:client_message, _eid, _device_id, data},
-        %{ws_pid: ws_pid, device_id: device_id} = state
+        %{ws_pid: ws_pid, device_id: device_id, eid: state_eid} = state
       ) do
 
     # Decode the incoming message binary
@@ -325,7 +325,7 @@ defmodule Bimip.SignalClient do
             }
 
             payload
-            |> server_route(:eid, :route_message)
+            |> server_route(:eid, :route_message, state_eid)
             |> Connect.handle_inbouce_signal
 
             {:noreply,
@@ -383,7 +383,7 @@ defmodule Bimip.SignalClient do
   #--- WORKING
 
   # validation next
-  def handle_cast({:signal_to_client, payload}, %{eid: eid, device_id: device_id} = state) do
+  def handle_cast({:signal_to_client, payload}, %{eid: state_eid, device_id: device_id} = state) do
 
     msg = Bimip.MessageScheme.decode(payload)
 
@@ -391,30 +391,35 @@ defmodule Bimip.SignalClient do
       {:signal, %Bimip.Signal{} = signal} ->
 
         new_to = if signal.to != nil do
-                %Chat.EntityStruct{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id}
-              else
-                []
-              end
+              %Chat.EntityStruct{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id}
+            else
+              %Chat.EntityStruct{}
+            end
 
-        transmit_signal_to_server = %Chat.SignalStruct{
+        new_from = if signal.from != nil do
+              %Chat.EntityStruct{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id}
+            else
+              %Chat.EntityStruct{}
+            end
+
+        %Chat.SignalStruct{
           id: signal.id,
-          from: %Chat.EntityStruct{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id},
+          from: new_from,
           to: new_to,
           status: signal.status,
           type: signal.type,
           signal_offset: signal.signal_offset,
           user_offset: signal.user_offset,
           signal_type: signal.signal_type,
-          eid: eid,
-          device: device_id
+          eid: state_eid,
+          device: device_id,
+          signal_type_ex: signal.signal_type_ex
         }
-
-        transmit_signal_to_server
-        |> server_route(:eid, :signal_to_server)
-        |> Connect.handle_inbouce_signal
+        |> server_route(:eid, :signal_to_server, state_eid)
+        |> Connect.handle_inbouce_signal()
 
       _ ->
-        IO.inspect("rroro")
+        :ok
     end
 
     {:noreply, state}
@@ -423,12 +428,8 @@ defmodule Bimip.SignalClient do
   #----------------------------------------------
   # This is route to the server. Single route
   #----------------------------------------------
-  defp server_route(payload, eid, signal_to_server) do
-    {eid, payload.from.eid, signal_to_server, payload}
+  defp server_route(payload, chanel, signal_to_server, eid) do
+    {chanel, eid, signal_to_server, payload}
   end
 
 end
-
-
-
-# message = %{message | to: %{message.to | connection_resource_id: device_id}}
