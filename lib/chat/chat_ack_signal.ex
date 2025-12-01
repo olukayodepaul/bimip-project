@@ -5,6 +5,7 @@ defmodule Chat.AckSignal do
 
   @partition_id 1
   @status 1
+  @max_batch 50
 
   def ack(%Chat.SignalStruct{signal_type_ex: signal_type_ex} = signal) do
     case signal_type_ex do
@@ -37,30 +38,73 @@ defmodule Chat.AckSignal do
 
   def deliver_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when is_list(batched_acks) and length(batched_acks) == 0, do: :empty
   def deliver_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when length(batched_acks) > 0 do
-    process_batch_lazily(batched_acks)
+    process_stream_reduce(batched_acks)
   end
 
-  def process_batch_lazily(batch_list) do
-    Stream.unfold(batch_list, fn
-      [] ->
-        nil
+  defp send_to_network(_key, batch) do
 
-      [head | tail] ->
-        processed = process_single_offset(head)
-        {processed, tail}
+    ack_batch =
+      Enum.flat_map(batch, fn item ->
+        [
+          {item.owners.from, @partition_id, item.user_offset, :delivered},
+          {item.owners.to, @partition_id, item.offset, :delivered}
+        ]
+      end)
+
+      IO.inspect(ack_batch)
+      # case Queue.Injection.ack_status_multi(ack_batch) do
+      #   {:ok, commits} ->
+      #     IO.inspect(commits, label: "ACK commits")
+      #   {:error, reason} ->
+      #     IO.puts("Failed to update ACKs: #{inspect(reason)}")
+      # end
+    :ok
+  end
+
+  # Async sending wrapper: Reverses the list (to restore original order) and starts the task.
+  defp async_send(key, batch) do
+    Task.start(fn ->
+      send_to_network(key, Enum.reverse(batch))
     end)
-    |> Stream.run()
-    IO.inspect("side effect process completed")
   end
 
-  defp process_single_offset(%Bimip.BatchedOffset{
-    owners: %Bimip.OWNERS{from: from_owner},
-    user_offset: user_offset,
-    offset: offset,
-  } = _payload) do
-    IO.inspect(from_owner)
+  @doc """
+  Processes an input stream using Enum.reduce. Best for memory efficiency
+  as it consumes the stream item-by-item without pre-loading.
+  """
+  def process_stream_reduce(input_stream) do
+    # The accumulator (acc) now stores {count, list} for O(1) length check
+    final_acc =
+      input_stream
+      |> Enum.reduce(%{}, fn item, acc ->
+        key = item.owners.from
 
-    IO.inspect("run")
+        # 1. Retrieve the current state: {count, list}
+        {current_count, current_list} = Map.get(acc, key, {0, []})
+
+        # 2. Update the state (O(1) prepend and O(1) increment)
+        new_list = [item | current_list]
+        new_count = current_count + 1
+
+        # 3. Check if the batch is full (O(1) check)
+        if new_count >= @max_batch do
+          # Send the full batch asynchronously
+          async_send(key, new_list)
+
+          # Return the accumulator map without the now-sent key/list
+          Map.delete(acc, key)
+        else
+          # Update the accumulator with the growing {count, list} tuple
+          Map.put(acc, key, {new_count, new_list})
+        end
+      end)
+
+    # Flush remaining batches asynchronously
+    IO.puts("\n--- Starting final flush tasks (Reduce version)... ---")
+    final_acc
+    |> Enum.each(fn {key, {_count, list}} -> async_send(key, list) end)
+
+    :ok
   end
 
   def read_message(%Chat.SignalStruct{} = _signal) do

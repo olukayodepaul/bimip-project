@@ -47,15 +47,15 @@ defmodule Queue.QueueLog do
 end
 
 
-test_data = [
-  {"a@domain.com", 0, 1, :delivered},
-  {"b@domain.com", 0, 1, :delivered}
-]
+# test_data = [
+#   {"a@domain.com", 0, 1, :delivered},
+#   {"b@domain.com", 0, 1, :delivered}
+# ]
 
 
 # QueueLogImpl.fetch(user, device_id, partition_id, limit)
 
-# Queue.Injection.mark_ack_status("a@domain.com", "aaaaa2", 1, 100)
+# Queue.Injection.ack_status_multi(test_data)
 # Queue.Injection.advance_offset("a@domain.com_b@domain.com", "mmmmm", 1, 0..3)
 # Queue.Injection.get_last_seen_offset("a@domain.com", "aaaaa1", 1)
 

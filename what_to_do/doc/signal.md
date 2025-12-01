@@ -328,7 +328,7 @@ ack_signal = %Bimip.Signal{
   type: 1,
   timestamp: System.system_time(:second),
   to: %Bimip.Identity{
-    eid: "a@domain.com"
+    eid: "b@domain.com"
   },
   batched_acks: [
     %Bimip.BatchedOffset{
@@ -344,7 +344,66 @@ ack_signal = %Bimip.Signal{
         sent_timestamp: System.system_time(:second)
       },
       signal_type: 3,
-    }
+    },
+    %Bimip.BatchedOffset{
+      user_offset: 2,
+      offset: 2,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "a@domain.com",
+        to: "b@domain.com"
+      },
+      delivery_ack: %Bimip.DeliveryAck{
+        sent: true,
+        sent_timestamp: System.system_time(:second)
+      },
+      signal_type: 3,
+    },
+     %Bimip.BatchedOffset{
+      user_offset: 3,
+      offset: 3,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "a@domain.com",
+        to: "b@domain.com"
+      },
+      delivery_ack: %Bimip.DeliveryAck{
+        sent: true,
+        sent_timestamp: System.system_time(:second)
+      },
+      signal_type: 3,
+    },
+
+    %Bimip.BatchedOffset{
+      user_offset: 1,
+      offset: 4,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "c@domain.com",
+        to: "b@domain.com"
+      },
+      delivery_ack: %Bimip.DeliveryAck{
+        sent: true,
+        sent_timestamp: System.system_time(:second)
+      },
+      signal_type: 3,
+    },
+
+     %Bimip.BatchedOffset{
+      user_offset: 1,
+      offset: 5,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "e@domain.com",
+        to: "b@domain.com"
+      },
+      delivery_ack: %Bimip.DeliveryAck{
+        sent: true,
+        sent_timestamp: System.system_time(:second)
+      },
+      signal_type: 3,
+    },
+
   ],
   signal_type_ex: 3,
 }
