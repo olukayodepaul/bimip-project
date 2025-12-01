@@ -41,7 +41,7 @@ defmodule Chat.AckSignal do
     process_stream_reduce(batched_acks)
   end
 
-  defp send_to_network(_key, batch) do
+  defp send_to_network(key, batch) do
 
     ack_batch =
       Enum.flat_map(batch, fn item ->
@@ -51,13 +51,15 @@ defmodule Chat.AckSignal do
         ]
       end)
 
-      IO.inspect(ack_batch)
-      # case Queue.Injection.ack_status_multi(ack_batch) do
-      #   {:ok, commits} ->
-      #     IO.inspect(commits, label: "ACK commits")
-      #   {:error, reason} ->
-      #     IO.puts("Failed to update ACKs: #{inspect(reason)}")
-      # end
+      case Queue.Injection.ack_status_multi(ack_batch) do
+        {:ok, _commits} ->
+
+          server_route(batch, :eid, :signal_deliver_ack_server, key)
+          |> Route.Connect.handle_inbouce_signal()
+
+        {:error, reason} ->
+          IO.puts("Failed to update ACKs: #{inspect(reason)}")
+      end
     :ok
   end
 
@@ -153,6 +155,13 @@ defmodule Chat.AckSignal do
     |> ThrowSignalSchema.success()
     |> then(&Connect.outbouce(device, &1))
 
+  end
+
+  #----------------------------------------------
+  # This is route to the server. Single route
+  #----------------------------------------------
+  defp server_route(payload, chanel, signal_to_server, eid) do
+    {chanel, eid, signal_to_server, payload}
   end
 
 

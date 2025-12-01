@@ -101,7 +101,6 @@ message Signal {
 message OffsetAck {
   bool advance_offset = 1;
   int64 advance_offset_timestamp = 2;          // time of offset advancement
-
 }
 
 message BatchedOffset {
@@ -110,9 +109,8 @@ message BatchedOffset {
   // The unique ID of the sender/owner of the message (crucial optimization)
   OWNERS owners = 2;
   int64 timestamp = 3; 
-  DeliveryAck delivery_ack = 4;
-  int32 signal_type = 5;
-  int32 offset = 6;
+  int32 signal_type = 4;
+  int32 offset = 5;
 }
 
 message DeliveryAck {

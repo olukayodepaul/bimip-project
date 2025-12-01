@@ -390,8 +390,6 @@ defmodule Bimip.SignalClient do
     case msg.payload do
       {:signal, %Bimip.Signal{} = signal} ->
 
-
-
         new_to = if signal.to != nil do
               %Chat.EntityStruct{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id}
             else

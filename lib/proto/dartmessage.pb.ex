@@ -110,9 +110,8 @@ defmodule Bimip.BatchedOffset do
   field :user_offset, 1, type: :int32, json_name: "userOffset"
   field :owners, 2, type: Bimip.OWNERS
   field :timestamp, 3, type: :int64
-  field :delivery_ack, 4, type: Bimip.DeliveryAck, json_name: "deliveryAck"
-  field :signal_type, 5, type: :int32, json_name: "signalType"
-  field :offset, 6, type: :int32
+  field :signal_type, 4, type: :int32, json_name: "signalType"
+  field :offset, 5, type: :int32
 end
 
 defmodule Bimip.DeliveryAck do

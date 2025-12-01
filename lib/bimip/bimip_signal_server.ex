@@ -335,6 +335,19 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
+  def handle_cast({:signal_deliver_ack_server, payload}, state) do
+
+    %Bimip.BatchedOffset{
+      owners: %Bimip.OWNERS {
+      from: _from,
+      to: _to
+      }
+    } = List.first(payload)
+
+    {:noreply, state}
+
+  end
+
   # -------------------------------
   # Signal
   # -------------------------------
