@@ -20,7 +20,7 @@ defmodule Queue.Persist do
       encryption_type: payload.encryption_type,
       encrypted: payload.encrypted,
       signature: payload.signature,
-      signal_direction: 2,
+      signal_direction: 1, # Pusll request
       owners: %Bimip.OWNERS{ from: payload.from.eid, to: payload.to.eid},
     }
 

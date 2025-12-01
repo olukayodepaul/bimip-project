@@ -56,8 +56,8 @@ message Message {
   string encrypted = 10;       // base64 encrypted content (if any)
   string signature = 11;                      // base64 signature for integrity 
   int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
-  int32 signal_direction = 13;
-  OWNERS owners = 14; 
+  int32 signal_direction = 13;                // push  or pull
+  OWNERS owners = 14;  
 }
 
 // when Device receive sent ack. it update the local message with 
@@ -91,12 +91,28 @@ message Signal {
   optional string error = 10;// optional error message if type=3
   OffsetAck offset_ack = 12;
   DeliveryAck delivery_ack = 13;
-  int32 signal_type_ex = 14; // 1 forward-offset, 2 ack message
+  int32 signal_type_ex = 14; // 1=FORWARD_OFFSET, 2=READ_STATUS, 3=DELIVERED_STATUS
+
+  // NEW FIELD: This repeated field handles the batching for STATUS_ACKs (types 2 and 3).
+  // It allows the client to send a list of offsets and their senders efficiently.
+  repeated BatchedOffset batched_acks = 15;
 }
 
 message OffsetAck {
   bool advance_offset = 1;
   int64 advance_offset_timestamp = 2;          // time of offset advancement
+
+}
+
+message BatchedOffset {
+  // The actual offset being acknowledged
+  int32 user_offset = 1;
+  // The unique ID of the sender/owner of the message (crucial optimization)
+  OWNERS owners = 2;
+  int64 timestamp = 3; 
+  DeliveryAck delivery_ack = 4;
+  int32 signal_type = 5;
+  int32 offset = 6;
 }
 
 message DeliveryAck {

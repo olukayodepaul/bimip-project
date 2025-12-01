@@ -90,6 +90,7 @@ defmodule Bimip.Signal do
   field :offset_ack, 12, type: Bimip.OffsetAck, json_name: "offsetAck"
   field :delivery_ack, 13, type: Bimip.DeliveryAck, json_name: "deliveryAck"
   field :signal_type_ex, 14, type: :int32, json_name: "signalTypeEx"
+  field :batched_acks, 15, repeated: true, type: Bimip.BatchedOffset, json_name: "batchedAcks"
 end
 
 defmodule Bimip.OffsetAck do
@@ -99,6 +100,19 @@ defmodule Bimip.OffsetAck do
 
   field :advance_offset, 1, type: :bool, json_name: "advanceOffset"
   field :advance_offset_timestamp, 2, type: :int64, json_name: "advanceOffsetTimestamp"
+end
+
+defmodule Bimip.BatchedOffset do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :user_offset, 1, type: :int32, json_name: "userOffset"
+  field :owners, 2, type: Bimip.OWNERS
+  field :timestamp, 3, type: :int64
+  field :delivery_ack, 4, type: Bimip.DeliveryAck, json_name: "deliveryAck"
+  field :signal_type, 5, type: :int32, json_name: "signalType"
+  field :offset, 6, type: :int32
 end
 
 defmodule Bimip.DeliveryAck do

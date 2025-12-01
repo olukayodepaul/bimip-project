@@ -9,7 +9,8 @@ defmodule Chat.AckSignal do
   def ack(%Chat.SignalStruct{signal_type_ex: signal_type_ex} = signal) do
     case signal_type_ex do
       1 -> advance_offset_state(signal)
-      2 -> message_ack_state(signal)
+      2 -> read_message(signal)
+      3 -> deliver_message(signal)
       _ -> IO.puts("")
     end
   end
@@ -34,8 +35,36 @@ defmodule Chat.AckSignal do
     end
   end
 
-  def message_ack_state(%Chat.SignalStruct{} = _signal) do
-    IO.inspect("2 advance offset state")
+  def deliver_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when is_list(batched_acks) and length(batched_acks) == 0, do: :empty
+  def deliver_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when length(batched_acks) > 0 do
+    process_batch_lazily(batched_acks)
+  end
+
+  def process_batch_lazily(batch_list) do
+    Stream.unfold(batch_list, fn
+      [] ->
+        nil
+
+      [head | tail] ->
+        processed = process_single_offset(head)
+        {processed, tail}
+    end)
+    |> Stream.run()
+    IO.inspect("side effect process completed")
+  end
+
+  defp process_single_offset(%Bimip.BatchedOffset{
+    owners: %Bimip.OWNERS{from: from_owner},
+    user_offset: user_offset,
+    offset: offset,
+  } = _payload) do
+    IO.inspect(from_owner)
+
+    IO.inspect("run")
+  end
+
+  def read_message(%Chat.SignalStruct{} = _signal) do
+    IO.inspect("read message")
   end
 
   def advance_contiguous_offset(eid, device, partition, last_process_offset, signal_offset) do
@@ -72,10 +101,9 @@ defmodule Chat.AckSignal do
       signal_type: nil,
       signal_type_ex: signal_type_ex,
       ack: %{
-          advance_offset: true,
+          advance_offset: true, advance_offset_timestamp: date,
           sent: nil, delivered: nil, read: nil, sent_timestamp: nil,
-          delivered_timestamp: nil, read_timestamp: nil,
-          advance_offset_timestamp: date
+          delivered_timestamp: nil, read_timestamp: nil
         }
     }
     |> ThrowSignalSchema.success()

@@ -358,6 +358,7 @@ defmodule Queue.QueueLogImpl do
   # -------------------------------------------------------------------
   def ack_message(user, device, partition, offset_or_range) do
     key = {user, device, partition}
+    key = {user, device, partition}
 
     offsets =
       case offset_or_range do
@@ -415,64 +416,7 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  def ack_status(user, _device, partition, offset_or_range, status)
-      when status in [:sent, :delivered, :read] do
 
-    key = {user, partition}
-    offsets =
-      case offset_or_range do
-        %Range{} = r -> Enum.to_list(r)
-        offset when is_integer(offset) -> [offset]
-      end
-
-    result =
-      :mnesia.transaction(fn -> # FIX: The entire operation is now atomic
-        if status == :read do
-          # Execute sent and delivered updates first, atomically
-          handle_status_ack(key, offsets, :pending_sent, :commit_sent)
-          handle_status_ack(key, offsets, :pending_delivered, :commit_delivered)
-        end
-
-        {pending_table, commit_table} = case status do
-          :sent -> {:pending_sent, :commit_sent}
-          :delivered -> {:pending_delivered, :commit_delivered}
-          :read -> {:pending_read, :commit_read}
-        end
-
-        handle_status_ack(key, offsets, pending_table, commit_table)
-      end)
-
-    case result do
-      {:atomic, commit} -> {:ok, commit}
-      {:aborted, reason} -> {:error, reason}
-    end
-  end
-
-  defp handle_status_ack(key, offsets, pending_table, commit_table) do
-    pending = case :mnesia.read(pending_table, key) do
-      [{^pending_table, ^key, set}] -> set
-      [] -> MapSet.new()
-    end
-
-    commit = case :mnesia.read(commit_table, key) do
-      [{^commit_table, ^key, c}] -> c
-      [] -> 0
-    end
-
-    new_pending = Enum.reduce(offsets, pending, &MapSet.put(&2, &1))
-    new_commit = advance_contiguous_to_max(new_pending, commit)
-    remaining = MapSet.filter(new_pending, &(&1 > new_commit))
-
-    :mnesia.write({commit_table, key, new_commit})
-    :mnesia.write({pending_table, key, remaining})
-    new_commit
-  end
-
-
-  defp advance_contiguous_to_max(pending, commit) do
-    next = commit + 1
-    if MapSet.member?(pending, next), do: advance_contiguous_to_max(MapSet.delete(pending, next), next), else: commit
-  end
 
   def message_status(user, _device, partition, offset) do
     # key = {user, device, partition}
@@ -685,6 +629,225 @@ defmodule Queue.QueueLogImpl do
         {:aborted, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+
+
+
+def ack_status_multi(users_offsets_status) when is_list(users_offsets_status) do
+    :mnesia.transaction(fn ->
+      Enum.map(users_offsets_status, fn {user, partition, offset_or_range, status} ->
+        # Normalize the input into a list of {start, end} ranges immediately
+        ranges = normalize_to_ranges(offset_or_range)
+        ack_status_core(user, partition, ranges, status)
+      end)
+    end)
+    |> case do
+      {:atomic, commits} -> {:ok, commits}
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Update a single user's ack status.
+  """
+  def ack_status(user, partition, offset_or_range, status) when status in [:sent, :delivered, :read] do
+    ack_status_multi([{user, partition, offset_or_range, status}])
+  end
+
+  # ------------------------------------------------------------------
+  # Core Transactional Logic
+  # ------------------------------------------------------------------
+
+  # Core function: read-modify-write inside a single transaction
+  defp ack_status_core(user, partition, ranges, status) do
+    key = {user, partition}
+
+    # Read current state from Mnesia
+    state = read_current_state(key)
+
+    # Apply transitivity
+    state = apply_transitivity(state, ranges, status)
+
+    # Write back
+    Enum.each([:sent, :delivered, :read], fn s ->
+      {pending_table, commit_table} = status_tables(s)
+      pending_ranges = Map.fetch!(state, pending_table)
+      commit = Map.fetch!(state, commit_table)
+      :mnesia.write({pending_table, key, pending_ranges})
+      :mnesia.write({commit_table, key, commit})
+    end)
+
+    # Return commit offset for requested status
+    {_, commit_table} = status_tables(status)
+    Map.fetch!(state, commit_table)
+  end
+
+  # ------------------------------------------------------------------
+  # Transitivity Logic
+  # ------------------------------------------------------------------
+
+  defp apply_transitivity(state, ranges, :read) do
+    state
+    |> update_status(ranges, :sent)
+    |> update_status(ranges, :delivered)
+    |> update_status(ranges, :read)
+  end
+
+  defp apply_transitivity(state, ranges, :delivered) do
+    state
+    |> update_status(ranges, :sent)
+    |> update_status(ranges, :delivered)
+  end
+
+  defp apply_transitivity(state, ranges, :sent) do
+    update_status(state, ranges, :sent)
+  end
+
+  # Update pending ranges and commit for a specific status
+  defp update_status(state, ranges, status) do
+    {pending_table, commit_table} = status_tables(status)
+
+    pending = Map.fetch!(state, pending_table)
+    commit = Map.fetch!(state, commit_table)
+
+    # 1. Merge new ranges into existing pending ranges, CRITICALLY passing the commit
+    # to filter out offsets that are already committed.
+    new_pending = merge_ranges(pending, ranges, commit)
+
+    # 2. Update commit
+    new_commit = advance_contiguous_to_max(new_pending, commit)
+
+    # 3. Remove contiguous offsets from pending list
+    remaining = remove_committed_range(new_pending, new_commit, commit)
+
+    state
+    |> Map.put(pending_table, remaining)
+    |> Map.put(commit_table, new_commit)
+  end
+
+  # ------------------------------------------------------------------
+  # Range Utilities
+  # ------------------------------------------------------------------
+
+  @doc false
+  # Fixed range merging logic: takes the current commit and filters new ranges against it.
+  defp merge_ranges(existing_ranges, new_ranges, commit) do
+    # 1. Filter and flatten all valid ranges (must start > commit)
+    valid_new_ranges =
+      Enum.flat_map(new_ranges, fn {s, e} ->
+        start = max(s, commit + 1)
+        if start <= e, do: [{start, e}], else: []
+      end)
+
+    all_ranges = List.flatten([existing_ranges, valid_new_ranges])
+
+    # 2. Sort by start offset
+    sorted_ranges = Enum.sort(all_ranges, fn {s1, _}, {s2, _} -> s1 <= s2 end)
+
+    # 3. Merge overlapping/contiguous ranges
+    Enum.reduce(sorted_ranges, [], fn
+      {s, e}, [] ->
+        [{s, e}] # Start of list
+      {s, e}, [{prev_s, prev_e} | rest] = acc ->
+        # If current range overlaps or is contiguous (s <= prev_e + 1)
+        if s <= prev_e + 1 do
+          # Merge: use the earliest start and the latest end
+          [{prev_s, max(prev_e, e)} | rest]
+        else
+          # Not contiguous, prepend the current range
+          [ {s, e} | acc ]
+        end
+    end)
+    |> Enum.reverse() # Reverse back to ascending order of start offset
+  end
+
+  defp advance_contiguous_to_max([], commit), do: commit
+
+  # The start offset of the first range must be exactly 'commit + 1' to advance.
+  defp advance_contiguous_to_max([{s, e} | _], commit) when s > commit + 1, do: commit
+
+  # If the first range starts exactly at commit + 1, the new commit is that range's end (e).
+  # We don't need to recursively check the rest because advance_contiguous_to_max only
+  # cares about the first element in the sorted list. The range merging logic ensures
+  # that if the list starts with a contiguous block, it's already one merged range.
+  defp advance_contiguous_to_max([{_s, e} | _rest], _commit) do
+    # Since we passed the guard for s > commit + 1, s must equal commit + 1 here.
+    e
+  end
+
+  # Simplified and fixed logic for removing the committed range
+  defp remove_committed_range(ranges, new_commit, old_commit) do
+    if new_commit > old_commit do
+      case ranges do
+        [{start, end_offset} | rest] ->
+          # If the new commit covers the entire first range, drop it
+          if end_offset <= new_commit do
+            rest
+          else
+            # Otherwise, the new pending starts one past the new commit point
+            [{new_commit + 1, end_offset} | rest]
+          end
+        [] ->
+          []
+      end
+    else
+      ranges # Nothing changed, commit did not advance
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Mnesia Helpers
+  # ------------------------------------------------------------------
+
+  defp status_tables(:sent), do: {:pending_sent, :commit_sent}
+  defp status_tables(:delivered), do: {:pending_delivered, :commit_delivered}
+  defp status_tables(:read), do: {:pending_read, :commit_read}
+
+  defp read_current_state(key) do
+    Enum.reduce([:sent, :delivered, :read], %{}, fn status, acc ->
+      {pending_table, commit_table} = status_tables(status)
+
+      pending = case :mnesia.read(pending_table, key) do
+        [{^pending_table, ^key, value}] -> value
+        [] -> [] # Default to empty list of ranges
+      end
+
+      commit = case :mnesia.read(commit_table, key) do
+        [{^commit_table, ^key, c}] -> c
+        [] -> 0
+      end
+
+      acc
+      |> Map.put(pending_table, pending)
+      |> Map.put(commit_table, commit)
+    end)
+  end
+
+  # ------------------------------------------------------------------
+  # Normalize Input to Ranges
+  # ------------------------------------------------------------------
+
+  # Robust normalization: handles single integer, single Range, or a list containing both.
+  defp normalize_to_ranges(offset_or_range) do
+    cond do
+      is_integer(offset_or_range) ->
+        [{offset_or_range, offset_or_range}]
+
+      match?(%Range{}, offset_or_range) ->
+        [{offset_or_range.first, offset_or_range.last}]
+
+      is_list(offset_or_range) ->
+        Enum.flat_map(offset_or_range, fn
+          i when is_integer(i) -> {i, i}
+          %Range{first: s, last: e} -> {s, e}
+          _ -> []
+        end)
+
+      true ->
+        # Default to an empty list of ranges if the format is unknown
+        []
+    end
   end
 
 end

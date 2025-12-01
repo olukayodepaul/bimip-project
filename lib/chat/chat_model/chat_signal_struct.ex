@@ -11,5 +11,6 @@ defmodule Chat.SignalStruct do
     :signal_type_ex,
     to: [],
     from: [],
+    batched_acks: [],
   ]
 end

@@ -199,7 +199,7 @@ message SignalAckState {
 ```
 
 ---
-## **13. `signal_request`**
+## **13. `signal_direction`**
 
 **Type:** `int`
 Track if message receive is either pull or push request.
@@ -318,5 +318,44 @@ binary_ack = Bimip.MessageScheme.encode(ack_message)
 hex_ack = Base.encode16(binary_ack, case: :upper)
 
 ```
+
+---
+***delivered Message***
+This is to self. signal_type_ex: 1, is forward offself and it is to self..
+```proto 
+ack_signal = %Bimip.Signal{
+  status: 1,
+  type: 1,
+  timestamp: System.system_time(:second),
+  to: %Bimip.Identity{
+    eid: "a@domain.com"
+  },
+  batched_acks: [
+    %Bimip.BatchedOffset{
+      user_offset: 1,
+      offset: 1,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "a@domain.com",
+        to: "b@domain.com"
+      },
+      delivery_ack: %Bimip.DeliveryAck{
+        sent: true,
+        sent_timestamp: System.system_time(:second)
+      },
+      signal_type: 3,
+    }
+  ],
+  signal_type_ex: 3,
+}
+
+ack_message = %Bimip.MessageScheme{
+  route: 7,               # route for signaling/ack messages
+  payload: {:signal, ack_signal}
+}
+
+binary_ack = Bimip.MessageScheme.encode(ack_message)
+hex_ack = Base.encode16(binary_ack, case: :upper)
+
 
 08073A1B2001288ECBABC9063A0D0A0B40646F6D61696E2E636F6D40017001
