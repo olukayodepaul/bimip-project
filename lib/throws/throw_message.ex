@@ -18,55 +18,43 @@ defmodule ThrowMessageSchema do
     |> MessageScheme.encode()
   end
 
-
   # ------------------------------------------------------------------------
   # SUCCESS / NORMAL MESSAGE
   # ------------------------------------------------------------------------
   def build_message(
     %{
-      id: id,
+      message_id: message_id,
       from: %{eid: from_eid, connection_resource_id: from_device_id},
       to: %{eid: to_eid, connection_resource_id: to_device_id},
+      timestamp:  timestamp,
       payload: payload,
       encryption_type: encryption_type,
       encrypted: encrypted,
       signature: signature,
-      signal_type: signal_type,
-      user_offset: user_offset,
-      signal_offset: signal_offset,
-      signal_direction: signal_direction,
-      timestamp:  timestamp,
-      owner: %{from: owner_from, to: owner_to},
+      type: type,
+      transmission_mode: transmission_mode,
+      peer: %{ from: from_peer, to: to_peer, offset: offset_peer, peer_offset: peer_offset }
       }) do
 
-      # Normalize payload: encode map -> JSON, or use string directly
-      payload_json =
-        case payload do
-          bin when is_binary(bin) -> bin
-          map when is_map(map) -> Jason.encode!(map)
-        end
-
-    message =  %Message {
-        id: id,
-        signal_offset: signal_offset,
-        user_offset: user_offset,
-        from: %Identity{eid: from_eid, connection_resource_id: from_device_id}, # the device_id of sender
-        to: %Identity{eid: to_eid, connection_resource_id: to_device_id},
+    message =  %Bimip.Message {
+        message_id: message_id,
+        from: %Bimip.Identity{eid: from_eid, connection_resource_id: from_device_id}, # the device_id of sender
+        to: %Bimip.Identity{eid: to_eid, connection_resource_id: to_device_id},
         timestamp: timestamp,
-        payload: payload_json,
+        payload: payload,
         encryption_type: encryption_type,
         encrypted: encrypted,
         signature: signature,
-        signal_type: signal_type,
-        signal_direction: signal_direction,
-        owners: %OWNERS{from: owner_from, to: owner_to},
+        type: type,
+        transmission_mode: transmission_mode,
+        peer: %Bimip.Peer{ from: from_peer, to: to_peer, offset: offset_peer, peer_offset: peer_offset }
       }
 
-    %MessageScheme{
+    %Bimip.MessageScheme{
       route: 6,
       payload: {:message, message}
     }
-    |> MessageScheme.encode()
+    |> Bimip.MessageScheme.encode()
   end
 
 
@@ -82,7 +70,7 @@ defmodule ThrowMessageSchema do
         to_device_id \\ ""
       ) do
     message = %Message{
-      id: id,
+      message_id: id,
       from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
       timestamp: Until.UniPosTime.uni_pos_time(),
       payload: Jason.encode!(%{error: description}),

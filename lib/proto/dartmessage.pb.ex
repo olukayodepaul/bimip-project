@@ -57,19 +57,42 @@ defmodule Bimip.Message do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :id, 1, type: :string
-  field :signal_offset, 2, type: :int32, json_name: "signalOffset"
-  field :user_offset, 3, type: :int32, json_name: "userOffset"
-  field :from, 4, type: Bimip.Identity
-  field :to, 5, type: Bimip.Identity
-  field :timestamp, 7, type: :int64
-  field :payload, 8, type: :bytes
-  field :encryption_type, 9, type: :string, json_name: "encryptionType"
-  field :encrypted, 10, type: :string
-  field :signature, 11, type: :string
-  field :signal_type, 12, type: :int32, json_name: "signalType"
-  field :signal_direction, 13, type: :int32, json_name: "signalDirection"
-  field :owners, 14, type: Bimip.OWNERS
+  field :message_id, 1, type: :string, json_name: "messageId"
+  field :from, 2, type: Bimip.Identity
+  field :to, 3, type: Bimip.Identity
+  field :timestamp, 4, type: :int64
+  field :payload, 5, type: :bytes
+  field :encryption_type, 6, type: :string, json_name: "encryptionType"
+  field :encrypted, 7, type: :string
+  field :signature, 8, type: :string
+  field :type, 9, proto3_optional: true, type: :int32
+  field :transmission_mode, 10, proto3_optional: true, type: :int32, json_name: "transmissionMode"
+  field :peer, 11, proto3_optional: true, type: Bimip.Peer
+end
+
+defmodule Bimip.Peer do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :from, 1, type: :string
+  field :to, 2, type: :string
+  field :offset, 3, type: :int64
+  field :peer_offset, 4, type: :int64, json_name: "peerOffset"
+end
+
+defmodule Bimip.MessagePeerAckSignal do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :to, 1, type: Bimip.Identity
+  field :from, 2, type: Bimip.Identity
+  field :message_id, 3, type: :string, json_name: "messageId"
+  field :method, 4, type: :int32
+  field :timestamp, 5, type: :int64
+  field :status_code, 6, type: :int32, json_name: "statusCode"
+  field :peer, 7, type: Bimip.Peer
 end
 
 defmodule Bimip.Signal do
@@ -267,4 +290,9 @@ defmodule Bimip.MessageScheme do
   field :body, 10, type: Bimip.Body, oneof: 0
   field :error, 11, type: Bimip.ErrorMessage, oneof: 0
   field :logout, 12, type: Bimip.Logout, oneof: 0
+
+  field :message_peer_ack_signal, 13,
+    type: Bimip.MessagePeerAckSignal,
+    json_name: "messagePeerAckSignal",
+    oneof: 0
 end

@@ -4,13 +4,14 @@ defmodule Chat.MessageStruct do
   """
 
   defstruct [
-    :id,
+    :message_id,
     :timestamp,
     :payload,
     :encryption_type,
     :encrypted,
     :signature,
     :device_id,
+    :eid,
     from: [],
     to: []
   ]

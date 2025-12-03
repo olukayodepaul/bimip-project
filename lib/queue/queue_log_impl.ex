@@ -149,15 +149,14 @@ defmodule Queue.QueueLogImpl do
       intended_to = %Bimip.Identity{
         eid: eid,
         connection_resource_id: device_id,
-        node: nil,
-        __unknown_fields__: []
+        node: nil
       }
 
       %Bimip.Message{
         msg |
         to: intended_to,
         timestamp: Until.UniPosTime.uni_pos_time(),
-        signal_type: if msg.from.eid == eid do 2 else 3 end
+        type: if msg.from.eid == eid do 2 else 3 end
       }
     end)
   end
@@ -358,7 +357,6 @@ defmodule Queue.QueueLogImpl do
   # -------------------------------------------------------------------
   def ack_message(user, device, partition, offset_or_range) do
     key = {user, device, partition}
-    key = {user, device, partition}
 
     offsets =
       case offset_or_range do
@@ -415,8 +413,6 @@ defmodule Queue.QueueLogImpl do
       commit
     end
   end
-
-
 
   def message_status(user, _device, partition, offset) do
     # key = {user, device, partition}
@@ -765,7 +761,7 @@ def ack_status_multi(users_offsets_status) when is_list(users_offsets_status) do
   defp advance_contiguous_to_max([], commit), do: commit
 
   # The start offset of the first range must be exactly 'commit + 1' to advance.
-  defp advance_contiguous_to_max([{s, e} | _], commit) when s > commit + 1, do: commit
+  defp advance_contiguous_to_max([{s, _e} | _], commit) when s > commit + 1, do: commit
 
   # If the first range starts exactly at commit + 1, the new commit is that range's end (e).
   # We don't need to recursively check the rest because advance_contiguous_to_max only
@@ -780,7 +776,7 @@ def ack_status_multi(users_offsets_status) when is_list(users_offsets_status) do
   defp remove_committed_range(ranges, new_commit, old_commit) do
     if new_commit > old_commit do
       case ranges do
-        [{start, end_offset} | rest] ->
+        [{_start, end_offset} | rest] ->
           # If the new commit covers the entire first range, drop it
           if end_offset <= new_commit do
             rest

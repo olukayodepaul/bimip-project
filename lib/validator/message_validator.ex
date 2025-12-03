@@ -1,57 +1,71 @@
 defmodule Bimip.Validators.MessageValidator do
   @moduledoc """
-  Validates a Message stanza for client-to-server sending.
-
-  Rules:
-    - `id` must be a non-empty binary
-    - `from` and `to` identities must exist and contain valid `eid` and `connection_resource_id`
-    - `type` must be integer: 1=Chat, 2=PushNotification
-    - `status` must be 1 (SENT) for new messages
-    - `timestamp` must be a positive integer (Unix UTC ms)
-    - `payload` must be binary and valid JSON
-    - `encryption_type` must be a non-empty binary
-    - `encrypted` and `signature` are optional binaries
-    - `signal_type` must be 2 (TWO-WAY)
+  Validates a Message stanza and returns errors mapped to your standard status_code table.
   """
 
   alias Bimip.Message
+  alias Bimip.Identity
 
+  # ---------------- Status Codes ----------------
+  @status_ok               200
+  @status_processed        201
+  @status_read             202
 
-  @allowed_signal_type 1
+  @status_moved            301
+  @status_queued           304
+
+  @status_bad_request      400
+  @status_unauthorized     401
+  @status_blocked          403
+  @status_not_found        404
+  @status_timeout          408
+  @status_out_of_order     409
+  @status_invalid_encrypt  410
+
+  @status_internal_error   500
+  @status_unavailable      503
+
 
   @spec validate(Message.t()) :: :ok | {:error, map()}
   def validate(%Message{} = msg) do
-    with :ok <- validate_id(msg.id),
-        #  :ok <- validate_identity(msg.from, "from"),
-        #  :ok <- validate_identity(msg.to, "to"),
+    with :ok <- validate_id(msg.message_id),
+         :ok <- validate_identity(msg.from, "from"),
+         :ok <- validate_identity(msg.to, "to"),
          :ok <- validate_timestamp(msg.timestamp),
          :ok <- validate_payload(msg.payload),
+         :ok <- validate_encryption_type(msg.encryption_type),
          :ok <- validate_binary_field(msg.encrypted, "encrypted"),
          :ok <- validate_binary_field(msg.signature, "signature"),
-         :ok <- validate_encryption_type(msg.encryption_type),
-         :ok <- validate_signal_type(msg.signal_type) do
+         :ok <- validate_type(msg.type),
+         :ok <- validate_transmission_mode(msg.transmission_mode) do
       :ok
     end
   end
 
   # ---------------- ID Validation ----------------
   defp validate_id(nil),
-    do: {:error, error_detail(100, "Missing id field", "id")}
+    do: error(@status_bad_request, "Missing message_id", "message_id")
+
   defp validate_id(id) when is_binary(id) and byte_size(id) > 0, do: :ok
+
   defp validate_id(_),
-    do: {:error, error_detail(100, "Invalid id — must be non-empty string", "id")}
+    do: error(@status_bad_request, "Invalid message_id — must be non-empty string", "message_id")
 
   # ---------------- Identity Validation ----------------
   defp validate_identity(nil, field),
-    do: {:error, error_detail(102, "Missing #{field} identity", field)}
+    do: error(@status_bad_request, "Missing #{field} identity", field)
 
-  defp validate_identity(%{eid: eid, connection_resource_id: crid}, field) do
+  defp validate_identity(%Identity{} = ident, field) do
     cond do
-      not (is_binary(eid) and byte_size(eid) > 0) ->
-        {:error, error_detail(103, "Invalid #{field}.eid — must be non-empty string", "#{field}.eid")}
+      not (is_binary(ident.eid) and byte_size(ident.eid) > 0) ->
+        error(@status_bad_request, "Invalid #{field}.eid — must be non-empty", "#{field}.eid")
 
-      not (is_binary(crid) and byte_size(crid) > 0) ->
-        {:error, error_detail(104, "Invalid #{field}.connection_resource_id — must be non-empty string", "#{field}.connection_resource_id")}
+      ident.connection_resource_id != nil and
+          not is_binary(ident.connection_resource_id) ->
+        error(@status_bad_request, "#{field}.connection_resource_id must be binary", "#{field}.connection_resource_id")
+
+      ident.node != nil and not is_binary(ident.node) ->
+        error(@status_bad_request, "#{field}.node must be binary", "#{field}.node")
 
       true ->
         :ok
@@ -59,40 +73,56 @@ defmodule Bimip.Validators.MessageValidator do
   end
 
   defp validate_identity(_, field),
-    do: {:error, error_detail(105, "Malformed #{field} identity", field)}
+    do: error(@status_bad_request, "Malformed #{field} identity", field)
 
-  # ---------------- Timestamp Validation ----------------
+  # ---------------- Timestamp ----------------
   defp validate_timestamp(ts) when is_integer(ts) and ts > 0, do: :ok
-  defp validate_timestamp(_),
-    do: {:error, error_detail(108, "Missing or invalid timestamp", "timestamp")}
 
-  # ---------------- Payload Validation ----------------
+  defp validate_timestamp(_),
+    do: error(@status_bad_request, "Invalid timestamp", "timestamp")
+
+  # ---------------- Payload (JSON) ----------------
   defp validate_payload(payload) when is_binary(payload) do
     case Jason.decode(payload) do
-      {:ok, _json} -> :ok
-      {:error, _} -> {:error, error_detail(109, "Payload must be valid JSON", "payload")}
+      {:ok, _} ->
+        :ok
+
+      {:error, _} ->
+        error(@status_bad_request, "Payload must be valid JSON", "payload")
     end
   end
+
   defp validate_payload(_),
-    do: {:error, error_detail(109, "Payload must be a binary", "payload")}
+    do: error(@status_bad_request, "Payload must be binary JSON", "payload")
 
   # ---------------- Optional Binary Fields ----------------
   defp validate_binary_field(nil, _), do: :ok
   defp validate_binary_field(val, _field) when is_binary(val), do: :ok
+
   defp validate_binary_field(_, field),
-    do: {:error, error_detail(110, "#{field} must be a binary if provided", field)}
+    do: error(@status_bad_request, "#{field} must be binary if provided", field)
 
   # ---------------- Encryption Type ----------------
-  defp validate_encryption_type(enc) when is_binary(enc) and byte_size(enc) > 0, do: :ok
-  defp validate_encryption_type(_),
-    do: {:error, error_detail(111, "Missing or invalid encryption_type", "encryption_type")}
+  defp validate_encryption_type(enc) when is_binary(enc) and byte_size(enc) > 0,
+    do: :ok
 
-  # ---------------- Signal Type Validation ----------------
-  defp validate_signal_type(@allowed_signal_type), do: :ok
-  defp validate_signal_type(_),
-    do: {:error, error_detail(112, "Invalid signal_type — must be 2=TWO-WAY", "signal_type")}
+  defp validate_encryption_type(_),
+    do: error(@status_invalid_encrypt, "Missing or invalid encryption_type", "encryption_type")
+
+  # ---------------- Message Type ----------------
+  defp validate_type(t) when is_integer(t), do: :ok
+
+  defp validate_type(_),
+    do: error(@status_bad_request, "Invalid message type", "type")
+
+  # ---------------- Transmission Mode ----------------
+  defp validate_transmission_mode(t) when is_integer(t), do: :ok
+
+  defp validate_transmission_mode(_),
+    do: error(@status_bad_request, "Invalid transmission_mode", "transmission_mode")
+
 
   # ---------------- Error Helper ----------------
-  defp error_detail(code, description, field),
-    do: %{code: code, description: description, field: field}
+  defp error(code, description, field),
+    do: {:error, %{code: code, description: description, field: field}}
 end

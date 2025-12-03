@@ -164,13 +164,11 @@ defmodule Bimip.Socket do
   end
 
   defp handle_message(state, data) do
-    case Connect.send_message(state.eid, state.device_id, data) do
+    case Connect.handle_inbouce_signal({:device_id, state.device_id, :client_message, data}) do
       :ok ->
         {:ok, state}
-
       :error ->
-        error_msg = ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
-        send(self(), {:binary, error_msg})
+        # same message error
         {:ok, state}
     end
   end

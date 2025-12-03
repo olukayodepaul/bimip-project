@@ -38,10 +38,17 @@ defmodule Chat.AckSignal do
 
   def deliver_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when is_list(batched_acks) and length(batched_acks) == 0, do: :empty
   def deliver_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when length(batched_acks) > 0 do
-    process_stream_reduce(batched_acks)
+    delivered_process_stream_reduce(batched_acks)
   end
 
-  defp send_to_network(key, batch) do
+  def read_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when is_list(batched_acks) and length(batched_acks) == 0, do: :empty
+  def read_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when length(batched_acks) > 0 do
+    read_process_stream_reduce(batched_acks)
+  end
+
+  defp delivered_send_to_network(key, batch) do
+
+    IO.inspect(batch)
 
     ack_batch =
       Enum.flat_map(batch, fn item ->
@@ -63,54 +70,91 @@ defmodule Chat.AckSignal do
     :ok
   end
 
+  defp read_send_to_network(key, batch) do
+
+    IO.inspect(batch)
+
+    ack_batch =
+      Enum.flat_map(batch, fn item ->
+        [
+          {item.owners.from, @partition_id, item.user_offset, :read},
+          {item.owners.to, @partition_id, item.offset, :read}
+        ]
+      end)
+
+      case Queue.Injection.ack_status_multi(ack_batch) do
+        {:ok, _commits} ->
+
+          server_route(batch, :eid, :signal_read_ack_server, key)
+          |> Route.Connect.handle_inbouce_signal()
+
+        {:error, reason} ->
+          IO.puts("Failed to update ACKs: #{inspect(reason)}")
+      end
+    :ok
+  end
+
   # Async sending wrapper: Reverses the list (to restore original order) and starts the task.
-  defp async_send(key, batch) do
+  defp delivered_async_send(key, batch) do
     Task.start(fn ->
-      send_to_network(key, Enum.reverse(batch))
+      delivered_send_to_network(key, Enum.reverse(batch))
     end)
   end
 
-  @doc """
-  Processes an input stream using Enum.reduce. Best for memory efficiency
-  as it consumes the stream item-by-item without pre-loading.
-  """
-  def process_stream_reduce(input_stream) do
+  defp read_async_send(key, batch) do
+    Task.start(fn ->
+      read_send_to_network(key, Enum.reverse(batch))
+    end)
+  end
+
+  def delivered_process_stream_reduce(input_stream) do
     # The accumulator (acc) now stores {count, list} for O(1) length check
     final_acc =
       input_stream
       |> Enum.reduce(%{}, fn item, acc ->
         key = item.owners.from
 
-        # 1. Retrieve the current state: {count, list}
         {current_count, current_list} = Map.get(acc, key, {0, []})
 
-        # 2. Update the state (O(1) prepend and O(1) increment)
         new_list = [item | current_list]
         new_count = current_count + 1
 
-        # 3. Check if the batch is full (O(1) check)
         if new_count >= @max_batch do
-          # Send the full batch asynchronously
-          async_send(key, new_list)
-
-          # Return the accumulator map without the now-sent key/list
+          delivered_async_send(key, new_list)
           Map.delete(acc, key)
         else
-          # Update the accumulator with the growing {count, list} tuple
           Map.put(acc, key, {new_count, new_list})
         end
       end)
 
-    # Flush remaining batches asynchronously
-    IO.puts("\n--- Starting final flush tasks (Reduce version)... ---")
     final_acc
-    |> Enum.each(fn {key, {_count, list}} -> async_send(key, list) end)
-
+    |> Enum.each(fn {key, {_count, list}} -> delivered_async_send(key, list) end)
     :ok
   end
 
-  def read_message(%Chat.SignalStruct{} = _signal) do
-    IO.inspect("read message")
+  def read_process_stream_reduce(input_stream) do
+    # The accumulator (acc) now stores {count, list} for O(1) length check
+    final_acc =
+      input_stream
+      |> Enum.reduce(%{}, fn item, acc ->
+        key = item.owners.from
+
+        {current_count, current_list} = Map.get(acc, key, {0, []})
+
+        new_list = [item | current_list]
+        new_count = current_count + 1
+
+        if new_count >= @max_batch do
+          read_async_send(key, new_list)
+          Map.delete(acc, key)
+        else
+          Map.put(acc, key, {new_count, new_list})
+        end
+      end)
+
+    final_acc
+    |> Enum.each(fn {key, {_count, list}} -> read_async_send(key, list) end)
+    :ok
   end
 
   def advance_contiguous_offset(eid, device, partition, last_process_offset, signal_offset) do
@@ -122,9 +166,6 @@ defmodule Chat.AckSignal do
     Injection.advance_offset(user, device, partition, offset)
   end
 
-  # ---------------------------------------------------
-  # Helpers
-  # ---------------------------------------------------
   defp get_last_seen_offset(user, device, partition),
     do: Injection.get_last_seen_offset(user, device, partition)
 
@@ -157,12 +198,8 @@ defmodule Chat.AckSignal do
 
   end
 
-  #----------------------------------------------
-  # This is route to the server. Single route
-  #----------------------------------------------
   defp server_route(payload, chanel, signal_to_server, eid) do
     {chanel, eid, signal_to_server, payload}
   end
-
 
 end

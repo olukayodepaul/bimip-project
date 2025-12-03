@@ -44,15 +44,6 @@ defmodule Route.Connect do
     end
   end
 
-  def send_message(eid, device_id, data) do
-    case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
-      [{pid, _}] ->
-        GenServer.cast(pid, {:client_message, eid, device_id, data})
-        :ok
-      [] ->
-        :error
-    end
-  end
 
   def route_ping_pong_to_server(eid, device_id) do
     case Horde.Registry.lookup(EidRegistry, eid) do
@@ -182,9 +173,13 @@ defmodule Route.Connect do
   defp extract_registry_id(_), do: :unknown
 
 
+
   # -------------------------------
   # ROUTE BETWEEN CLIENT AND SERVER
   # -------------------------------
+  # {:eid, eid, map, payload}
+  # {:device_id, device_id, map, payload}
+  # map = :where_to_map
   def handle_inbouce_signal({identifier, registry_id, resouce_finder, payload}) do
     case identifier do
       :eid ->

@@ -22,29 +22,35 @@ defmodule Chat.SendMessage do
   @status 1
   @signal_direction 2
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
+  @method 2
+  @status_code 200
 
   # ----------------------
   # Public API
   # ----------------------
   def store_message(%Chat.MessageStruct{
-        id: id,
+        message_id: message_id,
         from: %Chat.EntityStruct{eid: from_eid},
         to: %Chat.EntityStruct{eid: to_eid},
-        device_id: device_id
+        device_id: device_id,
       } = payload) do
+
     from = Map.from_struct(payload.from)
     to = Map.from_struct(payload.to)
 
     queue_id = "#{from_eid}"
     reverse_queue_id = "#{to_eid}"
 
-    # exactly once
-    case get_message_offset(queue_id,  @partition_id, id) do
-      {:ok, ft_offset} ->
-        send_signal_to_sender(id, ft_offset, @status, from, to, queue_id, device_id, @partition_id)
-      {:error, :not_found} ->
-        handle_new_message(id, payload,  queue_id, reverse_queue_id, from, to, device_id)
-    end
+    send_signal_to_sender(message_id, 1, 1, from, to)
+
+
+    # case get_message_offset(queue_id,  @partition_id, message_id) do
+    #   {:ok, ft_offset} ->
+    #     # RESPOND WITH
+    #     send_signal_to_sender(id, ft_offset, @status, from, to, queue_id, device_id, @partition_id)
+    #   {:error, :not_found} ->
+    #     handle_new_message(id, payload,  queue_id, reverse_queue_id, from, to, device_id)
+    # end
   end
 
   def process_receiver_message(%Chat.MessageStruct{to: %Chat.EntityStruct{eid: eid}} = payload) do
@@ -69,7 +75,7 @@ defmodule Chat.SendMessage do
             case insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset) do
               {:ok, _offsets} ->
                 # send message to device and sender
-                  send_signal_to_sender(id, offset, @status, from, to, queue_id, from_device_id, @partition_id)
+                  # send_signal_to_sender(id, offset, @status, from, to, queue_id, from_device_id, @partition_id)
                   push_to_device(payload, offset, offset, @sender_signal_type)
                   push_to_device(payload, recv_offset, offset, @receiver_signal_type, receiver: true)
               {:error, _reason} ->
@@ -148,25 +154,15 @@ defmodule Chat.SendMessage do
     })
   end
 
-  defp send_signal_to_sender(id, offset, status, from, to, _user, from_device_id, _partition_id) do
-
+  defp send_signal_to_sender(message_id, offset, peer_offset, from, to) do
     %{
-      id: id,
-      signal_offset: offset,
-      user_offset: offset,
-      status: status,
-      from: to,
-      to: from,
-      signal_type: 1,
-      signal_type_ex: 1,
-      ack: %{
-          advance_offset: true, advance_offset_timestamp: Until.UniPosTime.uni_pos_time(),
-          sent: true, delivered: false, read: false, sent_timestamp: Until.UniPosTime.uni_pos_time(),
-          delivered_timestamp: nil, read_timestamp: nil
-      }
+      from: %Bimip.Identity{eid: to.eid},
+      to: %Bimip.Identity{eid: from.eid},
+      message_id: message_id,
+      peer: %Bimip.Peer{ from: from.eid, to: to.eid,  }
     }
-    |> ThrowSignalSchema.success()
-    |> then(&Connect.outbouce(from_device_id, &1))
+    |> ThrowMessagePeerAckSignalSchema.build()
+    |> then(&Connect.outbouce(from.connection_resource_id, &1))
   end
 
   defp deliver_to_online_devices(eid, payload, opts \\ []) do

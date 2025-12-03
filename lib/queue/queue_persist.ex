@@ -5,24 +5,23 @@ defmodule Queue.Persist do
   (no nested wrapping).
   """
 
-  @spec build(map(), integer(), integer() | nil) :: map()
-  def build(%{from: from, to: to, payload: payload} = _attrs, signal_offset, user_offset \\ nil) do
+  @transmission_mode 1
 
-    per_user_offset = user_offset || signal_offset
 
-    %Bimip.Message{
-      id: payload.id,
-      signal_offset: signal_offset,
-      user_offset: per_user_offset,
-      from: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
-      to: %Bimip.Identity{ eid: payload.to.eid, connection_resource_id: payload.to.connection_resource_id},
-      payload: payload.payload,
-      encryption_type: payload.encryption_type,
-      encrypted: payload.encrypted,
-      signature: payload.signature,
-      signal_direction: 1, # Pusll request
-      owners: %Bimip.OWNERS{ from: payload.from.eid, to: payload.to.eid},
-    }
+  def build(%{from: from, to: to, payload: payload} = _attrs, offset, peer_offset \\ nil) do
 
-  end
+        per_user_offset = peer_offset || offset
+
+        %Bimip.Message{
+          message_id: payload.message_id,
+          from: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
+          to: %Bimip.Identity{ eid: payload.to.eid, connection_resource_id: payload.to.connection_resource_id},
+          payload: payload.payload,
+          encryption_type: payload.encryption_type,
+          encrypted: payload.encrypted,
+          signature: payload.signature,
+          transmission_mode: @transmission_mode, # 1 Pusll request
+          peer: %Bimip.Peer{ from: payload.from_peer, to: payload.to_peer, offset: offset, peer_offset: peer_offset }
+        }
+      end
 end

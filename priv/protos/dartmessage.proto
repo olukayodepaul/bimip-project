@@ -39,26 +39,37 @@ message OWNERS {
   string to = 2; 
 }
 
-// ---------------- Message ----------------
-// Represents a chat or notification message between users.
-// Message-level ACKs are tracked via the status field.
-// Awareness (TYPING, RECORDING) is per-user and handled separately.
-// This is sent once.
-message Message {
-  string id = 1;               // client/queue-generated message ID
-  int32 signal_offset = 2;     // server-assigned global ID (monotonic or unique)
-  int32 user_offset = 3;       // server-assigned global ID (monotonic or unique)
-  Identity from = 4;           // sender (JID or user ID)
-  Identity to = 5;             // recipient (JID or user ID)
-  int64 timestamp = 7;         // epoch milliseconds
-  bytes payload = 8;           // pass JSON { }
-  string encryption_type = 9;  // "none", "AES256", "E2E", etc.
-  string encrypted = 10;       // base64 encrypted content (if any)
-  string signature = 11;                      // base64 signature for integrity 
-  int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
-  int32 signal_direction = 13;                // push  or pull
-  OWNERS owners = 14;  
-}
+  message Message {
+    string message_id = 1;
+    Identity from = 2;
+    Identity to = 3;
+    int64 timestamp = 4;
+    bytes payload = 5;
+    string encryption_type = 6;
+    string encrypted = 7;
+    string signature = 8;
+    optional int32 type = 9;         
+    optional int32 transmission_mode = 10; 
+    optional Peer peer = 11;
+  }
+
+  message Peer {
+    string from = 1;
+    string to = 2;
+    int64 offset = 3;
+    int64 peer_offset = 4;
+  }
+
+  message MessagePeerAckSignal {
+    Identity to = 1;
+    Identity from = 2;
+    string message_id = 3;
+    int32 method = 4;
+    int64 timestamp = 5;  
+    int32 status_code = 6; 
+    Peer peer = 7;
+  }
+
 
 // when Device receive sent ack. it update the local message with 
 // signal_offset and user_offset.
@@ -221,6 +232,7 @@ message MessageScheme {
     Body body = 10;
     ErrorMessage error = 11;
     Logout logout = 12;
+    MessagePeerAckSignal message_peer_ack_signal = 13;
   }
 }
 
