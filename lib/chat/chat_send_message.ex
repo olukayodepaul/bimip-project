@@ -20,8 +20,9 @@ defmodule Chat.SendMessage do
   @sender_signal_type 2
   @receiver_signal_type 3
   @status 1
-  @signal_direction 2
+  @transmission_mode 2
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
+  @types 2
 
   # ----------------------
   # Public API
@@ -41,44 +42,31 @@ defmodule Chat.SendMessage do
 
     case get_message_offset(queue_id,  @partition_id, message_id) do
       {:ok, offset} ->
-        send_signal_to_sender(message_id, offset, from, to)
+        # send_signal_to_sender(message_id, offset, from, to)
+        handle_new_message(message_id, payload,  queue_id, reverse_queue_id, from, to, from_eid, device_id)
       {:error, :not_found} ->
-        handle_new_message(message_id, payload,  queue_id, reverse_queue_id, from, to)
+        handle_new_message(message_id, payload,  queue_id, reverse_queue_id, from, to, from_eid, device_id)
     end
-
   end
 
-  def process_receiver_message(%Chat.MessageStruct{to: %Chat.EntityStruct{eid: eid}} = payload) do
-    deliver_to_online_devices(eid, payload)
-    :ok
-  end
 
-  def send_message_to_sender_other_devices(%Chat.MessageStruct{
-        from: %Chat.EntityStruct{eid: eid},
-        device_id: device_id
-      } = payload) do
-    deliver_to_online_devices(eid, payload, exclude_device: device_id)
-    :ok
-  end
-
-  defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to) do
+  defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, eid, device_id) do
 
     case store_message_and_ack(id, payload, queue_id, from, to) do
       {:ok, offset} ->
         case store_message_and_ack(id, payload, reverse_queue_id, from, to, offset) do
           {:ok, recv_offset} ->
             case insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset) do
-              {:ok, offsets} ->
-                IO.inspect({"offsets"})
+              {:ok, _offsets} ->
+
                 # send message to device and sender
-                  # send_signal_to_sender(id, offset, @status, from, to, queue_id, from_device_id, @partition_id)
-                  # push_to_device(payload, offset, offset, @sender_signal_type)
+                  send_signal_to_sender(id, offset,  from, to)
+                  push_to_device(payload, offset, eid, device_id)
                   # push_to_device(payload, recv_offset, offset, @receiver_signal_type, receiver: true)
                   :ok
               {:error, reason} ->
 
                 IO.inspect({reason})
-
               _recovery_data = [
                   %{
                     message_id: id,
@@ -116,16 +104,15 @@ defmodule Chat.SendMessage do
     end
   end
 
-  defp push_to_device(payload, signal_offset, user_offset, signal_type,  opts \\ []) do
-    is_receiver = Keyword.get(opts, :receiver, false)
-
+  defp push_to_device(payload, offset, eid, device_id) do
+    # is_receiver = Keyword.get(opts, :receiver, false)
     payload
-    |> set_message_fields(signal_offset, user_offset, signal_type)
-    |> send_to_device(is_receiver)
+    |> set_message_fields(offset)
+    |> deliver_to_online_devices(eid, device_id)
   end
 
-  defp send_to_device(payload, false), do: send_message_to_sender_other_devices(payload)
-  defp send_to_device(payload, true), do: server_route(payload, :eid, :send_message_to_receiver_server)
+  # defp send_to_device(payload, false), do: send_message_to_sender_other_devices(payload)
+  # defp send_to_device(payload, true), do: server_route(payload, :eid, :send_message_to_receiver_server)
 
   # ----------------------
   # Helpers
@@ -137,14 +124,33 @@ defmodule Chat.SendMessage do
     do: Injection.insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset)
 
 
-  defp set_message_fields(payload, signal_offset, user_offset, signal_type) do
-    Map.merge(payload, %{
-      signal_type: signal_type,
-      user_offset: user_offset,
-      signal_offset: signal_offset,
-      signal_direction: @signal_direction,
-      owner: %{from: payload.from.eid, to: payload.to.eid}
-    })
+  defp set_message_fields(%Chat.MessageStruct{} = message, offset) do
+
+    %Chat.EntityStruct{
+      eid: from_eid,
+      connection_resource_id: from_device_id
+    } = message.from
+
+    %Chat.EntityStruct{
+      eid: to_eid,
+      connection_resource_id: to_device_id
+    } = message.to
+
+    %{
+      message_id: message.message_id,
+      from: %{eid: from_eid, connection_resource_id: from_device_id},
+      to: %{eid: to_eid, connection_resource_id: to_device_id},
+      timestamp:  Until.UniPosTime.uni_pos_time(),
+      payload: message.payload,
+      encryption_type: message.encryption_type,
+      encrypted: message.encrypted,
+      signature: message.signature,
+      type: @types,
+      transmission_mode: @transmission_mode,
+      peer: %{to: to_eid, peer_offset: offset},
+      offset: offset
+      }
+
   end
 
   defp send_signal_to_sender(message_id, offset,  from, to) do
@@ -169,27 +175,26 @@ defmodule Chat.SendMessage do
     #   Hybrid Geo-Routing: Keep the "Mother" anchored in the home region (Nigeria) for data consistency, but terminate the "Client" at the Edge (London) for low-latency handshakes.
     #   Also comit state should be move to genserver state
 
-    defp deliver_to_online_devices(eid, payload, opts \\ []) do
-    exclude_device = Keyword.get(opts, :exclude_device, nil)
-    now = DateTime.utc_now()
+    defp deliver_to_online_devices( %{} = payload,  eid, device_id) do
+      now = DateTime.utc_now()
 
-    DeviceStorage.fetch_devices_by_eid(eid)
-    |> Stream.filter(fn device ->
-      device.status == "ONLINE" and DateTime.diff(now, device.last_seen) <= @stale_threshold_seconds and
-        (is_nil(exclude_device) or device.device_id != exclude_device)
-    end)
-    |> Task.async_stream(
-      fn device ->
-        payload
-        |> set_from(device.eid, device.device_id)
-        |> ThrowMessageSchema.build_message()
-        |> then(&Connect.outbouce(device.device_id, &1))
-      end,
-      max_concurrency: 10,
-      timeout: 5_000,
-      on_timeout: :kill_task
-    )
-    |> Stream.run()
+      DeviceStorage.fetch_devices_by_eid(eid)
+      |> Stream.filter(fn device ->
+        device.status == "ONLINE" and DateTime.diff(now, device.last_seen) <= @stale_threshold_seconds and device.device_id != device_id
+      end)
+      |> Task.async_stream(
+        fn device ->
+          payload
+          |> set_from(device.eid, device.device_id)
+          |> ThrowMessageSchema.build_message()
+          |> then(&Connect.outbouce(device.device_id, &1))
+
+        end,
+        max_concurrency: 10,
+        timeout: 5_000,
+        on_timeout: :kill_task
+      )
+      |> Stream.run()
   end
 
   defp set_from(payload, eid, device_id), do: %{payload | to: %{eid: eid, connection_resource_id: device_id}}

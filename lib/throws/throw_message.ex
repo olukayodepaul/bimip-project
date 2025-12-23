@@ -24,21 +24,22 @@ defmodule ThrowMessageSchema do
   def build_message(
     %{
       message_id: message_id,
-      from: %{eid: from_eid, connection_resource_id: from_device_id},
-      to: %{eid: to_eid, connection_resource_id: to_device_id},
-      timestamp:  timestamp,
+      offset: offset,
+      timestamp: timestamp,
+      type: type,
+      signature: signature,
+      to: %{eid: from_eid, connection_resource_id: from_device_id},
+      from: %{eid: to_eid, connection_resource_id: to_device_id},
       payload: payload,
       encryption_type: encryption_type,
       encrypted: encrypted,
-      signature: signature,
-      type: type,
       transmission_mode: transmission_mode,
-      peer: peer
-      }) do
+      peer: %{to: peer_to, peer_offset: peer_offset}
+    }) do
 
     message =  %Bimip.Message {
         message_id: message_id,
-        from: %Bimip.Identity{eid: from_eid, connection_resource_id: from_device_id}, # the device_id of sender
+        from: %Bimip.Identity{eid: from_eid, connection_resource_id: from_device_id},
         to: %Bimip.Identity{eid: to_eid, connection_resource_id: to_device_id},
         timestamp: timestamp,
         payload: payload,
@@ -47,10 +48,9 @@ defmodule ThrowMessageSchema do
         signature: signature,
         type: type,
         transmission_mode: transmission_mode,
-        peer: peer
+        peer: %Bimip.Peer{to: peer_to, peer_offset: peer_offset},
+        offset: offset
       }
-
-
 
     %Bimip.MessageScheme{
       route: 6,
