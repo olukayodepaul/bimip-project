@@ -331,8 +331,8 @@ defmodule Bimip.SignalServer do
   end
 
   @impl true
-  def handle_cast({:send_message_to_receiver_server,  payload}, state) do
-    SendMessage.process_receiver_message(payload)
+  def handle_cast({:send_message_to_receiver_server,  payload}, %{eid: eid} = state) do
+    SendMessage.process_receiver_message(payload, eid)
     {:noreply, state}
   end
 

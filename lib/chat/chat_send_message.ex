@@ -23,6 +23,7 @@ defmodule Chat.SendMessage do
   @transmission_mode 2
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
   @types 2
+  @nil_device 0
 
   # ----------------------
   # Public API
@@ -42,7 +43,7 @@ defmodule Chat.SendMessage do
 
     case get_message_offset(queue_id,  @partition_id, message_id) do
       {:ok, offset} ->
-        # send_signal_to_sender(message_id, offset, from, to)
+        send_signal_to_sender(message_id, offset, from, to)
         handle_new_message(message_id, payload,  queue_id, reverse_queue_id, from, to, from_eid, device_id)
       {:error, :not_found} ->
         handle_new_message(message_id, payload,  queue_id, reverse_queue_id, from, to, from_eid, device_id)
@@ -59,10 +60,9 @@ defmodule Chat.SendMessage do
             case insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset) do
               {:ok, _offsets} ->
 
-                # send message to device and sender
                   send_signal_to_sender(id, offset,  from, to)
-                  push_to_device(payload, offset, eid, device_id)
-                  # push_to_device(payload, recv_offset, offset, @receiver_signal_type, receiver: true)
+                  push_message(payload, offset, offset, eid, device_id, :device)
+                  push_message(payload, offset, recv_offset, eid, device_id, :recipient)
                   :ok
               {:error, reason} ->
 
@@ -104,27 +104,22 @@ defmodule Chat.SendMessage do
     end
   end
 
-  defp push_to_device(payload, offset, eid, device_id) do
-    # is_receiver = Keyword.get(opts, :receiver, false)
+  defp push_message(payload, offset, recv_offset, eid, device_id, recipient_or_device) do
+
+    {msg_offset, peer_offset} = if recipient_or_device == :device do {offset, offset} else {offset, recv_offset} end
+
     payload
-    |> set_message_fields(offset)
-    |> deliver_to_online_devices(eid, device_id)
+    |> set_message_fields(msg_offset, peer_offset)
+    |> deliver_to_online_devices(eid, device_id, recipient_or_device)
   end
 
-  # defp send_to_device(payload, false), do: send_message_to_sender_other_devices(payload)
-  # defp send_to_device(payload, true), do: server_route(payload, :eid, :send_message_to_receiver_server)
-
-  # ----------------------
-  # Helpers
-  # ----------------------
   defp get_message_offset(user, partition, message_id),
     do: Injection.get_message_offset(user, partition, message_id)
 
   defp insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset),
     do: Injection.insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset)
 
-
-  defp set_message_fields(%Chat.MessageStruct{} = message, offset) do
+  defp set_message_fields(%Chat.MessageStruct{} = message, msg_offset, peer_offset) do
 
     %Chat.EntityStruct{
       eid: from_eid,
@@ -147,8 +142,8 @@ defmodule Chat.SendMessage do
       signature: message.signature,
       type: @types,
       transmission_mode: @transmission_mode,
-      peer: %{to: to_eid, peer_offset: offset},
-      offset: offset
+      peer: %{to: to_eid, peer_offset: peer_offset},
+      offset: msg_offset
       }
 
   end
@@ -166,37 +161,53 @@ defmodule Chat.SendMessage do
   end
 
 
-    # 📌 Arch Strategy: State-in-Process & Atomic RPC
-    #   Process-as-Storage: Move device metadata from DeviceStorage (DB) into the Mother GenServer State. Eliminates DB bottlenecks during message fan-out.
-    #   Atomic Serialization: Use GenServer.call for device updates. The Mother’s mailbox acts as a natural mutex, preventing race conditions between multiple devices.
-    #   Direct Addressing: Use [PID, Node] metadata in messages. Replace global registries (Horde) with Local Registry + RPC to reduce cluster-wide sync noise.
-    #   Process Monitoring: Mother calls Process.monitor/1 on all Client PIDs.
-    #   Effect: Instant cleanup of "Online" status via :DOWN messages instead of polling a "Last Seen" timestamp.
-    #   Hybrid Geo-Routing: Keep the "Mother" anchored in the home region (Nigeria) for data consistency, but terminate the "Client" at the Edge (London) for low-latency handshakes.
-    #   Also comit state should be move to genserver state
+  defp deliver_to_online_devices( %{} = payload,  eid, device_id, recipient_or_devce ) do
 
-    defp deliver_to_online_devices( %{} = payload,  eid, device_id) do
-      now = DateTime.utc_now()
+    now = DateTime.utc_now()
 
-      DeviceStorage.fetch_devices_by_eid(eid)
-      |> Stream.filter(fn device ->
+    case recipient_or_devce do
+
+      :device ->
+        # Change to genserver state
+
+        DeviceStorage.fetch_devices_by_eid(eid)
+
+        |> Stream.filter(fn device ->
         device.status == "ONLINE" and DateTime.diff(now, device.last_seen) <= @stale_threshold_seconds and device.device_id != device_id
-      end)
-      |> Task.async_stream(
+        end)
+        |> Task.async_stream(
         fn device ->
           payload
           |> set_from(device.eid, device.device_id)
           |> ThrowMessageSchema.build_message()
           |> then(&Connect.outbouce(device.device_id, &1))
-
         end,
         max_concurrency: 10,
         timeout: 5_000,
         on_timeout: :kill_task
-      )
-      |> Stream.run()
+        )
+        |> Stream.run()
+
+      :recipient ->
+
+        %{eid: peer_eid} = payload.from
+
+        %{payload |
+          type: 3,
+          peer: %{
+            payload.peer |
+            to: peer_eid
+          }
+        }
+        |> server_route(:send_message_to_receiver_server)
+
+    end
+  end
+
+  def process_receiver_message(%{} = payload, eid) do
+    deliver_to_online_devices(payload,  eid, @nil_device, :device)
   end
 
   defp set_from(payload, eid, device_id), do: %{payload | to: %{eid: eid, connection_resource_id: device_id}}
-  defp server_route(payload, _eid, server), do: { :eid, payload.to.eid, server, payload } |> Connect.handle_inbouce_signal()
+  defp server_route(payload,  server), do: { :eid, payload.to.eid, server, payload } |> Connect.handle_inbouce_signal()
 end
