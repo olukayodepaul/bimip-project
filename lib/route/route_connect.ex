@@ -210,4 +210,22 @@ defmodule Route.Connect do
     end
   end
 
+  # future node to node communication
+  # def outbound(target_node, device_id, binary) do
+  #   if target_node == node() do
+  #     # Local delivery: find the local process by name or local registry
+  #     case Registry.lookup(@local_device_registry, device_id) do
+  #       [{pid, _}] ->
+  #         GenServer.cast(pid, {:outbound, binary})
+  #         :ok
+  #       [] -> :error
+  #     end
+  #   else
+  #     # Remote delivery: cast to the module/function on the specific node
+  #     # This is much faster than a global lookup
+  #     :rpc.cast(target_node, __MODULE__, :outbound, [target_node, device_id, binary])
+  #     :ok
+  #   end
+  # end
+
 end

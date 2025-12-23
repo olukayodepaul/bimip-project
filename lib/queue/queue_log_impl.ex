@@ -23,25 +23,23 @@ defmodule Queue.QueueLogImpl do
   # ----------------------
 
   @doc "Append a message to a user's partition log"
-  def write(user, partition_id, from, to, payload, message_id,  user_offset \\ nil, merge_offset \\ nil) do
+  def write(user, partition_id, from, to, payload, message_id, sender_offset) do
     with :ok <- ensure_files_exist(user, partition_id),
         {:ok, %{seg: seg, next_offset: next_offset, do_rollover: do_rollover}} <- get_atomic_write_state(user, partition_id) do
 
       qfile = queue_file(user, partition_id, seg)
-
 
       case File.open(qfile, [:append, :binary]) do
         {:ok, fd} ->
           {:ok, pos_before} = :file.position(fd, :eof)
 
           timestamp = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
-          offset_payload = Persist.build(%{from: from, to: to, payload: payload}, next_offset, user_offset)
+          offset_payload = Persist.build(%{payload: payload}, next_offset, sender_offset)
 
           record = %{
             message_id: message_id,
             device_id: payload.device_id,
             offset: next_offset,
-            merge_offset: merge_offset || 0,
             partition_id: partition_id,
             from: from,
             to: to,
@@ -178,6 +176,8 @@ defmodule Queue.QueueLogImpl do
       fn _ -> File.close(fd) end
     )
   end
+
+
 
   # ----------------------
   # Atomic write helpers
@@ -549,19 +549,24 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-
-  def get_message_offset(user,  partition_id, message_id) do
-    key = {user,  partition_id, message_id}
+  def get_message_offset(user, partition_id, message_id) do
+    key = {user, partition_id, message_id}
 
     :mnesia.transaction(fn ->
       case :mnesia.read(:message_offset, key) do
-        [{:message_offset, ^key, offset}] -> {:ok, offset}
-        [] -> {:error, :not_found}
+        [{:message_offset, ^key, offset, peer_offset}] ->
+          {:ok, offset, peer_offset}
+
+        [] ->
+          {:error, :not_found}
       end
     end)
     |> case do
-      {:atomic, result} -> result
-      {:aborted, reason} -> {:error, reason}
+      {:atomic, result} ->
+        result
+
+      {:aborted, reason} ->
+        {:error, reason}
     end
   end
 
@@ -843,6 +848,18 @@ def ack_status_multi(users_offsets_status) when is_list(users_offsets_status) do
       true ->
         # Default to an empty list of ranges if the format is unknown
         []
+    end
+  end
+
+  def save_peer_offset(user, peer, partition, offset) do
+    key = {user, peer, partition}
+
+    case :mnesia.transaction(fn ->
+      # Write last offset atomically
+      :mnesia.write({:peer_offsets, user, peer, partition, offset})
+    end) do
+      {:atomic, :ok} -> {:ok, offset}
+      {:aborted, reason} -> {:error, reason}
     end
   end
 

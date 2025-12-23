@@ -334,11 +334,10 @@ defmodule Bimip.SignalClient do
       _ ->
         :ok
     end
-
     {:noreply, state}
   end
 
-  def handle_cast({:client_message,  data}, %{ws_pid: ws_pid, device_id: device_id, eid: eid} = state) do
+  def handle_cast({:chat_message,  data}, %{device_id: device_id, eid: eid} = state) do
     msg = Bimip.MessageScheme.decode(data)
     case msg.payload do
       {:message, %Bimip.Message{} = message} ->
@@ -348,11 +347,10 @@ defmodule Bimip.SignalClient do
             |> server_route(:eid, :route_message, eid)
           {:error, err} ->
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"
-            IO.inspect(2)
+            IO.inspect(reason)
         end
         {:noreply, state}
       _ ->
-        IO.inspect("msg")
         {:noreply, state}
       end
   end

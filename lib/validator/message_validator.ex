@@ -35,9 +35,10 @@ defmodule Bimip.Validators.MessageValidator do
          :ok <- validate_payload(msg.payload),
          :ok <- validate_encryption_type(msg.encryption_type),
          :ok <- validate_binary_field(msg.encrypted, "encrypted"),
-         :ok <- validate_binary_field(msg.signature, "signature"),
-         :ok <- validate_type(msg.type),
-         :ok <- validate_transmission_mode(msg.transmission_mode) do
+         :ok <- validate_binary_field(msg.signature, "signature")
+        #  :ok <- validate_type(msg.type),
+        #  :ok <- validate_transmission_mode(msg.transmission_mode)
+         do
       :ok
     end
   end

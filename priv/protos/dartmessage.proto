@@ -51,13 +51,12 @@ message OWNERS {
     optional int32 type = 9;         
     optional int32 transmission_mode = 10; 
     optional Peer peer = 11;
+    optional int64 offset = 12;
   }
 
-  message Peer {
-    string from = 1;
-    string to = 2;
-    int64 offset = 3;
-    int64 peer_offset = 4;
+ message Peer {
+    string to = 1;
+    int64 peer_offset = 2;
   }
 
   message MessagePeerAckSignal {

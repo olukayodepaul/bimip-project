@@ -76,7 +76,7 @@ defmodule Bimip.Application do
     create(:commit_read, [:key, :offset], :set)
     create(:resume_grace, [:key, :timestamp], :set)
     create(:resume_grace, [:key, :timestamp], :set)
-    create(:message_offset, [:key, :offset], :set)
+    create(:message_offset, [:key, :offset, :peeroffset], :set)
 
   end
 

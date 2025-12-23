@@ -33,7 +33,7 @@ defmodule ThrowMessageSchema do
       signature: signature,
       type: type,
       transmission_mode: transmission_mode,
-      peer: %{ from: from_peer, to: to_peer, offset: offset_peer, peer_offset: peer_offset }
+      peer: peer
       }) do
 
     message =  %Bimip.Message {
@@ -47,8 +47,10 @@ defmodule ThrowMessageSchema do
         signature: signature,
         type: type,
         transmission_mode: transmission_mode,
-        peer: %Bimip.Peer{ from: from_peer, to: to_peer, offset: offset_peer, peer_offset: peer_offset }
+        peer: peer
       }
+
+
 
     %Bimip.MessageScheme{
       route: 6,

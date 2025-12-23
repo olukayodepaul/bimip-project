@@ -19,4 +19,5 @@ defmodule Chat.PrcMessage do
       eid: eid
     }
   end
+
 end

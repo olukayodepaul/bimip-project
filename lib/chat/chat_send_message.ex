@@ -22,8 +22,6 @@ defmodule Chat.SendMessage do
   @status 1
   @signal_direction 2
   @stale_threshold_seconds ServerState.stale_threshold_seconds()
-  @method 2
-  @status_code 200
 
   # ----------------------
   # Public API
@@ -41,16 +39,15 @@ defmodule Chat.SendMessage do
     queue_id = "#{from_eid}"
     reverse_queue_id = "#{to_eid}"
 
-    send_signal_to_sender(message_id, 1, 1, from, to)
+    case get_message_offset(queue_id,  @partition_id, message_id) do
+      {:ok, offset, peer_offset} ->
+        IO.inspect(1)
+        # send_signal_to_sender(message_id, offset, from, to)
+      {:error, :not_found} ->
+        IO.inspect(2)
+        handle_new_message(message_id, payload,  queue_id, reverse_queue_id, from, to, device_id)
+    end
 
-
-    # case get_message_offset(queue_id,  @partition_id, message_id) do
-    #   {:ok, ft_offset} ->
-    #     # RESPOND WITH
-    #     send_signal_to_sender(id, ft_offset, @status, from, to, queue_id, device_id, @partition_id)
-    #   {:error, :not_found} ->
-    #     handle_new_message(id, payload,  queue_id, reverse_queue_id, from, to, device_id)
-    # end
   end
 
   def process_receiver_message(%Chat.MessageStruct{to: %Chat.EntityStruct{eid: eid}} = payload) do
@@ -67,17 +64,19 @@ defmodule Chat.SendMessage do
   end
 
   defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, from_device_id) do
-    case store_and_ack(id, payload, queue_id, from, to, from_device_id) do
+
+    case store_message_and_ack(id, payload, queue_id, from, to) do
       {:ok, offset} ->
-        case store_and_ack(id, payload, reverse_queue_id, from, to, from_device_id, receiver: true) do
+        case store_message_and_ack(id, payload, reverse_queue_id, from, to, offset) do
           {:ok, recv_offset} ->
             # Check the result of the atomic insert
             case insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset) do
               {:ok, _offsets} ->
                 # send message to device and sender
                   # send_signal_to_sender(id, offset, @status, from, to, queue_id, from_device_id, @partition_id)
-                  push_to_device(payload, offset, offset, @sender_signal_type)
-                  push_to_device(payload, recv_offset, offset, @receiver_signal_type, receiver: true)
+                  # push_to_device(payload, offset, offset, @sender_signal_type)
+                  # push_to_device(payload, recv_offset, offset, @receiver_signal_type, receiver: true)
+                  :ok
               {:error, _reason} ->
 
               _recovery_data = [
@@ -104,24 +103,18 @@ defmodule Chat.SendMessage do
             # Queue.Recovery.enqueue_id_link_failure(recovery_data)
             :ok
         end
-      {:error, _reason} ->
-        :ok
+
+      {:error, _reason} -> :ok
     end
   end
 
-  defp store_and_ack(id, payload, queue_id, from, to, from_device_id, opts \\ []) do
+  defp store_message_and_ack(id, payload, queue_id, from, to, sender_offset \\ nil) do
     # is_receiver = Keyword.get(opts, :receiver, false)
-
-    with {:ok, offset} <- Injection.store_message(queue_id, @partition_id, from, to, payload, id),
-        # {:ok, _} <- maybe_advance_offset(queue_id, from_device_id, @partition_id, offset, is_receiver),
-        {:atomic, _} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
+    with {:ok, offset} <- Injection.store_message(queue_id, @partition_id, from, to, payload, id, sender_offset) do
+        # {:atomic, _} <- Injection.mark_ack_status(queue_id, from_device_id, @partition_id, offset, :sent) do
       {:ok, offset}
     end
   end
-
-  # defp maybe_advance_offset(_queue, _device, _partition, offset, true), do: {:ok, offset}
-  # defp maybe_advance_offset(queue, device, partition, offset, false),
-  #   do: Injection.advance_offset(queue, device, partition, offset)
 
   defp push_to_device(payload, signal_offset, user_offset, signal_type,  opts \\ []) do
     is_receiver = Keyword.get(opts, :receiver, false)
@@ -154,18 +147,28 @@ defmodule Chat.SendMessage do
     })
   end
 
-  defp send_signal_to_sender(message_id, offset, peer_offset, from, to) do
+  defp send_signal_to_sender(message_id, offset,  from, to) do
     %{
       from: %Bimip.Identity{eid: to.eid},
       to: %Bimip.Identity{eid: from.eid},
       message_id: message_id,
-      peer: %Bimip.Peer{ from: from.eid, to: to.eid,  }
+      peer: %Bimip.Peer{ to: to.eid,  peer_offset: offset}
     }
     |> ThrowMessagePeerAckSignalSchema.build()
     |> then(&Connect.outbouce(from.connection_resource_id, &1))
   end
 
-  defp deliver_to_online_devices(eid, payload, opts \\ []) do
+
+    # 📌 Arch Strategy: State-in-Process & Atomic RPC
+    #   Process-as-Storage: Move device metadata from DeviceStorage (DB) into the Mother GenServer State. Eliminates DB bottlenecks during message fan-out.
+    #   Atomic Serialization: Use GenServer.call for device updates. The Mother’s mailbox acts as a natural mutex, preventing race conditions between multiple devices.
+    #   Direct Addressing: Use [PID, Node] metadata in messages. Replace global registries (Horde) with Local Registry + RPC to reduce cluster-wide sync noise.
+    #   Process Monitoring: Mother calls Process.monitor/1 on all Client PIDs.
+    #   Effect: Instant cleanup of "Online" status via :DOWN messages instead of polling a "Last Seen" timestamp.
+    #   Hybrid Geo-Routing: Keep the "Mother" anchored in the home region (Nigeria) for data consistency, but terminate the "Client" at the Edge (London) for low-latency handshakes.
+    #   Also comit state should be move to genserver state
+
+    defp deliver_to_online_devices(eid, payload, opts \\ []) do
     exclude_device = Keyword.get(opts, :exclude_device, nil)
     now = DateTime.utc_now()
 

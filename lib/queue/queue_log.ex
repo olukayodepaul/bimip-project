@@ -13,8 +13,8 @@ defmodule Queue.QueueLog do
       require Logger
 
       # Public API: Delegates everything to QueueLogImpl
-      def store_message(user, partition_id, from, to, payload, id, user_offset \\ nil, merge_offset \\ nil) do
-        QueueLogImpl.write(user, partition_id, from, to, payload, id, user_offset, merge_offset)
+      def store_message(user, partition_id, from, to, payload, id, sender_offset \\ nil) do
+        QueueLogImpl.write(user, partition_id, from, to, payload, id, sender_offset)
       end
 
       def fetch_messages(user, device_id, partition_id, limit \\ 1) when limit > 0 do
@@ -78,8 +78,8 @@ end
 
 # Queue.Injection.mark_ack_status()
 
-# Queue.Injection.get_ack_status("b@domain.com_a@domain.com", "", 1, 1)
-# Queue.Injection.get_last_seen_offset("a@domain.com", "aaaaa2", 1 )
+# Queue.Injection.fetch_messages("b@domain.com_a@domain.com", "", 1, 1)
+# Queue.Injection.fetch_messages("a@domain.com", "aaaaa2", 1..10 )
 
 
 # # ack_status(user, device, partition, 0..5, :read)

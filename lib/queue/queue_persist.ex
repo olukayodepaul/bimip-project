@@ -6,13 +6,17 @@ defmodule Queue.Persist do
   """
 
   @transmission_mode 1
+  @sender 1
+  @receiver 3
 
 
-  def build(%{from: from, to: to, payload: payload} = _attrs, offset, peer_offset \\ nil) do
+  def build(%{ payload: payload} = _attrs, next_offset, sender_offset) do
 
-        per_user_offset = peer_offset || offset
+        {peer_offset, type, to_peer } = if sender_offset == nil do {next_offset, @sender, payload.to.eid} else {sender_offset, @receiver, payload.from.eid} end
 
-        %Bimip.Message{
+        IO.inspect(%Bimip.Message{
+          offset: next_offset,
+          type: type,
           message_id: payload.message_id,
           from: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
           to: %Bimip.Identity{ eid: payload.to.eid, connection_resource_id: payload.to.connection_resource_id},
@@ -20,8 +24,9 @@ defmodule Queue.Persist do
           encryption_type: payload.encryption_type,
           encrypted: payload.encrypted,
           signature: payload.signature,
-          transmission_mode: @transmission_mode, # 1 Pusll request
-          peer: %Bimip.Peer{ from: payload.from_peer, to: payload.to_peer, offset: offset, peer_offset: peer_offset }
-        }
+          transmission_mode: @transmission_mode, # 1 Pull request
+          peer: %Bimip.Peer{to: to_peer, peer_offset:  peer_offset}
+        })
+
       end
 end

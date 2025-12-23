@@ -68,6 +68,7 @@ defmodule Bimip.Message do
   field :type, 9, proto3_optional: true, type: :int32
   field :transmission_mode, 10, proto3_optional: true, type: :int32, json_name: "transmissionMode"
   field :peer, 11, proto3_optional: true, type: Bimip.Peer
+  field :offset, 12, proto3_optional: true, type: :int64
 end
 
 defmodule Bimip.Peer do
@@ -75,10 +76,8 @@ defmodule Bimip.Peer do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :from, 1, type: :string
-  field :to, 2, type: :string
-  field :offset, 3, type: :int64
-  field :peer_offset, 4, type: :int64, json_name: "peerOffset"
+  field :to, 1, type: :string
+  field :peer_offset, 2, type: :int64, json_name: "peerOffset"
 end
 
 defmodule Bimip.MessagePeerAckSignal do

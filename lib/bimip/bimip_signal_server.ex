@@ -263,6 +263,41 @@ defmodule Bimip.SignalServer do
 
 
 
+
+
+  # ----------------------
+  # Fetch messages
+  # ----------------------
+  @impl true
+  def handle_cast({:fetch_batch_chat, eid, device_id}, state) do
+    case BimipLog.fetch(eid, device_id, 1, 10) do
+      {:ok, %{messages: messages}} -> Enum.each(messages, &IO.inspect(&1))
+      {:error, reason} -> Logger.error("[FETCH] failed for eid=#{eid}: #{inspect(reason)}")
+    end
+
+    {:noreply, state}
+  end
+
+
+  # ----------------------
+  # Catch-all for unexpected messages
+  # ----------------------
+  @impl true
+  def handle_info(msg, state) do
+    Logger.warning("Unhandled message received in Master GenServer: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:fetch_batch_notification, eid, device_id}, state) do
+    case BimipLog.fetch(eid, device_id, 2, 10) do
+      {:ok, %{messages: messages}} -> Enum.each(messages, &IO.inspect(&1))
+      {:error, reason} -> Logger.error("[FETCH] failed for eid=#{eid}: #{inspect(reason)}")
+    end
+
+    {:noreply, state}
+  end
+
   # ----------------------
   # Message logging (via BimipLog GenServer)
   # ----------------------
@@ -278,45 +313,11 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
-  # ----------------------
-  # Fetch messages
-  # ----------------------
-  @impl true
-  def handle_cast({:fetch_batch_chat, eid, device_id}, state) do
-    case BimipLog.fetch(eid, device_id, 1, 10) do
-      {:ok, %{messages: messages}} -> Enum.each(messages, &IO.inspect(&1))
-      {:error, reason} -> Logger.error("[FETCH] failed for eid=#{eid}: #{inspect(reason)}")
-    end
-
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_cast({:fetch_batch_notification, eid, device_id}, state) do
-    case BimipLog.fetch(eid, device_id, 2, 10) do
-      {:ok, %{messages: messages}} -> Enum.each(messages, &IO.inspect(&1))
-      {:error, reason} -> Logger.error("[FETCH] failed for eid=#{eid}: #{inspect(reason)}")
-    end
-
-    {:noreply, state}
-  end
-
-  # ----------------------
-  # Catch-all for unexpected messages
-  # ----------------------
-  @impl true
-  def handle_info(msg, state) do
-    Logger.warning("Unhandled message received in Master GenServer: #{inspect(msg)}")
-    {:noreply, state}
-  end
 
 
 
 
 
-  # -------------------------------
-  # Messages
-  # -------------------------------
   @impl true
   def handle_cast({:route_message, payload}, state) do
     GenServer.cast(self(), {:chat_queue, payload})
