@@ -67,6 +67,7 @@ message OWNERS {
     int64 timestamp = 5;  
     int32 status_code = 6; 
     Peer peer = 7;
+    int64 offset = 8;
   }
 
 

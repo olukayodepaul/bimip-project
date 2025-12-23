@@ -92,6 +92,7 @@ defmodule Bimip.MessagePeerAckSignal do
   field :timestamp, 5, type: :int64
   field :status_code, 6, type: :int32, json_name: "statusCode"
   field :peer, 7, type: Bimip.Peer
+  field :offset, 8, type: :int64
 end
 
 defmodule Bimip.Signal do

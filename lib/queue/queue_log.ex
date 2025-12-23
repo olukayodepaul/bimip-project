@@ -79,7 +79,7 @@ end
 # Queue.Injection.mark_ack_status()
 
 # Queue.Injection.fetch_messages("b@domain.com_a@domain.com", "", 1, 1)
-# Queue.Injection.fetch_messages("a@domain.com", "aaaaa2", 1..10 )
+# Queue.Injection.fetch_messages("a@domain.com", "aaaaa2", 1, 10 )
 
 
 # # ack_status(user, device, partition, 0..5, :read)

@@ -4,6 +4,7 @@ defmodule ThrowMessagePeerAckSignalSchema do
   @status_code 200
 
   def build(%{
+    offset: offset,
     message_id: message_id,
     from: from,
     to: to,
@@ -11,6 +12,7 @@ defmodule ThrowMessagePeerAckSignalSchema do
   }) do
 
     message_peer_ack_signal = %Bimip.MessagePeerAckSignal{
+      offset: offset,
       message_id: message_id,
       from: from,
       to: to,

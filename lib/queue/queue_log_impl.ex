@@ -554,8 +554,8 @@ defmodule Queue.QueueLogImpl do
 
     :mnesia.transaction(fn ->
       case :mnesia.read(:message_offset, key) do
-        [{:message_offset, ^key, offset, peer_offset}] ->
-          {:ok, offset, peer_offset}
+        [{:message_offset, ^key, offset}] ->
+          {:ok, offset}
 
         [] ->
           {:error, :not_found}

@@ -40,12 +40,10 @@ defmodule Chat.SendMessage do
     reverse_queue_id = "#{to_eid}"
 
     case get_message_offset(queue_id,  @partition_id, message_id) do
-      {:ok, offset, peer_offset} ->
-        IO.inspect(1)
-        # send_signal_to_sender(message_id, offset, from, to)
+      {:ok, offset} ->
+        send_signal_to_sender(message_id, offset, from, to)
       {:error, :not_found} ->
-        IO.inspect(2)
-        handle_new_message(message_id, payload,  queue_id, reverse_queue_id, from, to, device_id)
+        handle_new_message(message_id, payload,  queue_id, reverse_queue_id, from, to)
     end
 
   end
@@ -63,21 +61,23 @@ defmodule Chat.SendMessage do
     :ok
   end
 
-  defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to, from_device_id) do
+  defp handle_new_message(id, payload, queue_id, reverse_queue_id, from, to) do
 
     case store_message_and_ack(id, payload, queue_id, from, to) do
       {:ok, offset} ->
         case store_message_and_ack(id, payload, reverse_queue_id, from, to, offset) do
           {:ok, recv_offset} ->
-            # Check the result of the atomic insert
             case insert_message_id(queue_id, reverse_queue_id, @partition_id, id, offset, recv_offset) do
-              {:ok, _offsets} ->
+              {:ok, offsets} ->
+                IO.inspect({"offsets"})
                 # send message to device and sender
                   # send_signal_to_sender(id, offset, @status, from, to, queue_id, from_device_id, @partition_id)
                   # push_to_device(payload, offset, offset, @sender_signal_type)
                   # push_to_device(payload, recv_offset, offset, @receiver_signal_type, receiver: true)
                   :ok
-              {:error, _reason} ->
+              {:error, reason} ->
+
+                IO.inspect({reason})
 
               _recovery_data = [
                   %{
@@ -149,6 +149,7 @@ defmodule Chat.SendMessage do
 
   defp send_signal_to_sender(message_id, offset,  from, to) do
     %{
+      offset: offset,
       from: %Bimip.Identity{eid: to.eid},
       to: %Bimip.Identity{eid: from.eid},
       message_id: message_id,
