@@ -65,15 +65,17 @@ defmodule Bimip.Application do
     create(:first_segment, [:key, :segment], :set)
     create(:next_offsets, [:key, :offset], :set)
     create(:commit_offsets, [:key, :offset], :set)
-    create(:pending_acks, [:key, :offsets], :set)   # original pending
 
-    # New per-status pending and commit tables
-    create(:pending_sent, [:key, :set], :set)
-    create(:pending_delivered, [:key, :set], :set)
-    create(:pending_read, [:key, :set], :set)
-    create(:commit_sent, [:key, :offset], :set)
-    create(:commit_delivered, [:key, :offset], :set)
-    create(:commit_read, [:key, :offset], :set)
+    # create(:pending_acks, [:key, :offsets], :set)   # original pending
+    # # New per-status pending and commit tables
+    # create(:pending_sent, [:key, :set], :set)
+    # create(:pending_delivered, [:key, :set], :set)
+    # create(:pending_read, [:key, :set], :set)
+    # create(:commit_sent, [:key, :offset], :set)
+    # create(:commit_delivered, [:key, :offset], :set)
+    # create(:commit_read, [:key, :offset], :set)
+
+
     create(:resume_grace, [:key, :timestamp], :set)
     create(:resume_grace, [:key, :timestamp], :set)
     create(:message_offset, [:key, :offset], :set)
