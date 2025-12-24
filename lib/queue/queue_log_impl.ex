@@ -14,6 +14,8 @@ defmodule Queue.QueueLogImpl do
   @base_dir "data/bimip"
   @index_granularity 1
   @segment_size_limit 104_857_600 # 100 MB
+  @entry_header_size 8           # FIX: 32bit size + 32bit crc for log entries
+  @index_entry_size 20           # FIX: 64bit offset + 32bit seg + 64bit pos for index
   alias Queue.Persist
 
   # ----------------------
@@ -21,7 +23,7 @@ defmodule Queue.QueueLogImpl do
   # ----------------------
 
   @doc "Append a message to a user's partition log"
-  def write(user, partition_id, from, to, payload, user_offset \\ nil, merge_offset \\ nil) do
+  def write(user, partition_id, from, to, payload, message_id, sender_offset) do
     with :ok <- ensure_files_exist(user, partition_id),
         {:ok, %{seg: seg, next_offset: next_offset, do_rollover: do_rollover}} <- get_atomic_write_state(user, partition_id) do
 
@@ -32,11 +34,12 @@ defmodule Queue.QueueLogImpl do
           {:ok, pos_before} = :file.position(fd, :eof)
 
           timestamp = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
-          offset_payload = Persist.build(%{from: from, to: to, payload: payload}, next_offset, user_offset)
+          offset_payload = Persist.build(%{payload: payload}, next_offset, sender_offset)
 
           record = %{
+            message_id: message_id,
+            device_id: payload.device_id,
             offset: next_offset,
-            merge_offset: merge_offset || 0,
             partition_id: partition_id,
             from: from,
             to: to,
@@ -69,9 +72,6 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  @doc """
-  Fetch up to `limit` messages for a device starting at its commit_offset + 1
-  """
   def fetch(user, device_id, partition_id, limit \\ 10) when limit > 0 do
     with :ok <- ensure_files_exist(user, partition_id),
         :ok <- ensure_device_files_exist(user, device_id, partition_id),
@@ -80,55 +80,104 @@ defmodule Queue.QueueLogImpl do
         {:ok, first_seg} <- get_first_segment(user, partition_id) do
 
       target_offset = commit_offset + 1
-      {_indexed_offset, start_seg_from_idx, start_pos_from_idx} = lookup_sparse_index(user, partition_id, target_offset)
+      {_indexed_offset, start_seg_from_idx, start_pos_from_idx} =
+        lookup_sparse_index(user, partition_id, target_offset)
+
       start_seg = max(start_seg_from_idx, first_seg)
 
-      {messages, last_offset_read} =
-        Enum.reduce_while(start_seg..current_seg, {[], commit_offset}, fn seg, {acc, last} ->
+      # Lazy stream across segments
+      payload_stream =
+        start_seg..current_seg
+        |> Stream.flat_map(fn seg ->
           qfile = queue_file(user, partition_id, seg)
 
-          if not File.exists?(qfile) do
-            {:cont, {acc, last}}
-          else
+          if File.exists?(qfile) do
             case File.open(qfile, [:read, :binary]) do
               {:ok, fd} ->
-                index_start_pos_for_seg = if seg == start_seg, do: start_pos_from_idx, else: 0
-                {new_acc, new_last} =
-                  read_segment_from_fd(
-                    fd,
-                    target_offset,
-                    acc,
-                    last,
-                    limit,
-                    user,
-                    device_id,
-                    partition_id,
-                    seg,
-                    index_start_pos_for_seg
-                  )
+                start_pos = if seg == start_seg, do: start_pos_from_idx, else: 0
 
-                File.close(fd)
-                if length(new_acc) >= limit, do: {:halt, {new_acc, new_last}}, else: {:cont, {new_acc, new_last}}
+                read_segment_from_fd_lazy(fd, start_pos, target_offset, user, device_id, limit)
+                |> Stream.take(limit) # limit per fetch
+                |> tap_close_file(fd)
 
               {:error, reason} ->
                 Logger.error("Failed to open segment file #{qfile}: #{inspect(reason)}")
-                {:cont, {acc, last}}
+                []
             end
+          else
+            []
           end
         end)
+        |> Enum.take(limit) # materialize batch
 
       {:ok,
-      %{
-        messages: messages,
-        device_offset: commit_offset,
-        target_offset: target_offset,
-        current_segment: current_seg,
-        first_segment: first_seg
-      }}
+        %{
+          messages: payload_stream,
+          device_offset: commit_offset,
+          target_offset: target_offset,
+          current_segment: current_seg,
+          first_segment: first_seg
+        }}
     else
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp read_segment_from_fd_lazy(fd, start_pos, target_offset, eid, device_id, limit) do
+    :file.position(fd, start_pos)
+
+    Stream.unfold({fd, 0}, fn
+      {fd_state, count} when count < limit ->
+        case read_log_entry(fd_state) do
+          :eof -> nil
+          {:corrupt, _} -> nil
+          {:ok, msg} ->
+            if msg.offset >= target_offset and msg.device_id != device_id do
+              {{msg.offset, msg.payload}, {fd_state, count + 1}}
+            else
+              {nil, {fd_state, count}}
+            end
+        end
+
+      _ ->
+        nil
+    end)
+    |> Stream.reject(&is_nil/1)
+    |> Stream.map(fn {_offset, msg} ->
+      intended_to = %Bimip.Identity{
+        eid: eid,
+        connection_resource_id: device_id,
+        node: nil
+      }
+
+      %Bimip.Message{
+        msg |
+        to: intended_to,
+        timestamp: Until.UniPosTime.uni_pos_time(),
+        type: if msg.from.eid == eid do 2 else 3 end
+      }
+    end)
+  end
+
+
+  # ----------------------
+  # Helper to close file after stream processing
+  # ----------------------
+  defp tap_close_file(stream, fd) do
+    Stream.resource(
+      fn -> stream end,
+      fn
+        s ->
+          case Enum.split(s, 1) do
+            {[], _} -> {:halt, s}
+            {[h], t} -> {[h], t}
+          end
+      end,
+      fn _ -> File.close(fd) end
+    )
+  end
+
+
 
   # ----------------------
   # Atomic write helpers
@@ -178,35 +227,6 @@ defmodule Queue.QueueLogImpl do
     end
 
     :ok
-  end
-
-  # ----------------------
-  # Read segment from file
-  # ----------------------
-  defp read_segment_from_fd(fd, target_offset, acc, last, limit, user, device_id, partition_id, seg, start_pos) do
-    :file.position(fd, start_pos)
-
-    stream =
-      Stream.unfold(fd, fn fd_state ->
-        case read_log_entry(fd_state) do
-          :eof -> nil
-          {:corrupt, _} -> nil
-          {:ok, msg} -> {msg, fd_state}
-        end
-      end)
-
-    msgs =
-      stream
-      |> Stream.filter(fn m -> m.offset >= target_offset end)
-      |> Enum.take(limit - length(acc))
-
-    new_acc = acc ++ msgs
-    new_last = List.last(msgs) |> case do nil -> last; msg -> msg.offset end
-
-    {:ok, cur_pos} = :file.position(fd, :cur)
-    set_segment_cache(user, device_id, partition_id, seg, cur_pos)
-
-    {new_acc, new_last}
   end
 
   # ----------------------
@@ -271,8 +291,8 @@ defmodule Queue.QueueLogImpl do
     idx = index_file(user, partition_id)
 
     case File.stat(idx) do
-      {:ok, %{size: size}} when size >= 20 ->
-        entries = div(size, 20)  # each entry is 20 bytes: 64+32+64 bits
+      {:ok, %{size: size}} when size >= @index_entry_size -> # Used constant
+        entries = div(size, @index_entry_size)  # Used constant
         case File.open(idx, [:read, :binary]) do
           {:ok, fd} ->
             res = binary_search_index_fd(fd, target_offset, 0, entries - 1, {0, 1, 0})
@@ -288,10 +308,10 @@ defmodule Queue.QueueLogImpl do
   defp binary_search_index_fd(_fd, _target, low, high, best) when low > high, do: best
   defp binary_search_index_fd(fd, target_offset, low, high, best) do
     mid = div(low + high, 2)
-    pos = mid * 20
+    pos = mid * @index_entry_size # Used constant
     case :file.position(fd, pos) do
       {:ok, _} ->
-        case :file.read(fd, 20) do
+        case :file.read(fd, @index_entry_size) do # Used constant
           {:ok, <<offset::64, seg::32, pos64::64>>} ->
             cond do
               offset == target_offset -> {offset, seg, pos64}
@@ -303,7 +323,6 @@ defmodule Queue.QueueLogImpl do
       _ -> best
     end
   end
-
   # ----------------------
   # Log entry serialization
   # ----------------------
@@ -319,23 +338,18 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp read_log_entry(fd) do
-    case :file.read(fd, 8) do
+    case :file.read(fd, @entry_header_size) do # Used constant
       {:ok, <<size::32, crc::32>>} ->
         case :file.read(fd, size) do
           {:ok, bin} ->
             if :erlang.crc32(bin) == crc, do: {:ok, :erlang.binary_to_term(bin)}, else: {:corrupt, :crc_mismatch}
           :eof -> :eof
+          {:error, reason} -> {:corrupt, reason} # Safety fix
         end
       :eof -> :eof
-      {:error, reason} -> {:corrupt, reason}
+      {:error, reason} -> {:corrupt, reason} # Safety fix
     end
   end
-
-  # ----------------------
-  # Segment cache helpers
-  # ----------------------
-  defp get_segment_cache(_user, _device, _partition, _seg), do: {:ok, 0}
-  defp set_segment_cache(_user, _device, _partition, _seg, _pos), do: :ok
 
   # -------------------------------------------------------------------
   # Acknowledge (commit) message offset — moves contiguous commit forward
@@ -388,131 +402,16 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-
-
-  # # -------------------------------------------------------------------
-  # # Acknowledge (commit) message offset — moves contiguous commit forward
-  # # -------------------------------------------------------------------
-  # def ack_message(user, device, partition, offset) do
-  #   key = {user, device, partition}
-
-  #   result =
-  #     :mnesia.transaction(fn ->
-  #       # Get current commit offset
-  #       commit =
-  #         case :mnesia.read(:commit_offsets, key) do
-  #           [{:commit_offsets, ^key, c}] -> c
-  #           [] -> 0
-  #         end
-
-  #       # Get current pending set
-  #       pending =
-  #         case :mnesia.read(:pending_acks, key) do
-  #           [{:pending_acks, ^key, set}] -> set
-  #           [] -> MapSet.new()
-  #         end
-
-  #       # Only add if it's ahead of commit
-  #       pending =
-  #         if offset > commit do
-  #           MapSet.put(pending, offset)
-  #         else
-  #           pending
-  #         end
-
-  #       # Advance commit forward if contiguous
-  #       new_commit = advance_commit_to_max(pending, commit)
-  #       new_pending = MapSet.filter(pending, fn x -> x > new_commit end)
-
-  #       # Persist
-  #       :mnesia.write({:commit_offsets, key, new_commit})
-  #       :mnesia.write({:pending_acks, key, new_pending})
-
-  #       new_commit
-  #     end)
-
-  #   case result do
-  #     {:atomic, commit} -> {:ok, commit}
-  #     {:aborted, reason} -> {:error, reason}
-  #   end
-  # end
-
-  # -------------------------------------------------------------------
-  # Helper to advance commit only through contiguous offsets
-  # -------------------------------------------------------------------
-  # defp advance_commit_to_max(pending, commit) do
-  #   next = commit + 1
-  #   if MapSet.member?(pending, next) do
-  #     advance_commit_to_max(MapSet.delete(pending, next), next)
-  #   else
-  #     commit
-  #   end
-  # end
   defp advance_commit_to_max(pending, commit) do
     next = commit + 1
 
     if MapSet.member?(pending, next) do
+      # Move commit forward and continue
       advance_commit_to_max(MapSet.delete(pending, next), next)
     else
-      # FIXED: return the advanced commit, NOT the old commit
+      # Return the highest contiguous commit
       commit
     end
-  end
-
-  def ack_status(user, device, partition, offset_or_range, status)
-      when status in [:sent, :delivered, :read] do
-
-    # If status is :read, first mark sent and delivered
-    if status == :read do
-      ack_status(user, device, partition, offset_or_range, :sent)
-      ack_status(user, device, partition, offset_or_range, :delivered)
-    end
-
-    key = {user, partition}
-
-    {pending_table, commit_table} =
-      case status do
-        :sent -> {:pending_sent, :commit_sent}
-        :delivered -> {:pending_delivered, :commit_delivered}
-        :read -> {:pending_read, :commit_read}
-      end
-
-    offsets =
-      case offset_or_range do
-        %Range{} = r -> Enum.to_list(r)
-        offset when is_integer(offset) -> [offset]
-      end
-
-    :mnesia.transaction(fn ->
-      pending =
-        case :mnesia.read(pending_table, key) do
-          [{^pending_table, ^key, set}] -> set
-          [] -> MapSet.new()
-        end
-
-      pending = Enum.reduce(offsets, pending, &MapSet.put(&2, &1))
-      :mnesia.write({pending_table, key, pending})
-
-      commit =
-        case :mnesia.read(commit_table, key) do
-          [{^commit_table, ^key, c}] -> c
-          [] -> 0
-        end
-
-      new_commit = advance_contiguous_to_max(pending, commit)
-      remaining = MapSet.filter(pending, fn x -> x > new_commit end)
-
-      :mnesia.write({commit_table, key, new_commit})
-      :mnesia.write({pending_table, key, remaining})
-
-      new_commit
-    end)
-  end
-
-
-  defp advance_contiguous_to_max(pending, commit) do
-    next = commit + 1
-    if MapSet.member?(pending, next), do: advance_contiguous_to_max(MapSet.delete(pending, next), next), else: commit
   end
 
   def message_status(user, _device, partition, offset) do
@@ -617,18 +516,32 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  def insert_message_id(user, device, partition_id, message_id, offset) do
-    key = {user, device, partition_id, message_id}
+  def insert_message_id(snd_id, rec_id, partition_id, message_id, snd_offset, rec_offset) do
+    snd_key = {snd_id, partition_id, message_id}
+    rec_key = {rec_id, partition_id, message_id}
 
     :mnesia.transaction(fn ->
-      case :mnesia.read(:message_offset, key) do
-        [{:message_offset, ^key, _existing_offset}] ->
-          {:error, :exists}
-
+      # Check for existing sender key
+      case :mnesia.read(:message_offset, snd_key) do
+        [{:message_offset, ^snd_key, _}] ->
+          :mnesia.abort({:exists, :sender})
         [] ->
-          :mnesia.write({:message_offset, key, offset})
-          {:ok, true}
+          :ok
       end
+
+      # Check for existing receiver key
+      case :mnesia.read(:message_offset, rec_key) do
+        [{:message_offset, ^rec_key, _}] ->
+          :mnesia.abort({:exists, :receiver})
+        [] ->
+          :ok
+      end
+
+      # If both keys do not exist → insert both
+      :mnesia.write({:message_offset, snd_key, snd_offset})
+      :mnesia.write({:message_offset, rec_key, rec_offset})
+
+      {:ok, :inserted}
     end)
     |> case do
       {:atomic, result} -> result
@@ -636,18 +549,24 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  def get_message_offset(user, device, partition_id, message_id) do
-    key = {user, device, partition_id, message_id}
+  def get_message_offset(user, partition_id, message_id) do
+    key = {user, partition_id, message_id}
 
     :mnesia.transaction(fn ->
       case :mnesia.read(:message_offset, key) do
-        [{:message_offset, ^key, offset}] -> {:ok, offset}
-        [] -> {:error, :not_found}
+        [{:message_offset, ^key, offset}] ->
+          {:ok, offset}
+
+        [] ->
+          {:error, :not_found}
       end
     end)
     |> case do
-      {:atomic, result} -> result
-      {:aborted, reason} -> {:error, reason}
+      {:atomic, result} ->
+        result
+
+      {:aborted, reason} ->
+        {:error, reason}
     end
   end
 
@@ -655,26 +574,331 @@ defmodule Queue.QueueLogImpl do
     key = {user, device, partition_id}
 
     :mnesia.transaction(fn ->
-      # contiguous commit offset
-      commit =
-        case :mnesia.read(:commit_offsets, key) do
-          [{:commit_offsets, ^key, offset}] -> offset
-          [] -> 0
-        end
-
-      # pending offsets (gaps)
-      pending =
-        case :mnesia.read(:pending_acks, key) do
-          [{:pending_acks, ^key, set}] -> set
-          [] -> MapSet.new()
-        end
-
-      # true last seen = max(commit, max(pending))
-      Enum.max([commit | MapSet.to_list(pending)])
+      case :mnesia.read(:commit_offsets, key) do
+        [{:commit_offsets, ^key, offset}] -> offset
+        [] -> 0
+      end
     end)
     |> case do
       {:atomic, offset} -> {:ok, offset}
       {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  def ack_message_batched(user, device, partition, offset_or_range, batch_size \\ 1_000) do
+    key = {user, device, partition}
+
+    offsets_stream =
+      case offset_or_range do
+        %Range{} = r -> Stream.chunk_every(Enum.to_list(r), batch_size)
+        offset when is_integer(offset) -> [[offset]]
+      end
+
+    Enum.reduce_while(offsets_stream, {:ok, 0}, fn batch, {:ok, _last_commit} ->
+      case :mnesia.transaction(fn ->
+        # Get current commit offset
+        commit =
+          case :mnesia.read(:commit_offsets, key) do
+            [{:commit_offsets, ^key, c}] -> c
+            [] -> 0
+          end
+
+        # Get current pending set
+        pending =
+          case :mnesia.read(:pending_acks, key) do
+            [{:pending_acks, ^key, set}] -> set
+            [] -> MapSet.new()
+          end
+
+        # Merge batch offsets safely
+        new_pending =
+          Enum.reduce(batch, pending, fn off, acc ->
+            if off > commit, do: MapSet.put(acc, off), else: acc
+          end)
+
+        # Advance commit
+        new_commit = advance_commit_to_max(new_pending, commit)
+        remaining = MapSet.filter(new_pending, fn x -> x > new_commit end)
+
+        # Persist
+        :mnesia.write({:commit_offsets, key, new_commit})
+        :mnesia.write({:pending_acks, key, remaining})
+
+        new_commit
+      end) do
+        {:atomic, commit} -> {:cont, {:ok, commit}}
+        {:aborted, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+
+
+
+def ack_status_multi(users_offsets_status) when is_list(users_offsets_status) do
+    :mnesia.transaction(fn ->
+      Enum.map(users_offsets_status, fn {user, partition, offset_or_range, status} ->
+        # Normalize the input into a list of {start, end} ranges immediately
+        ranges = normalize_to_ranges(offset_or_range)
+        ack_status_core(user, partition, ranges, status)
+      end)
+    end)
+    |> case do
+      {:atomic, commits} -> {:ok, commits}
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Update a single user's ack status.
+  """
+  def ack_status(user, partition, offset_or_range, status) when status in [:sent, :delivered, :read] do
+    ack_status_multi([{user, partition, offset_or_range, status}])
+  end
+
+  # ------------------------------------------------------------------
+  # Core Transactional Logic
+  # ------------------------------------------------------------------
+
+  # Core function: read-modify-write inside a single transaction
+  defp ack_status_core(user, partition, ranges, status) do
+    key = {user, partition}
+
+    # Read current state from Mnesia
+    state = read_current_state(key)
+
+    # Apply transitivity
+    state = apply_transitivity(state, ranges, status)
+
+    # Write back
+    Enum.each([:sent, :delivered, :read], fn s ->
+      {pending_table, commit_table} = status_tables(s)
+      pending_ranges = Map.fetch!(state, pending_table)
+      commit = Map.fetch!(state, commit_table)
+      :mnesia.write({pending_table, key, pending_ranges})
+      :mnesia.write({commit_table, key, commit})
+    end)
+
+    # Return commit offset for requested status
+    {_, commit_table} = status_tables(status)
+    Map.fetch!(state, commit_table)
+  end
+
+  # ------------------------------------------------------------------
+  # Transitivity Logic
+  # ------------------------------------------------------------------
+
+  defp apply_transitivity(state, ranges, :read) do
+    state
+    |> update_status(ranges, :sent)
+    |> update_status(ranges, :delivered)
+    |> update_status(ranges, :read)
+  end
+
+  defp apply_transitivity(state, ranges, :delivered) do
+    state
+    |> update_status(ranges, :sent)
+    |> update_status(ranges, :delivered)
+  end
+
+  defp apply_transitivity(state, ranges, :sent) do
+    update_status(state, ranges, :sent)
+  end
+
+  # Update pending ranges and commit for a specific status
+  defp update_status(state, ranges, status) do
+    {pending_table, commit_table} = status_tables(status)
+
+    pending = Map.fetch!(state, pending_table)
+    commit = Map.fetch!(state, commit_table)
+
+    # 1. Merge new ranges into existing pending ranges, CRITICALLY passing the commit
+    # to filter out offsets that are already committed.
+    new_pending = merge_ranges(pending, ranges, commit)
+
+    # 2. Update commit
+    new_commit = advance_contiguous_to_max(new_pending, commit)
+
+    # 3. Remove contiguous offsets from pending list
+    remaining = remove_committed_range(new_pending, new_commit, commit)
+
+    state
+    |> Map.put(pending_table, remaining)
+    |> Map.put(commit_table, new_commit)
+  end
+
+  # ------------------------------------------------------------------
+  # Range Utilities
+  # ------------------------------------------------------------------
+
+  @doc false
+  # Fixed range merging logic: takes the current commit and filters new ranges against it.
+  defp merge_ranges(existing_ranges, new_ranges, commit) do
+    # 1. Filter and flatten all valid ranges (must start > commit)
+    valid_new_ranges =
+      Enum.flat_map(new_ranges, fn {s, e} ->
+        start = max(s, commit + 1)
+        if start <= e, do: [{start, e}], else: []
+      end)
+
+    all_ranges = List.flatten([existing_ranges, valid_new_ranges])
+
+    # 2. Sort by start offset
+    sorted_ranges = Enum.sort(all_ranges, fn {s1, _}, {s2, _} -> s1 <= s2 end)
+
+    # 3. Merge overlapping/contiguous ranges
+    Enum.reduce(sorted_ranges, [], fn
+      {s, e}, [] ->
+        [{s, e}] # Start of list
+      {s, e}, [{prev_s, prev_e} | rest] = acc ->
+        # If current range overlaps or is contiguous (s <= prev_e + 1)
+        if s <= prev_e + 1 do
+          # Merge: use the earliest start and the latest end
+          [{prev_s, max(prev_e, e)} | rest]
+        else
+          # Not contiguous, prepend the current range
+          [ {s, e} | acc ]
+        end
+    end)
+    |> Enum.reverse() # Reverse back to ascending order of start offset
+  end
+
+  defp advance_contiguous_to_max([], commit), do: commit
+
+  # The start offset of the first range must be exactly 'commit + 1' to advance.
+  defp advance_contiguous_to_max([{s, _e} | _], commit) when s > commit + 1, do: commit
+
+  # If the first range starts exactly at commit + 1, the new commit is that range's end (e).
+  # We don't need to recursively check the rest because advance_contiguous_to_max only
+  # cares about the first element in the sorted list. The range merging logic ensures
+  # that if the list starts with a contiguous block, it's already one merged range.
+  defp advance_contiguous_to_max([{_s, e} | _rest], _commit) do
+    # Since we passed the guard for s > commit + 1, s must equal commit + 1 here.
+    e
+  end
+
+  # Simplified and fixed logic for removing the committed range
+  defp remove_committed_range(ranges, new_commit, old_commit) do
+    if new_commit > old_commit do
+      case ranges do
+        [{_start, end_offset} | rest] ->
+          # If the new commit covers the entire first range, drop it
+          if end_offset <= new_commit do
+            rest
+          else
+            # Otherwise, the new pending starts one past the new commit point
+            [{new_commit + 1, end_offset} | rest]
+          end
+        [] ->
+          []
+      end
+    else
+      ranges # Nothing changed, commit did not advance
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Mnesia Helpers
+  # ------------------------------------------------------------------
+
+  defp status_tables(:sent), do: {:pending_sent, :commit_sent}
+  defp status_tables(:delivered), do: {:pending_delivered, :commit_delivered}
+  defp status_tables(:read), do: {:pending_read, :commit_read}
+
+  defp read_current_state(key) do
+    Enum.reduce([:sent, :delivered, :read], %{}, fn status, acc ->
+      {pending_table, commit_table} = status_tables(status)
+
+      pending = case :mnesia.read(pending_table, key) do
+        [{^pending_table, ^key, value}] -> value
+        [] -> [] # Default to empty list of ranges
+      end
+
+      commit = case :mnesia.read(commit_table, key) do
+        [{^commit_table, ^key, c}] -> c
+        [] -> 0
+      end
+
+      acc
+      |> Map.put(pending_table, pending)
+      |> Map.put(commit_table, commit)
+    end)
+  end
+
+  # ------------------------------------------------------------------
+  # Normalize Input to Ranges
+  # ------------------------------------------------------------------
+
+  # Robust normalization: handles single integer, single Range, or a list containing both.
+  defp normalize_to_ranges(offset_or_range) do
+    cond do
+      is_integer(offset_or_range) ->
+        [{offset_or_range, offset_or_range}]
+
+      match?(%Range{}, offset_or_range) ->
+        [{offset_or_range.first, offset_or_range.last}]
+
+      is_list(offset_or_range) ->
+        Enum.flat_map(offset_or_range, fn
+          i when is_integer(i) -> {i, i}
+          %Range{first: s, last: e} -> {s, e}
+          _ -> []
+        end)
+
+      true ->
+        # Default to an empty list of ranges if the format is unknown
+        []
+    end
+  end
+
+  def save_peer_offset(user, peer, partition, offset) do
+    key = {user, peer, partition}
+
+    case :mnesia.transaction(fn ->
+      # Write last offset atomically
+      :mnesia.write({:peer_offsets, user, peer, partition, offset})
+    end) do
+      {:atomic, :ok} -> {:ok, offset}
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  def recover_and_repair(user, partition_id) do
+    {:ok, current_seg} = get_current_segment(user, partition_id)
+    qfile = queue_file(user, partition_id, current_seg)
+
+    if File.exists?(qfile) do
+      Logger.info("Recovering partition #{partition_id} for user #{user}...")
+
+      # 1. Open log and walk it to find the last valid entry
+      {:ok, fd} = :file.open(qfile, [:read, :binary])
+      {last_offset, last_pos} = walk_log_and_rebuild_index(fd, user, partition_id, current_seg)
+      :file.close(fd)
+
+      # 2. Sync Mnesia with the actual physical state
+      :mnesia.transaction(fn ->
+        :mnesia.write({:next_offsets, {user, partition_id}, last_offset + 1})
+      end)
+
+      {:ok, last_offset}
+    else
+      {:error, :no_segment_found}
+    end
+  end
+
+  defp walk_log_and_rebuild_index(fd, user, pid, seg, last_off \\ 0, last_pos \\ 0) do
+    case read_log_entry(fd) do
+      {:ok, msg} ->
+        # Re-index if necessary during the walk
+        if rem(msg.offset, @index_granularity) == 0 do
+          append_index_file(user, pid, seg, msg.offset, last_pos)
+        end
+
+        {:ok, current_pos} = :file.position(fd, :cur)
+        walk_log_and_rebuild_index(fd, user, pid, seg, msg.offset, current_pos)
+
+      _ -> # :eof or :corrupt
+        {last_off, last_pos}
     end
   end
 

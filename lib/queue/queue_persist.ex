@@ -5,15 +5,28 @@ defmodule Queue.Persist do
   (no nested wrapping).
   """
 
-  @spec build(map(), integer(), integer() | nil) :: map()
-  def build(%{from: from, to: to, payload: payload} = _attrs, signal_offset, user_offset \\ nil) do
-    per_user_offset = user_offset || signal_offset
+  @transmission_mode 1
+  @sender 1
+  @receiver 3
 
-    # Merge the given payload with our added offsets and device id
-    Map.merge(payload, %{
-      signal_offset: "#{signal_offset}",
-      user_offset: "#{per_user_offset}",
-      eid: from.eid
-    })
-  end
+
+  def build(%{ payload: payload} = _attrs, next_offset, sender_offset) do
+
+      {type, to_peer } = if sender_offset == nil do {@sender, payload.to.eid} else {@receiver, payload.from.eid} end
+
+      %Bimip.Message{
+          offset: next_offset,
+          type: type,
+          peer_uid: payload.peer_uid,
+          from: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
+          to: %Bimip.Identity{ eid: payload.to.eid, connection_resource_id: payload.to.connection_resource_id},
+          payload: payload.payload,
+          encryption_type: payload.encryption_type,
+          encrypted: payload.encrypted,
+          signature: payload.signature,
+          transmission_mode: @transmission_mode, # 1 Pull request
+          peer_eid: to_peer,
+        }
+
+      end
 end

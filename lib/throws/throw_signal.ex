@@ -16,16 +16,22 @@ defmodule ThrowSignalSchema do
   # ------------------------------------------------------------------------
   def success(
       %{
-        id: id,
-        signal_offset: signal_offset,
-        user_offset: user_offset,
-        status: status,
-        from: from,
-        to: to,
-        signal_type: signal_type,
-        signal_ack_state: %{send: send, delivered: delivered, read: read, advance_offset: advance_offset},
-        signal_request: signal_request
-      }) do
+      id: id,
+      signal_offset: signal_offset,
+      user_offset: user_offset,
+      status: status,
+      from: from,
+      to: to,
+      signal_type: signal_type,
+      signal_type_ex: signal_type_ex,
+      ack: %{
+          advance_offset: advance_offset, advance_offset_timestamp: advance_offset_timestamp,
+          sent: sent, delivered: delivered, read: read, sent_timestamp: sent_timestamp,
+          delivered_timestamp: delivered_timestamp, read_timestamp: read_timestamp
+        }
+    }) do
+
+
     signal = %Bimip.Signal{
       id: id,
       signal_offset: signal_offset,
@@ -34,8 +40,9 @@ defmodule ThrowSignalSchema do
       from: %Bimip.Identity{eid: from.eid, connection_resource_id: from.connection_resource_id},
       to: %Bimip.Identity{eid: to.eid, connection_resource_id: to.connection_resource_id},
       signal_type: signal_type,
-      signal_ack_state: %Bimip.SignalAckState{send: send, delivered: delivered, read: read, advance_offset: advance_offset },
-      signal_request: signal_request,
+      delivery_ack: %Bimip.DeliveryAck{ sent: sent, delivered: delivered, read: read, sent_timestamp: sent_timestamp, delivered_timestamp: delivered_timestamp, read_timestamp: read_timestamp},
+      offset_ack: %Bimip.OffsetAck{advance_offset: advance_offset, advance_offset_timestamp:  advance_offset_timestamp},
+      signal_type_ex: signal_type_ex,
       type: @type_response,
       timestamp: UniPosTime.uni_pos_time(),
     }

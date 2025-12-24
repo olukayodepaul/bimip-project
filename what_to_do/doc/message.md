@@ -174,7 +174,7 @@ Ensures consistent UI and device synchronization.
 
 ---
 
-## **15. `signal_request`**
+## **15. `signal_direction`**
 
 **Type:** `int`
 Track if message receive is either pull or push request.

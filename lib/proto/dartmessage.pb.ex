@@ -43,15 +43,13 @@ defmodule Bimip.Awareness do
   field :visibility, 12, type: :int32
 end
 
-defmodule Bimip.SignalAckState do
+defmodule Bimip.OWNERS do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :send, 1, type: :bool
-  field :delivered, 2, type: :bool
-  field :read, 3, type: :bool
-  field :advance_offset, 4, type: :bool, json_name: "advanceOffset"
+  field :from, 1, type: :string
+  field :to, 2, type: :string
 end
 
 defmodule Bimip.Message do
@@ -59,20 +57,33 @@ defmodule Bimip.Message do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :id, 1, type: :string
-  field :signal_offset, 2, type: :int32, json_name: "signalOffset"
-  field :user_offset, 3, type: :int32, json_name: "userOffset"
-  field :from, 4, type: Bimip.Identity
-  field :to, 5, type: Bimip.Identity
-  field :timestamp, 7, type: :int64
-  field :payload, 8, type: :bytes
-  field :encryption_type, 9, type: :string, json_name: "encryptionType"
-  field :encrypted, 10, type: :string
-  field :signature, 11, type: :string
-  field :signal_type, 12, type: :int32, json_name: "signalType"
-  field :signal_ack_state, 13, type: Bimip.SignalAckState, json_name: "signalAckState"
-  field :signal_request, 14, type: :int32, json_name: "signalRequest"
-  field :owner, 15, type: Bimip.Identity
+  field :peer_uid, 1, type: :string, json_name: "peerUid"
+  field :from, 2, type: Bimip.Identity
+  field :to, 3, type: Bimip.Identity
+  field :timestamp, 4, type: :int64
+  field :payload, 5, type: :bytes
+  field :encryption_type, 6, type: :string, json_name: "encryptionType"
+  field :encrypted, 7, type: :string
+  field :signature, 8, type: :string
+  field :type, 9, proto3_optional: true, type: :int32
+  field :transmission_mode, 10, proto3_optional: true, type: :int32, json_name: "transmissionMode"
+  field :peer_eid, 11, proto3_optional: true, type: :string, json_name: "peerEid"
+  field :offset, 12, proto3_optional: true, type: :int64
+end
+
+defmodule Bimip.MessagePeerAckSignal do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :to, 1, type: Bimip.Identity
+  field :from, 2, type: Bimip.Identity
+  field :peer_uid, 3, type: :string, json_name: "peerUid"
+  field :method, 4, type: :int32
+  field :timestamp, 5, type: :int64
+  field :status_code, 6, type: :int32, json_name: "statusCode"
+  field :peer_eid, 7, type: :string, json_name: "peerEid"
+  field :offset, 8, type: :int64
 end
 
 defmodule Bimip.Signal do
@@ -90,14 +101,44 @@ defmodule Bimip.Signal do
   field :type, 8, type: :int32
   field :signal_type, 9, type: :int32, json_name: "signalType"
   field :error, 10, proto3_optional: true, type: :string
+  field :offset_ack, 12, type: Bimip.OffsetAck, json_name: "offsetAck"
+  field :delivery_ack, 13, type: Bimip.DeliveryAck, json_name: "deliveryAck"
+  field :signal_type_ex, 14, type: :int32, json_name: "signalTypeEx"
+  field :batched_acks, 15, repeated: true, type: Bimip.BatchedOffset, json_name: "batchedAcks"
+end
 
-  field :signal_lifecycle_state, 11,
-    proto3_optional: true,
-    type: :string,
-    json_name: "signalLifecycleState"
+defmodule Bimip.OffsetAck do
+  @moduledoc false
 
-  field :signal_ack_state, 12, type: Bimip.SignalAckState, json_name: "signalAckState"
-  field :signal_request, 13, type: :int32, json_name: "signalRequest"
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :advance_offset, 1, type: :bool, json_name: "advanceOffset"
+  field :advance_offset_timestamp, 2, type: :int64, json_name: "advanceOffsetTimestamp"
+end
+
+defmodule Bimip.BatchedOffset do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :user_offset, 1, type: :int32, json_name: "userOffset"
+  field :owners, 2, type: Bimip.OWNERS
+  field :timestamp, 3, type: :int64
+  field :signal_type, 4, type: :int32, json_name: "signalType"
+  field :offset, 5, type: :int32
+end
+
+defmodule Bimip.DeliveryAck do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :sent, 1, type: :bool
+  field :delivered, 2, type: :bool
+  field :read, 3, type: :bool
+  field :sent_timestamp, 4, type: :int64, json_name: "sentTimestamp"
+  field :delivered_timestamp, 5, type: :int64, json_name: "deliveredTimestamp"
+  field :read_timestamp, 6, type: :int64, json_name: "readTimestamp"
 end
 
 defmodule Bimip.PushNotification do
@@ -206,10 +247,9 @@ defmodule Bimip.Body do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :route, 1, type: :int64
-  field :awareness_list, 2, repeated: true, type: Bimip.Awareness, json_name: "awarenessList"
-  field :message, 3, repeated: true, type: Bimip.Message
-  field :timestamp, 4, type: :int64
+  field :route, 1, type: :uint32
+  field :messages, 2, repeated: true, type: Bimip.Message
+  field :timestamp, 3, type: :int64
 end
 
 defmodule Bimip.MessageScheme do
@@ -241,4 +281,9 @@ defmodule Bimip.MessageScheme do
   field :body, 10, type: Bimip.Body, oneof: 0
   field :error, 11, type: Bimip.ErrorMessage, oneof: 0
   field :logout, 12, type: Bimip.Logout, oneof: 0
+
+  field :message_peer_ack_signal, 13,
+    type: Bimip.MessagePeerAckSignal,
+    json_name: "messagePeerAckSignal",
+    oneof: 0
 end

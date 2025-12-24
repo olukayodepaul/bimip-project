@@ -1,7 +1,7 @@
 import Config
 
 config :bimip, :connections,
-  secure_tls: false, 
+  secure_tls: false,
   cert_file: "priv/cert.pem",
   key_file: "priv/key.pem",
   port: 4001,

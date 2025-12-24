@@ -199,7 +199,7 @@ message SignalAckState {
 ```
 
 ---
-## **13. `signal_request`**
+## **13. `signal_direction`**
 
 **Type:** `int`
 Track if message receive is either pull or push request.
@@ -212,6 +212,20 @@ Represents message delivery channel:
 * push: 2 -> after advancing offser, do not fetch next message
 
 Ensures consistent UI and device synchronization.
+
+---
+## **14. `signal_type_ex`**
+
+**Type:** `int`
+Tell server is request is to advance offset or message ack.
+
+### Purpose:
+
+Represents message delivery channel:
+
+* Advance offset (System Level): 1 -> for advancing offset
+* Message ack state (User Level): 2 -> use for message acknowledgent
+
 
 ---
 ## **Proto**
@@ -234,21 +248,6 @@ message Signal {
 }
 ```
 ---
-***ack request data ***
-
-```
-  int32 signal_offset = 2; 
-  int32 user_offset = 3;   
-  int32 status = 4;   // 1  ack   
-  Identity from = 6;        
-  Identity to = 7;   
-  int32 type = 8; //1 request
-  int32 signal_type = 9;   // device and reciever
-  string signal_lifecycle_state = 11;   //optional
-
-```
-
-----
 **ACK AND SENDER for pulling message ack statt**
 ```
 ack_signal = %Bimip.Signal{
@@ -275,4 +274,127 @@ hex_ack = Base.encode16(binary_ack, case: :upper)
 ```
 
 
+***Resume data***
+```proto 
+ack_signal = %Bimip.Signal{
+  status: 7,
+  timestamp: System.system_time(:second),
+  to: %Bimip.Identity{
+    eid: "a@domain.com"
+  },
+  type: 1
+}
 
+ack_message = %Bimip.MessageScheme{
+  route: 7,               # route for signaling/ack messages
+  payload: {:signal, ack_signal}
+}
+
+binary_ack = Bimip.MessageScheme.encode(ack_message)
+hex_ack = Base.encode16(binary_ack, case: :upper)
+```
+
+
+***Forward/advance Offset data***
+This is to self. signal_type_ex: 1, is forward offself and it is to self..
+```proto 
+ack_signal = %Bimip.Signal{
+  signal_offset: 4,
+  status: 1,
+  type: 1,
+  timestamp: System.system_time(:second),
+  to: %Bimip.Identity{
+    eid: "a@domain.com"
+  },
+  signal_type_ex: 1,
+}
+
+ack_message = %Bimip.MessageScheme{
+  route: 7,               # route for signaling/ack messages
+  payload: {:signal, ack_signal}
+}
+
+binary_ack = Bimip.MessageScheme.encode(ack_message)
+hex_ack = Base.encode16(binary_ack, case: :upper)
+
+```
+
+---
+***delivered Message***
+This is to self. signal_type_ex: 1, is forward offself and it is to self..
+```proto 
+ack_signal = %Bimip.Signal{
+  status: 1,
+  type: 1,
+  timestamp: System.system_time(:second),
+  to: %Bimip.Identity{
+    eid: "b@domain.com"
+  },
+  batched_acks: [
+    %Bimip.BatchedOffset{
+      user_offset: 1,
+      offset: 1,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "a@domain.com",
+        to: "b@domain.com"
+      },
+      signal_type: 3,
+    },
+    %Bimip.BatchedOffset{
+      user_offset: 2,
+      offset: 2,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "a@domain.com",
+        to: "b@domain.com"
+      },
+      signal_type: 3,
+    },
+     %Bimip.BatchedOffset{
+      user_offset: 3,
+      offset: 3,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "a@domain.com",
+        to: "b@domain.com"
+      },
+      signal_type: 3,
+    },
+
+    %Bimip.BatchedOffset{
+      user_offset: 1,
+      offset: 4,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "c@domain.com",
+        to: "b@domain.com"
+      },
+      signal_type: 3,
+    },
+
+     %Bimip.BatchedOffset{
+      user_offset: 1,
+      offset: 5,
+      timestamp: System.system_time(:second),
+      owners: %Bimip.OWNERS{
+        from: "e@domain.com",
+        to: "b@domain.com"
+      },
+      signal_type: 3,
+    },
+
+  ],
+  signal_type_ex: 3,
+}
+
+ack_message = %Bimip.MessageScheme{
+  route: 7,               # route for signaling/ack messages
+  payload: {:signal, ack_signal}
+}
+
+binary_ack = Bimip.MessageScheme.encode(ack_message)
+hex_ack = Base.encode16(binary_ack, case: :upper)
+
+
+08073A1B2001288ECBABC9063A0D0A0B40646F6D61696E2E636F6D40017001

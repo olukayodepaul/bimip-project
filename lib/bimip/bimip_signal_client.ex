@@ -292,134 +292,77 @@ defmodule Bimip.SignalClient do
   end
 
 
-  def handle_cast(
-        {:client_message, _eid, _device_id, data},
-        %{ws_pid: ws_pid, device_id: device_id} = state
-      ) do
 
-    # Decode the incoming message binary
-    msg = Bimip.MessageScheme.decode(data)
 
-    case msg.payload do
-      {:message, %Bimip.Message{} = message} ->
-        case Bimip.Validators.MessageValidator.validate(message) do
-          :ok ->
-
-            # Extract full message data into a post map
-            payload = %Chat.MessageStruct{
-              id: message.id,
-              from: %Chat.EntityStruct{
-                eid: message.from.eid,
-                connection_resource_id: device_id
-              },
-              to: %Chat.EntityStruct{
-                eid: message.to.eid,
-                connection_resource_id: message.to.connection_resource_id
-              },
-              timestamp: message.timestamp,
-              payload: message.payload,
-              encryption_type: message.encryption_type,
-              encrypted: message.encrypted,
-              signature: message.signature,
-              device_id: device_id
-            }
-
-            payload
-            |> server_route(:eid, :route_message)
-            |> Connect.handle_inbouce_signal
-
-            {:noreply,
-            %{
-              state
-              | device_state: %{
-                  state.device_state
-                  | last_seen: DateTime.utc_now(),
-                    last_activity: DateTime.utc_now(),
-                    last_change_at: DateTime.utc_now()
-                }
-            }}
-
-          {:error, err} ->
-
-            reason = "Field '#{err.field}' → #{err.description}"
-
-            error_binary =
-              ThrowMessageSchema.error(
-                message.id || "",
-                message.from.eid,
-                message.from.connection_resource_id,
-                reason,
-                message.to.eid,
-                message.to.connection_resource_id
-              )
-
-            send(ws_pid, {:binary, error_binary})
-            {:noreply, state}
-        end
-
-      _ ->
-        reason = "Invalid payload: expected Message stanza"
-        error_binary =
-          ThrowMessageSchema.error(
-            "0",                     # id
-            state.eid,               # from_eid
-            state.device_id,         # from_device_id
-            reason,                  # description
-            "",                      # to_eid (optional)
-            ""                       # to_device_id (optional)
-          )
-
-        send(state.ws_pid, {:binary, error_binary})
-        {:noreply, state}
-
-      end
-  end
-
-  #--- WOEKING AND COMPLETED
-  def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
-    send(ws_pid, {:binary, binary})
-    {:noreply, state}
-  end
   #--- WORKING
 
   # validation next
-  def handle_cast({:signal_to_client, payload}, %{eid: eid, device_id: device_id} = state) do
+  def handle_cast({:signal_to_client, payload}, %{eid: state_eid, device_id: device_id} = state) do
 
     msg = Bimip.MessageScheme.decode(payload)
 
     case msg.payload do
       {:signal, %Bimip.Signal{} = signal} ->
 
-        transmit_signal_to_server = %Chat.SignalStruct{
+        new_to = if signal.to != nil do
+              %Chat.EntityStruct{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id}
+            else
+              %Chat.EntityStruct{}
+            end
+
+        new_from = if signal.from != nil do
+              %Chat.EntityStruct{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id}
+            else
+              %Chat.EntityStruct{}
+            end
+
+        %Chat.SignalStruct{
           id: signal.id,
-          to: %{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id},
-          from: %{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id},
+          from: new_from,
+          to: new_to,
           status: signal.status,
           type: signal.type,
           signal_offset: signal.signal_offset,
           user_offset: signal.user_offset,
           signal_type: signal.signal_type,
-          signal_lifecycle_state: signal.signal_lifecycle_state,
-          eid: eid,
-          device: device_id
+          eid: state_eid,
+          device: device_id,
+          signal_type_ex: signal.signal_type_ex,
+          batched_acks: signal.batched_acks
         }
-
-        transmit_signal_to_server
-        |> server_route(:eid, :signal_to_server)
-        |> Connect.handle_inbouce_signal
-
+        |> server_route(:eid, :signal_to_server, state_eid)
       _ ->
-        IO.inspect("rroro")
+        :ok
     end
-
     {:noreply, state}
   end
 
-  #----------------------------------------------
-  # This is route to the server. Single route
-  #----------------------------------------------
-  defp server_route(payload, eid, signal_to_server) do
-    {eid, payload.from.eid, signal_to_server, payload}
+  def handle_cast({:chat_message,  data}, %{device_id: device_id, eid: eid} = state) do
+    msg = Bimip.MessageScheme.decode(data)
+    case msg.payload do
+      {:message, %Bimip.Message{} = message} ->
+        case Bimip.Validators.MessageValidator.validate(message) do
+          :ok ->
+            Chat.PrcMessage.prc_message({message, device_id, eid})
+            |> server_route(:eid, :route_message, eid)
+          {:error, err} ->
+            reason = "Field '#{err.field}' → #{err.description} #{err.code}"
+            IO.inspect(reason)
+        end
+        {:noreply, state}
+      _ ->
+        {:noreply, state}
+      end
+  end
+
+  def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
+    send(ws_pid, {:binary, binary})
+    {:noreply, state}
+  end
+
+  defp server_route(payload, chanel, signal_to_server, eid) do
+    {chanel, eid, signal_to_server, payload}
+    |> Connect.handle_inbouce_signal()
   end
 
 

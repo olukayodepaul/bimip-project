@@ -1,248 +1,205 @@
 defmodule Chat.AckSignal do
-  alias Queue.Injection
-  alias Route.SignalCommunication
-  alias ThrowSignalSchema
-  alias Storage.DeviceStorage
-  alias Settings.ServerState
-  alias Route.{Connect}
 
-  @stale_threshold_seconds ServerState.stale_threshold_seconds()
+  alias Queue.Injection
+  alias Route.Connect
 
   @partition_id 1
   @status 1
+  @max_batch 50
 
-  # ---------------------------------------------------
-  # Entry point
-  # ---------------------------------------------------
-  def ack(%Chat.SignalStruct{signal_type: type} = signal) do
-    case type do
-      1 -> sender(signal)
-      2 -> device(signal)
-      3 -> receiver(signal)
-      _ -> IO.puts("Unknown signal type: #{type}")
+  def ack(%Chat.SignalStruct{signal_type_ex: signal_type_ex} = signal) do
+    case signal_type_ex do
+      1 -> advance_offset_state(signal)
+      2 -> read_message(signal)
+      3 -> deliver_message(signal)
+      _ -> IO.puts("")
     end
   end
 
-  # ---------------------------------------------------
-  # SENDER → Just pull ack status
-  # ---------------------------------------------------
-  def sender(%Chat.SignalStruct{
-        id: id,
-        to: %{eid: to_eid},
-        from: %{eid: from_eid},
-        device: device,
-        signal_offset: so,
-        user_offset: uo,
-        eid: eid,
-        signal_lifecycle_state: state
-      } = payload) do
+  def advance_offset_state(%Chat.SignalStruct{
+    eid: eid,
+    device: device,
+    signal_offset: signal_offset
+  } = signal) when is_integer(signal_offset) do
 
-    queue = "#{from_eid}_#{to_eid}"
-
-    send_signal(
-      id, so, uo, @status,
-      %{eid: eid, connection_resource_id: device},
-      payload.to,
-      queue,
-      device,
-      @partition_id,
-      state
-    )
-  end
-
-  # ---------------------------------------------------
-  # DEVICE → Advance offset, then reply
-  # ---------------------------------------------------
-  def device(%Chat.SignalStruct{
-        id: id,
-        to: %{eid: to_eid},
-        from: %{eid: from_eid},
-        device: device,
-        signal_offset: so,
-        user_offset: uo,
-        eid: eid,
-        signal_lifecycle_state: state
-      } = payload) do
-
-    queue = "#{from_eid}_#{to_eid}"
-      IO.inspect(1)
-    commit =
-      if confirm_advance_offset(queue, device, @partition_id, so) do
-        :ok
-      else
-        case maybe_advance_offset(queue, device, @partition_id, so, false) do
-          {:ok, _} -> :ok
-          {:error, _} -> :skip
-        end
-      end
-
-    if commit == :ok do
-      send_signal(
-        id, so, uo, @status,
-        %{eid: eid, connection_resource_id: device},
-        payload.to,
-        queue,
-        device,
-        @partition_id,
-        state
-      )
-    end
-  end
-
-  # ---------------------------------------------------
-  # RECEIVER → delivered/read ack + forward ack to sender
-  # ---------------------------------------------------
-  def receiver(%Chat.SignalStruct{
-        id: id,
-        to: %{eid: to_eid, connection_resource_id: to_dev},
-        from: %{eid: from_eid, connection_resource_id: from_dev},
-        device: device,
-        signal_offset: so,
-        user_offset: uo,
-        signal_lifecycle_state: state
-      } = payload) do
-
-    queue = "#{from_eid}_#{to_eid}"
-    rev   = "#{to_eid}_#{from_eid}"
-
-    commit =
-      case String.to_existing_atom(state) do
-        :delivered ->
-          mark_ack_status(queue, "", @partition_id, so, :delivered)
-          mark_ack_status(rev, "", @partition_id, uo, :delivered)
-          maybe_advance_offset(queue, device, @partition_id, so, false)
-          {:ok, :delivered}
-
-        :read ->
-          mark_ack_status(queue, "", @partition_id, so, :read)
-          mark_ack_status(rev, "", @partition_id, uo, :read)
-          maybe_advance_offset(queue, device, @partition_id, so, false)
-          {:ok, :read}
-
-        _ ->
-          {:error, :error}
-      end
-
-
-    if elem(commit, 0) == :ok do
-
-      fan_out_sender_devices(
-        id, so, uo, @status,
-        %{eid: from_eid, connection_resource_id: device},
-        payload.to,
-        queue,
-        device,
-        @partition_id,
-        state
-      )
-
-      payload
-      |> Map.put(:ack_action, elem(commit, 1))
-      |> server_route(:eid, :signal_to_server_ack)
-
-    end
-  end
-
-  # ---------------------------------------------------
-  # Helpers
-  # ---------------------------------------------------
-  defp get_ack_status(user, device, part, offset),
-    do: Injection.get_ack_status(user, device, part, offset)
-
-  defp confirm_advance_offset(u, d, p, o),
-    do: Injection.confirm_advance_offset(u, d, p, o)
-
-  defp maybe_advance_offset(q, d, p, o, true), do: {:ok, o}
-  defp maybe_advance_offset(q, d, p, o, false),
-    do: Injection.advance_offset(q, d, p, o)
-
-  defp mark_ack_status(q, d, p, o, state),
-    do: Injection.mark_ack_status(q, d, p, o, state)
-
-  defp signal_to_sender(payload, true), do: Connect.handle_inbouce_signal(payload)
-
-  # ---------------------------------------------------
-  # Build ack signal
-  # ---------------------------------------------------
-  defp send_signal(id, so, uo, status, from, to, user, dev, part, state) do
-
-    # REMEMEBER TO WORK ON SIGNAL TYPE
-    signal_type = 1
-
-    %{read: r, sent: s, delivered: d} =
-      get_ack_status(user, dev, part, so)
-
-    adv = confirm_advance_offset(user, dev, part, so)
-
-    rt = set_signal(
-      id, so, uo, status, to, from, state, s, d, r, adv, signal_type
-    )
-
-    rt
-    |> route()
-
-  end
-
-  def set_signal(id, so, uo, status, to, from, state, s, d, r, adv, st) do
-    %{
-      id: id,
-      signal_offset: so,
-      user_offset: uo,
-      status: status,
-      from: from,
-      to: to,
-      signal_type: st,
-      signal_request: 2,
-      signal_lifecycle_state: state,
-      signal_ack_state: %{send: s, delivered: d, read: r, advance_offset: adv}
-    }
-  end
-
-  # ---------------------------------------------------
-  # Routing
-  # ---------------------------------------------------
-  def route(payload) do
-    payload
-    |> ThrowSignalSchema.success()
-    |> then(&SignalCommunication.outbouce(payload.to, &1))
-  end
-
-  def fan_out_sender_devices(id, so, uo, status, from, to, user, dev, part, state) do
-
-    now = DateTime.utc_now()
-    DeviceStorage.fetch_devices_by_eid(from.eid)
-    |> Stream.filter(&(&1.status == "ONLINE" and DateTime.diff(now, &1.last_seen) <= @stale_threshold_seconds))
-    |> Task.async_stream(
-      fn device ->
-
-        %{read: r, sent: s, delivered: d} = get_ack_status(user, "", part, so)
-        adv = confirm_advance_offset(user, device.device_id, part, so)
-
-        mt = if dev == device.device_id do
-          %{new_from: to, new_to: from, new_signal_type: 3}
+    case get_last_seen_offset(eid, device, @partition_id) do
+      {:ok, last_process_offset} ->
+        if signal_offset > last_process_offset do
+          advance_contiguous_offset(eid, device, @partition_id, last_process_offset, signal_offset)
+          sender(signal)
         else
-          %{new_from: from, new_to: %{eid: device.eid, connection_resource_id: device.device_id}, new_signal_type: 2}
+          sender(signal)
         end
 
-        set_signal(id, so, uo, status, mt.new_to, mt.new_from, state, s, d, r, adv, mt.new_signal_type)
-        |> ThrowSignalSchema.success()
-        |> then(&SignalCommunication.outbouce(%{eid: device.eid, connection_resource_id: device.device_id}, &1))
+      {:error, _reason} -> :ok
+      _ -> :ok
+    end
+  end
 
-      end,
-      max_concurrency: 10,
-      timeout: 5_000,
-      on_timeout: :kill_task
-    )
-    |> Stream.run()
+  def deliver_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when is_list(batched_acks) and length(batched_acks) == 0, do: :empty
+  def deliver_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when length(batched_acks) > 0 do
+    delivered_process_stream_reduce(batched_acks)
+  end
+
+  def read_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when is_list(batched_acks) and length(batched_acks) == 0, do: :empty
+  def read_message(%Chat.SignalStruct{batched_acks: batched_acks} = _signal) when length(batched_acks) > 0 do
+    read_process_stream_reduce(batched_acks)
+  end
+
+  defp delivered_send_to_network(key, batch) do
+
+    IO.inspect(batch)
+
+    ack_batch =
+      Enum.flat_map(batch, fn item ->
+        [
+          {item.owners.from, @partition_id, item.user_offset, :delivered},
+          {item.owners.to, @partition_id, item.offset, :delivered}
+        ]
+      end)
+
+      case Queue.Injection.ack_status_multi(ack_batch) do
+        {:ok, _commits} ->
+
+          server_route(batch, :eid, :signal_deliver_ack_server, key)
+          |> Route.Connect.handle_inbouce_signal()
+
+        {:error, reason} ->
+          IO.puts("Failed to update ACKs: #{inspect(reason)}")
+      end
     :ok
   end
 
-  #----------------------------------------------
-  # This is route to the server. Single route
-  #----------------------------------------------
-  defp server_route(%Chat.SignalStruct{} = payload, eid, server) do
-    {eid, payload.to.eid, server, payload}
-    |> Connect.handle_inbouce_signal
+  defp read_send_to_network(key, batch) do
+
+    IO.inspect(batch)
+
+    ack_batch =
+      Enum.flat_map(batch, fn item ->
+        [
+          {item.owners.from, @partition_id, item.user_offset, :read},
+          {item.owners.to, @partition_id, item.offset, :read}
+        ]
+      end)
+
+      case Queue.Injection.ack_status_multi(ack_batch) do
+        {:ok, _commits} ->
+
+          server_route(batch, :eid, :signal_read_ack_server, key)
+          |> Route.Connect.handle_inbouce_signal()
+
+        {:error, reason} ->
+          IO.puts("Failed to update ACKs: #{inspect(reason)}")
+      end
+    :ok
+  end
+
+  # Async sending wrapper: Reverses the list (to restore original order) and starts the task.
+  defp delivered_async_send(key, batch) do
+    Task.start(fn ->
+      delivered_send_to_network(key, Enum.reverse(batch))
+    end)
+  end
+
+  defp read_async_send(key, batch) do
+    Task.start(fn ->
+      read_send_to_network(key, Enum.reverse(batch))
+    end)
+  end
+
+  def delivered_process_stream_reduce(input_stream) do
+    # The accumulator (acc) now stores {count, list} for O(1) length check
+    final_acc =
+      input_stream
+      |> Enum.reduce(%{}, fn item, acc ->
+        key = item.owners.from
+
+        {current_count, current_list} = Map.get(acc, key, {0, []})
+
+        new_list = [item | current_list]
+        new_count = current_count + 1
+
+        if new_count >= @max_batch do
+          delivered_async_send(key, new_list)
+          Map.delete(acc, key)
+        else
+          Map.put(acc, key, {new_count, new_list})
+        end
+      end)
+
+    final_acc
+    |> Enum.each(fn {key, {_count, list}} -> delivered_async_send(key, list) end)
+    :ok
+  end
+
+  def read_process_stream_reduce(input_stream) do
+    # The accumulator (acc) now stores {count, list} for O(1) length check
+    final_acc =
+      input_stream
+      |> Enum.reduce(%{}, fn item, acc ->
+        key = item.owners.from
+
+        {current_count, current_list} = Map.get(acc, key, {0, []})
+
+        new_list = [item | current_list]
+        new_count = current_count + 1
+
+        if new_count >= @max_batch do
+          read_async_send(key, new_list)
+          Map.delete(acc, key)
+        else
+          Map.put(acc, key, {new_count, new_list})
+        end
+      end)
+
+    final_acc
+    |> Enum.each(fn {key, {_count, list}} -> read_async_send(key, list) end)
+    :ok
+  end
+
+  def advance_contiguous_offset(eid, device, partition, last_process_offset, signal_offset) do
+    range = last_process_offset..signal_offset
+    advance_offset(eid, device, partition, range)
+  end
+
+  defp advance_offset(user, device, partition, offset) do
+    Injection.advance_offset(user, device, partition, offset)
+  end
+
+  defp get_last_seen_offset(user, device, partition),
+    do: Injection.get_last_seen_offset(user, device, partition)
+
+  def sender(%Chat.SignalStruct{
+    eid: eid,
+    device: device,
+    signal_offset: signal_offset,
+    signal_type_ex: signal_type_ex
+  } = _signal) when is_integer(signal_offset) do
+
+    date = Until.UniPosTime.uni_pos_time()
+
+    %{
+      id: nil,
+      signal_offset: signal_offset,
+      user_offset: nil,
+      status: @status,
+      from: %{eid: eid, connection_resource_id: device},
+      to: %{eid: eid, connection_resource_id: device},
+      signal_type: nil,
+      signal_type_ex: signal_type_ex,
+      ack: %{
+          advance_offset: true, advance_offset_timestamp: date,
+          sent: nil, delivered: nil, read: nil, sent_timestamp: nil,
+          delivered_timestamp: nil, read_timestamp: nil
+        }
+    }
+    |> ThrowSignalSchema.success()
+    |> then(&Connect.outbouce(device, &1))
+
+  end
+
+  defp server_route(payload, chanel, signal_to_server, eid) do
+    {chanel, eid, signal_to_server, payload}
   end
 
 end

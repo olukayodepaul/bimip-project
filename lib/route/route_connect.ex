@@ -44,15 +44,6 @@ defmodule Route.Connect do
     end
   end
 
-  def send_message(eid, device_id, data) do
-    case Horde.Registry.lookup(DeviceIdRegistry, device_id) do
-      [{pid, _}] ->
-        GenServer.cast(pid, {:client_message, eid, device_id, data})
-        :ok
-      [] ->
-        :error
-    end
-  end
 
   def route_ping_pong_to_server(eid, device_id) do
     case Horde.Registry.lookup(EidRegistry, eid) do
@@ -182,9 +173,13 @@ defmodule Route.Connect do
   defp extract_registry_id(_), do: :unknown
 
 
+
   # -------------------------------
   # ROUTE BETWEEN CLIENT AND SERVER
   # -------------------------------
+  # {:eid, eid, map, payload}
+  # {:device_id, device_id, map, payload}
+  # map = :where_to_map
   def handle_inbouce_signal({identifier, registry_id, resouce_finder, payload}) do
     case identifier do
       :eid ->
@@ -214,5 +209,23 @@ defmodule Route.Connect do
         :error
     end
   end
+
+  # future node to node communication
+  # def outbound(target_node, device_id, binary) do
+  #   if target_node == node() do
+  #     # Local delivery: find the local process by name or local registry
+  #     case Registry.lookup(@local_device_registry, device_id) do
+  #       [{pid, _}] ->
+  #         GenServer.cast(pid, {:outbound, binary})
+  #         :ok
+  #       [] -> :error
+  #     end
+  #   else
+  #     # Remote delivery: cast to the module/function on the specific node
+  #     # This is much faster than a global lookup
+  #     :rpc.cast(target_node, __MODULE__, :outbound, [target_node, device_id, binary])
+  #     :ok
+  #   end
+  # end
 
 end

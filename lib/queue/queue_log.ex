@@ -13,8 +13,8 @@ defmodule Queue.QueueLog do
       require Logger
 
       # Public API: Delegates everything to QueueLogImpl
-      def store_message(user, partition_id, from, to, payload, user_offset \\ nil, merge_offset \\ nil) do
-        QueueLogImpl.write(user, partition_id, from, to, payload, user_offset, merge_offset)
+      def store_message(user, partition_id, from, to, payload, id, sender_offset \\ nil) do
+        QueueLogImpl.write(user, partition_id, from, to, payload, id, sender_offset)
       end
 
       def fetch_messages(user, device_id, partition_id, limit \\ 1) when limit > 0 do
@@ -30,14 +30,14 @@ defmodule Queue.QueueLog do
       def get_ack_status(user, device, partition, offset),
         do: QueueLogImpl.message_status(user, device, partition, offset)
 
-      def mark_ack_status(user, device, partition, offset, status),
-        do: QueueLogImpl.ack_status(user, device, partition, offset, status)
+      def ack_status_multi(users_offsets_status),
+        do: QueueLogImpl.ack_status_multi(users_offsets_status)
 
-      def get_message_offset(user, device, partition, message_id),
-        do: QueueLogImpl.get_message_offset(user, device, partition, message_id)
+      def get_message_offset(user,  partition, message_id),
+        do: QueueLogImpl.get_message_offset(user,  partition, message_id)
 
-      def insert_message_id(user, device, partition, message_id, offset),
-        do: QueueLogImpl.insert_message_id(user, device, partition, message_id, offset)
+      def insert_message_id(snd_id, rec_id, partition_id, message_id, snd_offset, rec_offset),
+        do: QueueLogImpl.insert_message_id(snd_id, rec_id, partition_id, message_id, snd_offset, rec_offset)
 
       def get_last_seen_offset(user, device, partition),
         do: QueueLogImpl.get_last_seen_offset(user, device, partition)
@@ -47,12 +47,17 @@ defmodule Queue.QueueLog do
 end
 
 
+# test_data = [
+#   {"a@domain.com", 0, 1, :delivered},
+#   {"b@domain.com", 0, 1, :delivered}
+# ]
+
 
 # QueueLogImpl.fetch(user, device_id, partition_id, limit)
 
-# Queue.Injection.fetch_messages("a@domain.com_b@domain.com", "aaaaa6", 1, 1)
-# Queue.Injection.advance_offset("a@domain.com_b@domain.com", "aaaaa6", 1, 2..3)
-# Queue.Injection.confirm_advance_offset("a@domain.com_b@domain.com", "aaaaa1", 1, 1)
+# Queue.Injection.ack_status_multi(test_data)
+# Queue.Injection.advance_offset("a@domain.com_b@domain.com", "mmmmm", 1, 0..3)
+# Queue.Injection.get_last_seen_offset("a@domain.com", "aaaaa1", 1)
 
 # Queue.Injection.get_ack_status("a@domain.com_b@domain.com", "aaaaa1", 1, 1)
 
@@ -73,8 +78,8 @@ end
 
 # Queue.Injection.mark_ack_status()
 
-# Queue.Injection.get_ack_status("b@domain.com_a@domain.com", "", 1, 1)
-# Queue.Injection.get_last_seen_offset("b@domain.com_a@domain.com", "aaaaa1", 1 )
+# Queue.Injection.fetch_messages("b@domain.com_a@domain.com", "", 1, 1)
+# Queue.Injection.fetch_messages("a@domain.com", "aaaaa2", 1, 10 )
 
 
 # # ack_status(user, device, partition, 0..5, :read)

@@ -34,34 +34,37 @@ message Awareness {
   int32 visibility = 12;
 }
 
-message SignalAckState {
-  bool send = 1;
-  bool delivered = 2;
-  bool read = 3;
-  bool advance_offset = 4;
+message OWNERS {
+  string from = 1;                              // User’s global identifier (e.g., account ID or JID)
+  string to = 2; 
 }
 
-// ---------------- Message ----------------
-// Represents a chat or notification message between users.
-// Message-level ACKs are tracked via the status field.
-// Awareness (TYPING, RECORDING) is per-user and handled separately.
-// This is sent once.
-message Message {
-  string id = 1;               // client/queue-generated message ID
-  int32 signal_offset = 2;     // server-assigned global ID (monotonic or unique)
-  int32 user_offset = 3;       // server-assigned global ID (monotonic or unique)
-  Identity from = 4;           // sender (JID or user ID)
-  Identity to = 5;             // recipient (JID or user ID)
-  int64 timestamp = 7;         // epoch milliseconds
-  bytes payload = 8;           // pass JSON { }
-  string encryption_type = 9;  // "none", "AES256", "E2E", etc.
-  string encrypted = 10;       // base64 encrypted content (if any)
-  string signature = 11;                      // base64 signature for integrity 
-  int32 signal_type = 12;                     // 1=SENDER  2=DEVICE  3=RECEIVER
-  SignalAckState signal_ack_state = 13;     //
-  int32 signal_request = 14;
-  Identity owner = 15; 
-}
+  message Message {
+    string peer_uid = 1;
+    Identity from = 2;
+    Identity to = 3;
+    int64 timestamp = 4;
+    bytes payload = 5;
+    string encryption_type = 6;
+    string encrypted = 7;
+    string signature = 8;
+    optional int32 type = 9;         
+    optional int32 transmission_mode = 10; 
+    optional string peer_eid = 11;
+    optional int64 offset = 12;
+  }
+
+  message MessagePeerAckSignal {
+    Identity to = 1;
+    Identity from = 2;
+    string peer_uid = 3;
+    int32 method = 4;
+    int64 timestamp = 5;  
+    int32 status_code = 6; 
+    string peer_eid = 7;
+    int64 offset = 8;
+  }
+
 
 // when Device receive sent ack. it update the local message with 
 // signal_offset and user_offset.
@@ -92,9 +95,37 @@ message Signal {
   int32 type = 8;           // 1=REQUEST, 2=RESPONSE, 3=ERROR
   int32 signal_type = 9;    // 1=SENDER  2=DEVICE  3=RECEIVER
   optional string error = 10;// optional error message if type=3
-  optional string signal_lifecycle_state = 11 ;   // use to forward offset.
-  SignalAckState signal_ack_state = 12;     //
-  int32 signal_request = 13;
+  OffsetAck offset_ack = 12;
+  DeliveryAck delivery_ack = 13;
+  int32 signal_type_ex = 14; // 1=FORWARD_OFFSET, 2=READ_STATUS, 3=DELIVERED_STATUS
+
+  // NEW FIELD: This repeated field handles the batching for STATUS_ACKs (types 2 and 3).
+  // It allows the client to send a list of offsets and their senders efficiently.
+  repeated BatchedOffset batched_acks = 15;
+}
+
+message OffsetAck {
+  bool advance_offset = 1;
+  int64 advance_offset_timestamp = 2;          // time of offset advancement
+}
+
+message BatchedOffset {
+  // The actual offset being acknowledged
+  int32 user_offset = 1;
+  // The unique ID of the sender/owner of the message (crucial optimization)
+  OWNERS owners = 2;
+  int64 timestamp = 3; 
+  int32 signal_type = 4;
+  int32 offset = 5;
+}
+
+message DeliveryAck {
+  bool sent = 1;
+  bool delivered = 2;
+  bool read = 3;
+  int64 sent_timestamp = 4;
+  int64 delivered_timestamp = 5;
+  int64 read_timestamp = 6;
 }
 
 // ---------------- PushNotification ----------------
@@ -176,10 +207,9 @@ message Logout {
 
 // ---------------- Body ----------------
 message Body {
-  int64 route = 1;
-  repeated Awareness awareness_list = 2;
-  repeated Message message = 3;
-  int64 timestamp = 4;
+  uint32 route = 1;
+  repeated Message messages = 2;
+  int64 timestamp = 3;
 }
 
 // ---------------- MessageScheme ----------------
@@ -197,8 +227,8 @@ message MessageScheme {
     Body body = 10;
     ErrorMessage error = 11;
     Logout logout = 12;
+    MessagePeerAckSignal message_peer_ack_signal = 13;
   }
 }
 
-
-
+  
