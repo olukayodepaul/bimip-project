@@ -40,7 +40,7 @@ message OWNERS {
 }
 
   message Message {
-    string message_id = 1;
+    string peer_uid = 1;
     Identity from = 2;
     Identity to = 3;
     int64 timestamp = 4;
@@ -50,23 +50,18 @@ message OWNERS {
     string signature = 8;
     optional int32 type = 9;         
     optional int32 transmission_mode = 10; 
-    optional Peer peer = 11;
+    optional string peer_eid = 11;
     optional int64 offset = 12;
-  }
-
- message Peer {
-    string to = 1;
-    int64 peer_offset = 2;
   }
 
   message MessagePeerAckSignal {
     Identity to = 1;
     Identity from = 2;
-    string message_id = 3;
+    string peer_uid = 3;
     int32 method = 4;
     int64 timestamp = 5;  
     int32 status_code = 6; 
-    Peer peer = 7;
+    string peer_eid = 7;
     int64 offset = 8;
   }
 

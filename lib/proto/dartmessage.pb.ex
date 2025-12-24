@@ -57,7 +57,7 @@ defmodule Bimip.Message do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :message_id, 1, type: :string, json_name: "messageId"
+  field :peer_uid, 1, type: :string, json_name: "peerUid"
   field :from, 2, type: Bimip.Identity
   field :to, 3, type: Bimip.Identity
   field :timestamp, 4, type: :int64
@@ -67,17 +67,8 @@ defmodule Bimip.Message do
   field :signature, 8, type: :string
   field :type, 9, proto3_optional: true, type: :int32
   field :transmission_mode, 10, proto3_optional: true, type: :int32, json_name: "transmissionMode"
-  field :peer, 11, proto3_optional: true, type: Bimip.Peer
+  field :peer_eid, 11, proto3_optional: true, type: :string, json_name: "peerEid"
   field :offset, 12, proto3_optional: true, type: :int64
-end
-
-defmodule Bimip.Peer do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :to, 1, type: :string
-  field :peer_offset, 2, type: :int64, json_name: "peerOffset"
 end
 
 defmodule Bimip.MessagePeerAckSignal do
@@ -87,11 +78,11 @@ defmodule Bimip.MessagePeerAckSignal do
 
   field :to, 1, type: Bimip.Identity
   field :from, 2, type: Bimip.Identity
-  field :message_id, 3, type: :string, json_name: "messageId"
+  field :peer_uid, 3, type: :string, json_name: "peerUid"
   field :method, 4, type: :int32
   field :timestamp, 5, type: :int64
   field :status_code, 6, type: :int32, json_name: "statusCode"
-  field :peer, 7, type: Bimip.Peer
+  field :peer_eid, 7, type: :string, json_name: "peerEid"
   field :offset, 8, type: :int64
 end
 

@@ -5,21 +5,21 @@ defmodule ThrowMessagePeerAckSignalSchema do
 
   def build(%{
     offset: offset,
-    message_id: message_id,
+    peer_uid: peer_uid,
     from: from,
     to: to,
-    peer: peer
+    peer_eid: peer_eid
   }) do
 
     message_peer_ack_signal = %Bimip.MessagePeerAckSignal{
       offset: offset,
-      message_id: message_id,
+      peer_uid: peer_uid,
       from: from,
       to: to,
       method: @method,
       timestamp: Until.UniPosTime.uni_pos_time(),
       status_code: @status_code,
-      peer: peer
+      peer_eid: peer_eid
     }
 
     %Bimip.MessageScheme{

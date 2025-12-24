@@ -4,7 +4,7 @@ defmodule Chat.MessageStruct do
   """
 
   defstruct [
-    :message_id,
+    :peer_uid,
     :timestamp,
     :payload,
     :encryption_type,

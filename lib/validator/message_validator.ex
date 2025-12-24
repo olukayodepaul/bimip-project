@@ -25,32 +25,29 @@ defmodule Bimip.Validators.MessageValidator do
   @status_internal_error   500
   @status_unavailable      503
 
-
   @spec validate(Message.t()) :: :ok | {:error, map()}
   def validate(%Message{} = msg) do
-    with :ok <- validate_id(msg.message_id),
+    with :ok <- validate_id(msg.peer_uid),
          :ok <- validate_identity(msg.from, "from"),
          :ok <- validate_identity(msg.to, "to"),
+         :ok <- validate_from_to_not_same(msg.from, msg.to),
          :ok <- validate_timestamp(msg.timestamp),
          :ok <- validate_payload(msg.payload),
          :ok <- validate_encryption_type(msg.encryption_type),
          :ok <- validate_binary_field(msg.encrypted, "encrypted"),
-         :ok <- validate_binary_field(msg.signature, "signature")
-        #  :ok <- validate_type(msg.type),
-        #  :ok <- validate_transmission_mode(msg.transmission_mode)
-         do
+         :ok <- validate_binary_field(msg.signature, "signature") do
       :ok
     end
   end
 
   # ---------------- ID Validation ----------------
   defp validate_id(nil),
-    do: error(@status_bad_request, "Missing message_id", "message_id")
+    do: error(@status_bad_request, "Missing peer_uid", "peer_uid")
 
   defp validate_id(id) when is_binary(id) and byte_size(id) > 0, do: :ok
 
   defp validate_id(_),
-    do: error(@status_bad_request, "Invalid message_id — must be non-empty string", "message_id")
+    do: error(@status_bad_request, "Invalid peer_uid — must be non-empty string", "peer_uid")
 
   # ---------------- Identity Validation ----------------
   defp validate_identity(nil, field),
@@ -63,10 +60,18 @@ defmodule Bimip.Validators.MessageValidator do
 
       ident.connection_resource_id != nil and
           not is_binary(ident.connection_resource_id) ->
-        error(@status_bad_request, "#{field}.connection_resource_id must be binary", "#{field}.connection_resource_id")
+        error(
+          @status_bad_request,
+          "#{field}.connection_resource_id must be binary",
+          "#{field}.connection_resource_id"
+        )
 
       ident.node != nil and not is_binary(ident.node) ->
-        error(@status_bad_request, "#{field}.node must be binary", "#{field}.node")
+        error(
+          @status_bad_request,
+          "#{field}.node must be binary",
+          "#{field}.node"
+        )
 
       true ->
         :ok
@@ -75,6 +80,17 @@ defmodule Bimip.Validators.MessageValidator do
 
   defp validate_identity(_, field),
     do: error(@status_bad_request, "Malformed #{field} identity", field)
+
+  # ---------------- Cross Identity Validation ----------------
+  defp validate_from_to_not_same(%Identity{eid: eid}, %Identity{eid: eid}) do
+    error(
+      @status_bad_request,
+      "`from.eid` and `to.eid` cannot be the same",
+      "from,to"
+    )
+  end
+
+  defp validate_from_to_not_same(_, _), do: :ok
 
   # ---------------- Timestamp ----------------
   defp validate_timestamp(ts) when is_integer(ts) and ts > 0, do: :ok
@@ -121,7 +137,6 @@ defmodule Bimip.Validators.MessageValidator do
 
   defp validate_transmission_mode(_),
     do: error(@status_bad_request, "Invalid transmission_mode", "transmission_mode")
-
 
   # ---------------- Error Helper ----------------
   defp error(code, description, field),

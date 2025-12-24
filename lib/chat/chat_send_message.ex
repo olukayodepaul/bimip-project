@@ -18,16 +18,20 @@ defmodule Chat.SendMessage do
   # ----------------------
   # Public API
   # ----------------------
-  def store_message(%Chat.MessageStruct{message_id: id, from: from_struct, to: to_struct} = payload) do
+  def store_message(%Chat.MessageStruct{peer_uid: id, from: from_struct, to: to_struct} = payload) do
     # Convert structs to maps once at the entry point
     from = Map.from_struct(from_struct)
     to = Map.from_struct(to_struct)
 
+    IO.inspect({from, to})
+
     case get_message_offset(from.eid, @partition_id, id) do
       {:ok, offset} ->
+        IO.inspect(1)
         send_signal_to_sender(id, offset, from, to)
 
       {:error, :not_found} ->
+        IO.inspect(2)
         handle_new_message(id, payload, from.eid, to.eid, from, to)
     end
   end
@@ -55,7 +59,7 @@ defmodule Chat.SendMessage do
     do: Injection.store_message(q_id, @partition_id, from, to, payload, id, snd_offset)
 
   defp push_message(payload, offset, recv_offset, eid, device_id, target) do
-    # Logic collapsed: use offset for device sync, recv_offset for peer sync
+
     peer_offset = if target == :device, do: offset, else: recv_offset
 
     payload
@@ -69,7 +73,7 @@ defmodule Chat.SendMessage do
 
   defp set_message_fields(message, msg_offset, peer_offset) do
     %{
-      message_id: message.message_id,
+      peer_uid: message.peer_uid,
       from: Map.from_struct(message.from),
       to: Map.from_struct(message.to),
       timestamp: Until.UniPosTime.uni_pos_time(),
@@ -79,7 +83,7 @@ defmodule Chat.SendMessage do
       signature: message.signature,
       type: @types,
       transmission_mode: @transmission_mode,
-      peer: %{to: message.to.eid, peer_offset: peer_offset},
+      peer_eid: message.to.eid,
       offset: msg_offset
     }
   end
@@ -89,8 +93,8 @@ defmodule Chat.SendMessage do
       offset: offset,
       from: %Bimip.Identity{eid: to.eid},
       to: %Bimip.Identity{eid: from.eid},
-      message_id: id,
-      peer: %Bimip.Peer{to: to.eid, peer_offset: offset} # Anchor Model: use sender offset
+      peer_uid: id,
+      peer_eid:  to.eid # Anchor Model: use sender offset
     }
     |> ThrowMessagePeerAckSignalSchema.build()
     |> then(&Connect.outbouce(from.connection_resource_id, &1))
@@ -108,16 +112,19 @@ defmodule Chat.SendMessage do
           |> then(&(%{ &1 | to: %{eid: dev.eid, connection_resource_id: dev.device_id}}))
           |> ThrowMessageSchema.build_message()
           |> then(&Connect.outbouce(dev.device_id, &1))
-        end, max_concurrency: 10)
+        end,
+        max_concurrency: 10,
+        ordered: false,
+        timeout: 5_000
+        )
         |> Stream.run()
 
       :recipient ->
-        # Mirroring Logic: Swap 'from' to the peer object
         %{eid: peer_eid} = payload.from
 
         %{payload |
           type: 3,
-          peer: %{payload.peer | to: peer_eid}
+          peer_eid: peer_eid
         }
         |> then(&Connect.handle_inbouce_signal({:eid, &1.to.eid, :send_message_to_receiver_server, &1}))
     end

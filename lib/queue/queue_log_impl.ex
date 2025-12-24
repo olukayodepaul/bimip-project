@@ -863,4 +863,45 @@ def ack_status_multi(users_offsets_status) when is_list(users_offsets_status) do
     end
   end
 
+  def recover_and_repair(user, partition_id) do
+    {:ok, current_seg} = get_current_segment(user, partition_id)
+    qfile = queue_file(user, partition_id, current_seg)
+
+    if File.exists?(qfile) do
+      Logger.info("Recovering partition #{partition_id} for user #{user}...")
+
+      # 1. Open log and walk it to find the last valid entry
+      {:ok, fd} = :file.open(qfile, [:read, :binary])
+      {last_offset, last_pos} = walk_log_and_rebuild_index(fd, user, partition_id, current_seg)
+      :file.close(fd)
+
+      # 2. Sync Mnesia with the actual physical state
+      :mnesia.transaction(fn ->
+        :mnesia.write({:next_offsets, {user, partition_id}, last_offset + 1})
+      end)
+
+      {:ok, last_offset}
+    else
+      {:error, :no_segment_found}
+    end
+  end
+
+  defp walk_log_and_rebuild_index(fd, user, pid, seg, last_off \\ 0, last_pos \\ 0) do
+    case read_log_entry(fd) do
+      {:ok, msg} ->
+        # Re-index if necessary during the walk
+        if rem(msg.offset, @index_granularity) == 0 do
+          append_index_file(user, pid, seg, msg.offset, last_pos)
+        end
+
+        {:ok, current_pos} = :file.position(fd, :cur)
+        walk_log_and_rebuild_index(fd, user, pid, seg, msg.offset, current_pos)
+
+      _ -> # :eof or :corrupt
+        {last_off, last_pos}
+    end
+  end
+
+
+
 end

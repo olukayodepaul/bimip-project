@@ -2,7 +2,7 @@ defmodule Chat.PrcMessage do
 
   def prc_message({%Bimip.Message{} = message, device_id, eid}) do
     %Chat.MessageStruct{
-      message_id: message.message_id,
+      peer_uid: message.peer_uid,
       from: %Chat.EntityStruct{
         eid: eid,
         connection_resource_id: device_id
