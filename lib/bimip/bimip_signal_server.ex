@@ -300,40 +300,44 @@ defmodule Bimip.SignalServer do
 
 
   @impl true
-  def handle_cast({:log_user_message, partition_id, from, to, payload, msg_id, s_off}, state) do
-    owner_eid = state.eid
+  def handle_cast({:log_user_message, partition_id, from, to, payload}, %{eid: eid} = state) do
 
-    # 1️⃣ Get or open the file handle for this partition
-    {fd, log_files} =
-      case Map.get(state.log_files, partition_id) do
-        nil ->
-          File.mkdir_p!(Path.join("data/bimip", owner_eid))
-          path = Queue.QueueLogImpl.get_current_log_path(owner_eid, partition_id)
-          {:ok, new_fd} = File.open(path, [:append, :binary, :raw])
-          {new_fd, Map.put(state.log_files, partition_id, new_fd)}
+    IO.inspect({partition_id, from, to, payload})
 
-        existing_fd ->
-          {existing_fd, state.log_files}
-      end
+    # owner_eid = state.eid
 
-    # 2️⃣ Write the message to log
-    case Queue.QueueLogImpl.write(fd, partition_id, owner_eid, to, payload, msg_id) do
-      {:ok, offset, status} ->
-        # 3️⃣ Handle segment rollover
-        log_files =
-          if status == :rollover do
-            :file.close(fd)                   # Close old segment
-            Map.delete(log_files, partition_id) # Remove handle
-          else
-            log_files
-          end
+    # # 1️⃣ Get or open the file handle for this partition
+    # {fd, log_files} =
+    #   case Map.get(state.log_files, partition_id) do
+    #     nil ->
+    #       File.mkdir_p!(Path.join("data/bimip", owner_eid))
+    #       path = Queue.QueueLogImpl.get_current_log_path(owner_eid, partition_id)
+    #       {:ok, new_fd} = File.open(path, [:append, :binary, :raw])
+    #       {new_fd, Map.put(state.log_files, partition_id, new_fd)}
 
-        {:noreply, %{state | log_files: log_files}}
+    #     existing_fd ->
+    #       {existing_fd, state.log_files}
+    #   end
 
-      {:error, reason} ->
-        Logger.error("[LOG] Failed to write message for #{owner_eid}: #{inspect(reason)}")
-        {:noreply, state}
-    end
+    # # 2️⃣ Write the message to log
+    # case Queue.QueueLogImpl.write(fd, partition_id, owner_eid, to, payload, msg_id) do
+    #   {:ok, offset, status} ->
+    #     # 3️⃣ Handle segment rollover
+    #     log_files =
+    #       if status == :rollover do
+    #         :file.close(fd)                   # Close old segment
+    #         Map.delete(log_files, partition_id) # Remove handle
+    #       else
+    #         log_files
+    #       end
+
+    #     {:noreply, %{state | log_files: log_files}}
+
+    #   {:error, reason} ->
+    #     Logger.error("[LOG] Failed to write message for #{owner_eid}: #{inspect(reason)}")
+    #     {:noreply, state}
+    # end
+    {:noreply, state}
   end
 
 
@@ -341,7 +345,9 @@ defmodule Bimip.SignalServer do
 
   @impl true
   def handle_cast({:route_message, payload}, state) do
-    GenServer.cast(self(), {:chat_queue, payload})
+
+    IO.inspect(payload)
+    # GenServer.cast(self(), {:chat_queue, payload})
     {:noreply, state}
   end
 

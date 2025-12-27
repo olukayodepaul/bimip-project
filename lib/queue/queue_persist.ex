@@ -6,13 +6,8 @@ defmodule Queue.Persist do
   """
 
   @transmission_mode 1
-  @sender 1
-  @receiver 3
 
-
-  def build(%{ payload: payload} = _attrs, next_offset, sender_offset) do
-
-      {type, to_peer } = if sender_offset == nil do {@sender, payload.to.eid} else {@receiver, payload.from.eid} end
+  def build(%{ payload: payload} = _attrs, next_offset, reply_to, type, payload_context) do
 
       %Bimip.Message{
           offset: next_offset,
@@ -21,11 +16,12 @@ defmodule Queue.Persist do
           from: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},
           to: %Bimip.Identity{ eid: payload.to.eid, connection_resource_id: payload.to.connection_resource_id},
           payload: payload.payload,
+          payload_context: payload_context,
           encryption_type: payload.encryption_type,
           encrypted: payload.encrypted,
           signature: payload.signature,
-          transmission_mode: @transmission_mode, # 1 Pull request
-          peer_eid: to_peer,
+          transmission_mode: @transmission_mode,
+          reply_to: reply_to
         }
 
       end

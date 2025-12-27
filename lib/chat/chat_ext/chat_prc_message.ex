@@ -12,6 +12,7 @@ defmodule Chat.PrcMessage do
       },
       timestamp: message.timestamp,
       payload: message.payload,
+      payload_context: message.payload_context,
       encryption_type: message.encryption_type,
       encrypted: message.encrypted,
       signature: message.signature,

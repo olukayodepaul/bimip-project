@@ -10,6 +10,7 @@ defmodule Bimip.Application do
     # MNESIA BOOTSTRAP
     # -----------------------
     :mnesia.stop()
+    # :mnesia.delete_schema([node()])
 
     case :mnesia.create_schema([node()]) do
       :ok ->
@@ -31,6 +32,7 @@ defmodule Bimip.Application do
     # ETS (GLOBAL INDEX CACHE)
     # -----------------------
     init_ets()
+    Queue.MessageTracker.init()
 
     # -----------------------
     # TCP / HTTP
@@ -74,7 +76,8 @@ defmodule Bimip.Application do
       {Horde.Registry, name: DeviceIdRegistry, keys: :unique, members: :auto},
       {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},
       {Supervisor.Server, []},
-      {Supervisor.Client, []}
+      {Supervisor.Client, []},
+      {Queue.MessageTracker.Sweeper, []},
     ]
 
     opts = [strategy: :one_for_one, name: Bimip.Supervisor]
@@ -96,7 +99,8 @@ defmodule Bimip.Application do
   defp init_ets do
     ets_tables = [
       {:bimip_index_cache, [:named_table, :ordered_set, :public, {:read_concurrency, true}, {:write_concurrency, true}]},
-      {:bimip_device_bookmarks, [:named_table, :set, :public, {:read_concurrency, true}, {:write_concurrency, true}]}
+      {:bimip_device_bookmarks, [:named_table, :set, :public, {:read_concurrency, true}, {:write_concurrency, true}]},
+      {:bimip_poison_tracker, [:named_table, :set, :public, {:read_concurrency, true}, {:write_concurrency, true}]}
     ]
 
     for {table, opts} <- ets_tables do

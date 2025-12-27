@@ -345,6 +345,9 @@ defmodule Bimip.SignalClient do
           :ok ->
             Chat.PrcMessage.prc_message({message, device_id, eid})
             |> server_route(:eid, :route_message, eid)
+
+
+
           {:error, err} ->
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"
             IO.inspect(reason)

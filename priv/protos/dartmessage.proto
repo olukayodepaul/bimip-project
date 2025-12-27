@@ -50,8 +50,9 @@ message OWNERS {
     string signature = 8;
     optional int32 type = 9;         
     optional int32 transmission_mode = 10; 
-    optional string peer_eid = 11;
+    optional string reply_to = 11;
     optional int64 offset = 12;
+    int32 payload_context = 13;
   }
 
   message MessagePeerAckSignal {
@@ -230,5 +231,8 @@ message MessageScheme {
     MessagePeerAckSignal message_peer_ack_signal = 13;
   }
 }
+
+  
+
 
   

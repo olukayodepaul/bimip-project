@@ -1,51 +1,51 @@
 defmodule Queue.QueueLog do
-  alias Queue.QueueLogImpl
+  # alias Queue.QueueLogImpl
 
-  @moduledoc """
-  Macro wrapper for QueueLogImpl.
+  # @moduledoc """
+  # Macro wrapper for QueueLogImpl.
 
-  Provides a stable public API for the append-only log
-  backed by file segments + ETS sparse index.
-  """
+  # Provides a stable public API for the append-only log
+  # backed by file segments + ETS sparse index.
+  # """
 
-  defmacro __using__(_opts) do
-    quote do
-      require Logger
+  # defmacro __using__(_opts) do
+  #   quote do
+  #     require Logger
 
-      @doc """
-      Append a message to the log.
+  #     @doc """
+  #     Append a message to the log.
 
-      Returns:
-        {:ok, offset, :ok | :rollover}
-      """
-      def write(fd, partition_id, user, to, payload, message_id \\ nil, sender_offset \\ 0) do
-        QueueLogImpl.write(
-          fd,
-          partition_id,
-          user,
-          to,
-          payload,
-          message_id,
-          sender_offset
-        )
-      end
+  #     Returns:
+  #       {:ok, offset, :ok | :rollover}
+  #     """
+  #     def write(fd, partition_id, user, to, payload, message_id \\ nil, sender_offset \\ 0) do
+  #       QueueLogImpl.write(
+  #         fd,
+  #         partition_id,
+  #         user,
+  #         to,
+  #         payload,
+  #         message_id,
+  #         sender_offset
+  #       )
+  #     end
 
-      @doc """
-      Fetch messages for a device starting from its commit offset.
-      """
-      def fetch_messages(user, device_id, partition_id, limit \\ 1)
-          when limit > 0 do
-        QueueLogImpl.fetch(user, device_id, partition_id, limit)
-      end
+  #     @doc """
+  #     Fetch messages for a device starting from its commit offset.
+  #     """
+  #     def fetch_messages(user, device_id, partition_id, limit \\ 1)
+  #         when limit > 0 do
+  #       QueueLogImpl.fetch(user, device_id, partition_id, limit)
+  #     end
 
-      @doc """
-      Get the current active log file path for a partition.
-      """
-      def get_current_log_path(user, partition_id) do
-        QueueLogImpl.get_current_log_path(user, partition_id)
-      end
-    end
-  end
+  #     @doc """
+  #     Get the current active log file path for a partition.
+  #     """
+  #     def get_current_log_path(user, partition_id) do
+  #       QueueLogImpl.get_current_log_path(user, partition_id)
+  #     end
+  #   end
+  # end
 end
 
 # test_data = [
