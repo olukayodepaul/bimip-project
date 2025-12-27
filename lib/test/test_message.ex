@@ -1,64 +1,40 @@
-defmodule Queue.MessageTracker.Benchmark do
+defmodule Queue.TestTracker do
   @moduledoc """
-  Concurrent benchmark for Queue.MessageTracker.
-  Inserts N records and checks partition sizes.
+  Manual test module for MessageTracker:
+    - Insert a message
+    - Check active generation
+    - Rotate generations
+    - Verify message persistence
   """
 
   alias Queue.MessageTracker
 
-  @total_count 1_000_000
+  # Inserts a message and prints status
+  def insert_message(user, msg_id) do
+    [{:active_gen, active_idx}] = :ets.lookup(:tracker_config, :active_gen)
+    IO.puts("Before insert, active generation: #{active_idx} (0 = gen0, 1 = gen1)")
 
-  def run do
-    IO.puts("Initializing MessageTracker...")
-    MessageTracker.init()
+    case MessageTracker.check_and_insert(user, msg_id) do
+      {:ok, :inserted} ->
+        IO.puts("Message #{msg_id} inserted for #{user}")
 
-    IO.puts("Generating #{@total_count} messages...")
-    messages =
-      for i <- 1..@total_count do
-        {"user-#{div(i, 10)}", "msg-#{i}"}
-      end
-
-    IO.puts("Starting concurrent insert benchmark...")
-    start = System.monotonic_time(:microsecond)
-
-    results =
-      messages
-      |> Task.async_stream(
-        fn {user, msg} ->
-          MessageTracker.check_and_insert(user, msg)
-        end,
-        max_concurrency: System.schedulers_online() * 2,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Enum.to_list()
-
-    stop = System.monotonic_time(:microsecond)
-    duration_us = stop - start
-    duration_ms = duration_us / 1_000
-    ops_per_sec = @total_count / (duration_us / 1_000_000)
-
-    success = Enum.count(results, fn {:ok, {:ok, :inserted}} -> true; _ -> false end)
-    exists  = Enum.count(results, fn {:ok, {:error, :already_exists}} -> true; _ -> false end)
-
-    IO.puts("""
-    ===== MessageTracker Benchmark =====
-    Inserts attempted: #{@total_count}
-    Successful inserts: #{success}
-    Already exists: #{exists}
-
-    Time taken: #{Float.round(duration_ms, 2)} ms
-    Throughput: #{Float.round(ops_per_sec, 2)} ops/sec
-    ===================================
-    """)
-
-    IO.puts("Checking partition sizes...")
-    for idx <- 0..(MessageTracker.partitions() - 1) do
-      table0 = elem(MessageTracker.gen_0_names(), idx)
-      table1 = elem(MessageTracker.gen_1_names(), idx)
-      IO.puts("Partition #{idx}: gen0 size=#{:ets.info(table0, :size)}, gen1 size=#{:ets.info(table1, :size)}")
+      {:error, :already_exists} ->
+        IO.puts("Message #{msg_id} already exists for #{user}")
     end
 
-    :ok
+    idx = :erlang.phash2({user, msg_id}, MessageTracker.partitions())
+    current_gen =
+      if active_idx == 0, do: MessageTracker.gen_0_names(), else: MessageTracker.gen_1_names()
+
+    table = elem(current_gen, idx)
+    lookup = :ets.lookup(table, {user, msg_id})
+    IO.puts("ETS lookup: #{inspect(lookup)}")
+  end
+
+  # Rotate generations and show active generation after rotation
+  def rotate_and_check do
+    MessageTracker.rotate()
+    [{:active_gen, active_idx}] = :ets.lookup(:tracker_config, :active_gen)
+    IO.puts("After rotation, active generation: #{active_idx} (0 = gen0, 1 = gen1)")
   end
 end
