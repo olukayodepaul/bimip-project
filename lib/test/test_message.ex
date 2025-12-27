@@ -1,40 +1,28 @@
-defmodule Queue.TestTracker do
-  @moduledoc """
-  Manual test module for MessageTracker:
-    - Insert a message
-    - Check active generation
-    - Rotate generations
-    - Verify message persistence
-  """
+defmodule Tracker50MTest do
+  def run do
+    count = 50_000_000
+    IO.puts("--- STARTING 50 MILLION RECORD TEST ---")
+    Queue.MessageTracker.init()
 
-  alias Queue.MessageTracker
+    {time_micros, _} = :timer.tc(fn ->
+      # Chunking prevents the generator from eating all RAM before the test even starts
+      1..count
+      |> Stream.chunk_every(100_000)
+      |> Enum.each(fn chunk ->
+        Enum.each(chunk, fn i ->
+          Queue.MessageTracker.check_and_insert("u_#{i}", "m_#{i}")
+        end)
+        IO.write(".") # Progress indicator
+      end)
+    end)
 
-  # Inserts a message and prints status
-  def insert_message(user, msg_id) do
-    [{:active_gen, active_idx}] = :ets.lookup(:tracker_config, :active_gen)
-    IO.puts("Before insert, active generation: #{active_idx} (0 = gen0, 1 = gen1)")
+    seconds = time_micros / 1_000_000
+    IO.puts("\n--- 50M RESULTS ---")
+    IO.puts("Total Time: #{Float.round(seconds, 2)}s")
+    IO.puts("Throughput: #{Float.round(count / seconds, 2)} ops/sec")
 
-    case MessageTracker.check_and_insert(user, msg_id) do
-      {:ok, :inserted} ->
-        IO.puts("Message #{msg_id} inserted for #{user}")
-
-      {:error, :already_exists} ->
-        IO.puts("Message #{msg_id} already exists for #{user}")
-    end
-
-    idx = :erlang.phash2({user, msg_id}, MessageTracker.partitions())
-    current_gen =
-      if active_idx == 0, do: MessageTracker.gen_0_names(), else: MessageTracker.gen_1_names()
-
-    table = elem(current_gen, idx)
-    lookup = :ets.lookup(table, {user, msg_id})
-    IO.puts("ETS lookup: #{inspect(lookup)}")
-  end
-
-  # Rotate generations and show active generation after rotation
-  def rotate_and_check do
-    MessageTracker.rotate()
-    [{:active_gen, active_idx}] = :ets.lookup(:tracker_config, :active_gen)
-    IO.puts("After rotation, active generation: #{active_idx} (0 = gen0, 1 = gen1)")
+    # Check Memory
+    ets_mem = :erlang.memory(:ets) / 1024 / 1024
+    IO.puts("ETS RAM Usage: #{Float.round(ets_mem, 2)} MB")
   end
 end

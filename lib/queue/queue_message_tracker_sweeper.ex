@@ -13,6 +13,7 @@ defmodule Queue.MessageTracker.Sweeper do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+
   # -------------------------------------------------------------------
   # Callbacks
   # -------------------------------------------------------------------
