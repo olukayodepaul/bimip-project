@@ -31,8 +31,12 @@ defmodule Bimip.Application do
     # -----------------------
     # ETS (GLOBAL INDEX CACHE)
     # -----------------------
-    init_ets()
+
     Queue.MessageTracker.init()
+    Queue.QueueLogImpl.__ets_startup__()
+    Queue.QueueLogImpl.init_fd_pool()
+    Queue.QueueLogImpl.start_lru_eviction()
+
 
     # -----------------------
     # TCP / HTTP
@@ -93,25 +97,6 @@ defmodule Bimip.Application do
     ])
   end
 
-  # -----------------------
-  # ETS INITIALIZATION
-  # -----------------------
-  defp init_ets do
-    ets_tables = [
-      {:bimip_index_cache, [:named_table, :ordered_set, :public, {:read_concurrency, true}, {:write_concurrency, true}]},
-      {:bimip_device_bookmarks, [:named_table, :set, :public, {:read_concurrency, true}, {:write_concurrency, true}]},
-      {:bimip_poison_tracker, [:named_table, :set, :public, {:read_concurrency, true}, {:write_concurrency, true}]}
-    ]
-
-    for {table, opts} <- ets_tables do
-      case :ets.info(table) do
-        :undefined ->
-          :ets.new(table, opts)
-          Logger.info("ETS table #{inspect(table)} initialized")
-        _ -> :ok
-      end
-    end
-  end
 
   # -----------------------
   # MNESIA TABLE DEFINITIONS

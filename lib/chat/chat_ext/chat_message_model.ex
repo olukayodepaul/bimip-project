@@ -1,6 +1,6 @@
-defmodule Chat.PrcMessage do
+defmodule Chat.Message.Model do
 
-  def prc_message({%Bimip.Message{} = message, device_id, eid}) do
+  def builder({%Bimip.Message{} = message, device_id, eid, app_device_id}) do
     %Chat.MessageStruct{
       peer_uid: message.peer_uid,
       from: %Chat.EntityStruct{
@@ -17,6 +17,7 @@ defmodule Chat.PrcMessage do
       encrypted: message.encrypted,
       signature: message.signature,
       device_id: device_id,
+      app_device_id: app_device_id,
       eid: eid
     }
   end

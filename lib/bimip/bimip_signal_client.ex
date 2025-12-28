@@ -343,11 +343,10 @@ defmodule Bimip.SignalClient do
       {:message, %Bimip.Message{} = message} ->
         case Bimip.Validators.MessageValidator.validate(message) do
           :ok ->
-            Chat.PrcMessage.prc_message({message, device_id, eid})
+            # get the queue_device_id from client genserver state. for now hard code it
+            app_device_id = 5
+            Chat.Message.Model.builder({message, app_device_id, eid, device_id })
             |> server_route(:eid, :route_message, eid)
-
-
-
           {:error, err} ->
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"
             IO.inspect(reason)
@@ -366,7 +365,10 @@ defmodule Bimip.SignalClient do
   defp server_route(payload, chanel, signal_to_server, eid) do
     {chanel, eid, signal_to_server, payload}
     |> Connect.handle_inbouce_signal()
+
   end
 
 
 end
+
+# {:ok, result} = Queue.QueueLogImpl.fetch("a@domain.com", 1, "bbbbb2", 1, 10)

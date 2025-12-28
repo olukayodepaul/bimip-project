@@ -65,7 +65,8 @@ defmodule Bimip.SignalServer do
       display_name: registration.display_name,
       current_timer: nil,
       force_stale: DateTime.utc_now(),
-      devices: %{}
+      devices: %{},
+      log_files: %{}
     }}
   end
 
@@ -298,63 +299,93 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
-
   @impl true
-  def handle_cast({:log_user_message, partition_id, from, to, payload}, %{eid: eid} = state) do
-
-    IO.inspect({partition_id, from, to, payload})
-
-    # owner_eid = state.eid
-
-    # # 1️⃣ Get or open the file handle for this partition
-    # {fd, log_files} =
-    #   case Map.get(state.log_files, partition_id) do
-    #     nil ->
-    #       File.mkdir_p!(Path.join("data/bimip", owner_eid))
-    #       path = Queue.QueueLogImpl.get_current_log_path(owner_eid, partition_id)
-    #       {:ok, new_fd} = File.open(path, [:append, :binary, :raw])
-    #       {new_fd, Map.put(state.log_files, partition_id, new_fd)}
-
-    #     existing_fd ->
-    #       {existing_fd, state.log_files}
-    #   end
-
-    # # 2️⃣ Write the message to log
-    # case Queue.QueueLogImpl.write(fd, partition_id, owner_eid, to, payload, msg_id) do
-    #   {:ok, offset, status} ->
-    #     # 3️⃣ Handle segment rollover
-    #     log_files =
-    #       if status == :rollover do
-    #         :file.close(fd)                   # Close old segment
-    #         Map.delete(log_files, partition_id) # Remove handle
-    #       else
-    #         log_files
-    #       end
-
-    #     {:noreply, %{state | log_files: log_files}}
-
-    #   {:error, reason} ->
-    #     Logger.error("[LOG] Failed to write message for #{owner_eid}: #{inspect(reason)}")
-    #     {:noreply, state}
-    # end
-    {:noreply, state}
-  end
-
-
-
-
-  @impl true
-  def handle_cast({:route_message, payload}, state) do
-
+  def handle_cast({:route_message, %Chat.MessageStruct{} = payload}, state) do
     IO.inspect(payload)
-    # GenServer.cast(self(), {:chat_queue, payload})
+    case payload.payload_context do
+      1-> GenServer.cast(self(), {:chat_queue, payload})
+    end
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:chat_queue, payload},  state) do
-    SendMessage.store_message(payload)
-    {:noreply, state}
+  def handle_cast({:chat_queue, %Chat.MessageStruct{} = payload}, state) do
+    # 1. Deduplicate first
+    case Queue.MessageTracker.check_and_insert(payload.eid, payload.device_id, payload.peer_uid) do
+      {:ok, :inserted} ->
+        partition_id = 1
+        owner_eid = payload.eid
+
+        # 2. Get the FDS (plural) from state
+        # Note: Changed from get_or_open_fd to get_or_open_fds
+        {fds, state} = get_or_open_fds(state, owner_eid, partition_id)
+
+        # 3. Write using BOTH log_fd and index_fd
+        # We pass fds.log_fd and fds.index_fd as the first two arguments
+        case Queue.QueueLogImpl.safe_write(
+              fds.log_fd,
+              fds.index_fd,
+              partition_id,
+              owner_eid,
+              payload.to.eid,
+              1,
+              payload.payload_context,
+              payload,
+              payload.peer_uid
+            ) do
+          {:ok, _offset, status} ->
+            # 4. Handle Rollover
+            # If status is :rollover, we must close BOTH descriptors
+            new_state = if status == :rollover do
+              :file.close(fds.log_fd)
+              :file.close(fds.index_fd)
+
+              # Clean up the map for this partition
+              # Assuming your state structure for log_files is %{partition_id => fds_map}
+              put_in(state.log_files, Map.delete(state.log_files, partition_id))
+            else
+              state
+            end
+            {:noreply, new_state}
+
+          {:error, reason} ->
+            Logger.error("[CHAT_QUEUE] Write failed for #{owner_eid}: #{inspect(reason)}")
+            {:noreply, state}
+        end
+
+      {:error, :already_exists} ->
+        {:noreply, state}
+    end
+  end
+
+  # This helper ensures both files are ready for high-speed append
+  defp get_or_open_fds(state, eid, partition) do
+    # Ensure the log_files map exists in state
+    log_files = state.log_files || %{}
+
+    case Map.get(log_files, partition) do
+      nil ->
+        log_path = Queue.QueueLogImpl.get_current_log_path(eid, partition)
+        # Assuming you added index_file_path to your QueueLogImpl
+        idx_path = Queue.QueueLogImpl.index_file_path(eid, partition)
+
+        File.mkdir_p!(Path.dirname(log_path))
+
+        # Open options for maximum 50M record throughput
+        opts = [:append, :binary, :raw, {:delayed_write, 65536, 1000}]
+
+        {:ok, l_fd} = :file.open(log_path, opts)
+        {:ok, i_fd} = :file.open(idx_path, opts)
+
+        fds = %{log_fd: l_fd, index_fd: i_fd}
+
+        # Update state with the new fds map
+        new_log_files = Map.put(log_files, partition, fds)
+        {fds, %{state | log_files: new_log_files}}
+
+      fds ->
+        {fds, state}
+    end
   end
 
   @impl true

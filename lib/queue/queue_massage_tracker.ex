@@ -47,8 +47,8 @@ defmodule Queue.MessageTracker do
   # -------------------------------------------------------------------
   # Check & Insert (with optional TTL)
   # -------------------------------------------------------------------
-  def check_and_insert(user, message_id, ttl_seconds \\ @default_ttl) do
-    key = {user, message_id}
+  def check_and_insert(user, device_id, message_id, ttl_seconds \\ @default_ttl) do
+    key = {user, device_id, message_id}
     idx = :erlang.phash2(key, @partitions)
     active_idx = :persistent_term.get(@active_gen_key)
 
@@ -124,4 +124,5 @@ defmodule Queue.MessageTracker do
       Logger.info("MessageTracker rotation complete. New active generation: #{new_active_idx}")
     end)
   end
+
 end
