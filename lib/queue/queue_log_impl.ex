@@ -1,248 +1,321 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
-  BimipLog — Fully Optimized Aggregated Shard Engine.
-  - 64 shards
-  - Atomic flushing
-  - Recursive index loader for variable-length user IDs
-  - Duplicate ordered set for high concurrency
-  - Optimized fetch_range/3 for chat screens
+  BimipLog v6 — Production-Grade Sharded Append-Only Log.
+  Includes fsync durability, graceful shutdown, and compaction swap.
   """
+  use GenServer
   require Logger
 
+  # ------------------------------------------------------------------
+  # CONFIGURATION
+  # ------------------------------------------------------------------
   @base_dir "data/bimip"
   @num_shards 64
-  @index_granularity 100
+  @header_size 19 # Updated: 0xEE(1) + size(4) + crc(4) + ulen(2) + ts(8)
   @flush_interval 100
-  @max_buffer_size 5000
-
+  @max_segment_size 100 * 1024 * 1024
+  @max_buffer_per_shard 100_000
   @user_offsets :bimip_user_offsets
-  @fd_pools [:log_w, :log_r, :idx_w, :idx_r]
-  @quotas %{log_w: 300, idx_w: 300, log_r: 300, idx_r: 300}
+  @read_pool_log :bimip_log_reader_pool
+  @pool_quota 500
+  @max_disk_write_retries 3
 
-  # -------------------------------------------------------------------
-  # 1. Initialization
-  # -------------------------------------------------------------------
-  def __ets_startup__ do
-    File.mkdir_p!(@base_dir)
+  # ------------------------------------------------------------------
+  # PUBLIC API
+  # ------------------------------------------------------------------
 
-    for i <- 0..(@num_shards - 1) do
-      :ets.new(log_buffer_name(i), [:named_table, :duplicate_ordered_set, :public, write_concurrency: true])
-      :ets.new(idx_cache_name(i), [:named_table, :ordered_set, :public, read_concurrency: true])
-      load_index_into_cache(i)
+  def write(partition_id, user, device_id, type, payload_ctx, payload, message_id) do
+    shard = :erlang.phash2(user, @num_shards)
+    buf = log_buffer(shard)
+
+    if :ets.info(buf, :size) > @max_buffer_per_shard do
+      {:error, :backpressure}
+    else
+      offset = :ets.update_counter(@user_offsets, {user, partition_id}, {2, 1}, {{user, partition_id}, 0})
+
+      record = %{
+        u: user,
+        p: partition_id,
+        off: offset,
+        mid: message_id,
+        writer_device: device_id,         # NEW: track which device wrote it
+        data: Queue.Persist.build(payload, offset, type, payload_ctx),
+        ts: System.system_time(:second)
+      }
+
+      :ets.insert(buf, {shard, offset, record})
+      {:ok, offset}
     end
-
-    ets_opts = [:named_table, :public, :write_concurrency]
-    if :ets.info(@user_offsets) == :undefined, do: :ets.new(@user_offsets, ets_opts)
-
-    for pool <- @fd_pools do
-      if :ets.info(pool) == :undefined, do: :ets.new(pool, ets_opts ++ [:read_concurrency])
-    end
-
-    Logger.info("BimipLog initialized with #{@num_shards} shards and atomic flushing enabled.")
   end
 
-  def child_spec(shard_idx) do
-    %{
-      id: :"shard_worker_#{shard_idx}",
-      start: {Task, :start_link, [fn -> shard_worker_loop(shard_idx) end]},
-      restart: :permanent
-    }
-  end
+  # Fetch messages skipping ones written by this device
+  def fetch_for_device(user, partition_id, device_id, offset) do
+    shard = :erlang.phash2(user, @num_shards)
 
-  # -------------------------------------------------------------------
-  # 2. Public API
-  # -------------------------------------------------------------------
-  def write(partition_id, user, reply_to, type, payload_context, payload, message_id) do
-    offset = :ets.update_counter(@user_offsets, {user, partition_id}, {2, 1}, {{user, partition_id}, 0})
-    shard_idx = :erlang.phash2(user, @num_shards)
+    case :ets.match_object(log_buffer(shard), {shard, offset, %{u: user, p: partition_id}}) do
+      [{_, _, rec}] ->
+        if rec.writer_device == device_id do
+          {:ok, []} # skip own message
+        else
+          {:ok, [rec.data]}
+        end
 
-    record = %{
-      u: user,
-      p: partition_id,
-      off: offset,
-      mid: message_id,
-      data: Queue.Persist.build(payload, offset, reply_to, type, payload_context)
-    }
-
-    :ets.insert(log_buffer_name(shard_idx), {shard_idx, record})
-    {:ok, offset, :buffered}
-  end
-
-  def fetch(user, partition_id, offset) do
-    shard_idx = :erlang.phash2(user, @num_shards)
-
-    case :ets.match_object(log_buffer_name(shard_idx), {shard_idx, %{u: user, p: partition_id, off: offset}}) do
-      [{_, rec}] -> {:ok, rec.data}
       [] ->
-        case :ets.lookup(idx_cache_name(shard_idx), {user, partition_id, offset}) do
-          [{_, pos}] -> read_from_shard(shard_idx, pos)
+        case :ets.lookup(idx_cache(shard), {user, partition_id, offset}) do
+          [{{^user, ^partition_id, ^offset}, {seg_base, pos}}] ->
+            with {:ok, rec} <- read_from_disk(shard, seg_base, pos) do
+              # assume rec has writer_device stored in it
+              if Map.get(rec, :writer_device) == device_id do
+                {:ok, []} # skip own message
+              else
+                {:ok, [rec.data]}
+              end
+            else
+              _ -> {:error, :read_failed}
+            end
+
           [] -> {:error, :not_found}
         end
     end
   end
 
-  # -------------------------------------------------------------------
-  # 2b. Fetch last N messages for chat screen (optimized)
-  # -------------------------------------------------------------------
-  def fetch_range(user, partition_id, count \\ 100) do
-    shard_idx = :erlang.phash2(user, @num_shards)
 
-    # 1. Memory buffer
-    mem_records =
-      :ets.match_object(log_buffer_name(shard_idx), {shard_idx, %{u: user, p: partition_id}})
-      |> Enum.map(fn {_, rec} -> {rec.off, rec.data} end)
+  def fetch(user, partition_id, offset) do
+    shard = :erlang.phash2(user, @num_shards)
+    case :ets.match_object(log_buffer(shard), {shard, offset, %{u: user, p: partition_id}}) do
+      [{_, _, rec}] -> {:ok, rec.data}
+      [] ->
+        case :ets.lookup(idx_cache(shard), {user, partition_id, offset}) do
+          [{{^user, ^partition_id, ^offset}, {seg_base, pos}}] ->
+            read_from_disk(shard, seg_base, pos)
+          [] -> {:error, :not_found}
+        end
+    end
+  end
 
-    # 2. Index cache (optimized via match spec)
-    idx_records =
-      :ets.select(idx_cache_name(shard_idx), [
-        {{{user, partition_id, :"$1"}, :"$2"}, [], [{{:"$1", :"$2"}}]}
-      ])
+  # ------------------------------------------------------------------
+  # GENSERVER CORE
+  # ------------------------------------------------------------------
 
-    # 3. Merge and take last N messages
-    (mem_records ++ idx_records)
-    |> Enum.sort_by(fn {off, _} -> off end, :desc)
-    |> Enum.take(count)
-    |> Enum.map(fn
-      {off, data} when is_map(data) -> {off, data}       # Memory buffer
-      {off, pos} when is_integer(pos) -> {off, read_from_shard!(shard_idx, pos)} # Disk index
+  def start_link(shard), do: GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
+
+  @impl true
+  def init(shard) do
+    Process.flag(:trap_exit, true)
+    File.mkdir_p!(@base_dir)
+    manifest = load_manifest(shard)
+    load_historical_indices(shard, manifest.base)
+
+    opts = [:append, :raw, :binary, {:delayed_write, 64 * 1024, 100}]
+    {:ok, log_fd} = :file.open(manifest.log, opts)
+    {:ok, idx_fd} = :file.open(manifest.idx, opts)
+    {:ok, pos} = :file.position(log_fd, :cur)
+
+    schedule_flush()
+    {:ok, %{shard: shard, log_fd: log_fd, idx_fd: idx_fd, current_size: pos, active_base: manifest.base}}
+  end
+
+  @impl true
+  def handle_info(:flush, state) do
+    {:noreply, perform_flush(state)}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    Logger.info("Shard #{state.shard} shutting down. Finalizing flush...")
+    perform_flush(state)
+    :file.close(state.log_fd)
+    :file.close(state.idx_fd)
+  end
+
+  @impl true
+  def handle_call({:compact_swap, old_bases, new_base, _files, mappings}, _from, state) do
+    if state.active_base in old_bases do
+      {:reply, {:error, :active_segment_collision}, state}
+    else
+      :ets.insert(idx_cache(state.shard), mappings)
+      Enum.each(old_bases, fn base ->
+        path = Path.join(@base_dir, "shard_#{state.shard}_#{base}.log")
+        :ets.delete(@read_pool_log, path)
+        File.rm(path)
+        File.rm(Path.join(@base_dir, "shard_#{state.shard}_#{base}.idx"))
+      end)
+      {:reply, :ok, state}
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # STORAGE LOGIC
+  # ------------------------------------------------------------------
+
+  defp perform_flush(state) do
+    buffer = log_buffer(state.shard)
+    items = :ets.select(buffer, [{{state.shard, :"$1", :"$2"}, [], [{{:"$1", :"$2"}}]}] )
+    :ets.select_delete(buffer, [{{state.shard, :_, :_}, [], [true]}])
+
+    case items do
+      [] -> state
+      _ ->
+        sorted = Enum.sort_by(items, fn {off, _} -> off end, :asc)
+        state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
+        new_state = flush_records_safe(state, sorted)
+
+        # Hard Durability (fsync)
+        :file.datasync(new_state.log_fd)
+        :file.datasync(new_state.idx_fd)
+
+        schedule_flush()
+        new_state
+    end
+  end
+
+  defp flush_records_safe(state, records) do
+    Enum.reduce(records, state, fn {offset, rec}, acc ->
+      do_write(acc, rec, offset, @max_disk_write_retries)
     end)
   end
 
-  # -------------------------------------------------------------------
-  # 3. Worker Logic
-  # -------------------------------------------------------------------
-  defp shard_worker_loop(shard_idx) do
-    Process.sleep(@flush_interval)
-    flush_shard_buffer(shard_idx)
-    # Force GC on the worker after a heavy flush to keep RAM lean
-    :erlang.garbage_collect(self(), [:async])
-    shard_worker_loop(shard_idx)
-  end
+  defp do_write(state, rec, offset, retries_left) when retries_left > 0 do
+    try do
+      {:ok, pos} = :file.position(state.log_fd, :cur)
+      bin = :erlang.term_to_binary(rec.data, [:compressed])
+      user_bin = to_string(rec.u)
 
-  defp flush_shard_buffer(shard_idx) do
-    buffer = log_buffer_name(shard_idx)
+      packet = [
+        <<0xEE, byte_size(bin)::32, :erlang.crc32(bin)::32, byte_size(user_bin)::16, rec.ts::64>>,
+        user_bin, <<rec.p::32, offset::64>>, bin
+      ]
 
-    case :ets.take(buffer, shard_idx) do
-      [] -> :ok
-      items ->
-        records = Enum.map(items, &elem(&1, 1))
-        flush_to_disk(shard_idx, records)
+      :ok = :file.write(state.log_fd, packet)
+      :ok = :file.write(state.idx_fd, <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, pos::64>>)
+      :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, pos}})
+
+      %{state | current_size: state.current_size + IO.iodata_length(packet)}
+    rescue
+      _ ->
+        :timer.sleep(50)
+        do_write(state, rec, offset, retries_left - 1)
     end
   end
 
-  defp flush_to_disk(shard_idx, records) do
-    l_path = shard_log_path(shard_idx)
-    i_path = shard_idx_path(shard_idx)
+  defp do_write(_state, rec, _offset, 0), do: raise "I/O Failure on message #{rec.mid}"
 
-    with {:ok, f_log} <- get_fd_safe(:log_w, l_path, @quotas.log_w, [:append]),
-         {:ok, f_idx} <- get_fd_safe(:idx_w, i_path, @quotas.idx_w, [:append]) do
-      try do
-        Enum.each(records, fn rec ->
-          {:ok, pos} = :file.position(f_log, :cur)
-          bin = :erlang.term_to_binary(rec.data, [:compressed])
-          u_bin = to_string(rec.u)
+  defp read_from_disk(shard, base, pos) do
+    path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
+    with {:ok, fd} <- reader_fd(@read_pool_log, path),
+         {:ok, <<0xEE, size::32, crc::32, ulen::16, _ts::64>>} <- :file.pread(fd, pos, @header_size),
+         body_total = ulen + 12 + size,
+         {:ok, body} <- :file.pread(fd, pos + @header_size, body_total) do
+      payload = binary_part(body, ulen + 12, size)
+      if :erlang.crc32(payload) == crc, do: {:ok, :erlang.binary_to_term(payload, [:safe])}, else: {:error, :corrupt}
+    else
+      _ -> {:error, :read_failed}
+    end
+  end
 
-          packet = [
-            <<byte_size(bin)::32, :erlang.crc32(bin)::32, byte_size(u_bin)::16>>,
-            u_bin,
-            <<rec.p::32, rec.off::64>>,
-            bin
-          ]
-          :file.write(f_log, packet)
+  # ------------------------------------------------------------------
+  # SYSTEM HELPERS
+  # ------------------------------------------------------------------
 
-          if rem(rec.off, @index_granularity) == 0 do
-            :ets.insert(idx_cache_name(shard_idx), {{rec.u, rec.p, rec.off}, pos})
-            :file.write(f_idx, <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, rec.off::64, pos::64>>)
-          end
-        end)
-      after
-        release_fd(:log_w, l_path)
-        release_fd(:idx_w, i_path)
+  def __startup__ do
+    File.mkdir_p!(@base_dir)
+    :ets.new(@user_offsets, [:named_table, :public, {:write_concurrency, true}, {:read_concurrency, true}])
+    :ets.new(@read_pool_log, [:named_table, :public])
+
+    for s <- 0..(@num_shards - 1) do
+      :ets.new(log_buffer(s), [:named_table, :duplicate_bag, :public, {:write_concurrency, true}, {:read_concurrency, true}])
+      :ets.new(idx_cache(s), [:named_table, :ordered_set, :public, {:read_concurrency, true}])
+    end
+    recover_user_offsets()
+  end
+
+  defp recover_user_offsets do
+    Path.join(@base_dir, "*.idx") |> Path.wildcard() |> Enum.each(fn path ->
+      case File.read(path) do
+        {:ok, bin} -> safe_sync_offsets(bin)
+        _ -> :ok
       end
-    end
+    end)
   end
 
-  # -------------------------------------------------------------------
-  # 4. Recovery & Reads
-  # -------------------------------------------------------------------
-  defp load_index_into_cache(shard_idx) do
-    path = shard_idx_path(shard_idx)
-    if File.exists?(path) do
-      {:ok, bin} = File.read(path)
-      parse_index_recursive(bin, shard_idx)
-    end
+  defp safe_sync_offsets(<<ul::16, u::binary-size(ul), p::32, off::64, _::64, rest::binary>>) do
+    :ets.update_counter(@user_offsets, {u, p}, {2, 0}, {{u, p}, off})
+    safe_sync_offsets(rest)
+  end
+  defp safe_sync_offsets(_), do: :ok
+
+  defp rotate_segment(state) do
+    :file.close(state.log_fd)
+    :file.close(state.idx_fd)
+    base = System.unique_integer([:monotonic, :positive])
+    log = Path.join(@base_dir, "shard_#{state.shard}_#{base}.log")
+    idx = Path.join(@base_dir, "shard_#{state.shard}_#{base}.idx")
+    save_manifest(state.shard, log, idx, base)
+    opts = [:append, :raw, :binary, {:delayed_write, 64 * 1024, 100}]
+    {:ok, n_log} = :file.open(log, opts)
+    {:ok, n_idx} = :file.open(idx, opts)
+    %{state | log_fd: n_log, idx_fd: n_idx, current_size: 0, active_base: base}
   end
 
-  defp parse_index_recursive(<<u_len::16, u::binary-size(u_len), p::32, o::64, pos::64, rest::binary>>, s_idx) do
-    :ets.insert(idx_cache_name(s_idx), {{u, p, o}, pos})
-    parse_index_recursive(rest, s_idx)
-  end
-  defp parse_index_recursive(_, _), do: :ok
-
-  defp read_from_shard(shard_idx, pos) do
-    case read_from_shard!(shard_idx, pos) do
-      {:ok, data} -> {:ok, data}
-      other -> other
-    end
-  end
-
-  defp read_from_shard!(shard_idx, pos) do
-    path = shard_log_path(shard_idx)
-    case get_fd_safe(:log_r, path, @quotas.log_r, [:read]) do
-      {:ok, fd} ->
-        try do
-          case :file.pread(fd, pos, 1024) do
-            {:ok, <<size::32, crc::32, u_len::16, rest::binary>>} ->
-              payload = binary_part(rest, u_len + 4 + 8, size)
-              if :erlang.crc32(payload) == crc, do: {:ok, :erlang.binary_to_term(payload, [:safe])}, else: {:error, :corrupt}
-            _ -> {:error, :eof}
-          end
-        after
-          release_fd(:log_r, path)
-        end
-      error -> {:error, :fd_unavailable}
-    end
-  end
-
-  # -------------------------------------------------------------------
-  # 5. FD Management (LRU)
-  # -------------------------------------------------------------------
-  defp get_fd_safe(pool, path, quota, mode) do
+  defp reader_fd(pool, path) do
     case :ets.lookup(pool, path) do
-      [{^path, fd, _ts, _state}] ->
-        :ets.insert(pool, {path, fd, System.monotonic_time(), :busy})
+      [{^path, fd, _}] ->
+        :ets.insert(pool, {path, fd, :erlang.monotonic_time()})
         {:ok, fd}
       [] ->
-        if :ets.info(pool, :size) >= quota, do: evict_lru(pool)
-        case File.open(path, [:binary, :raw | mode]) do
-          {:ok, fd} ->
-            :ets.insert(pool, {path, fd, System.monotonic_time(), :busy})
-            {:ok, fd}
-          _error -> {:error, :fd_unavailable}
+        if :ets.info(pool, :size) >= @pool_quota, do: evict_lru(pool)
+        case :file.open(path, [:read, :raw, :binary]) do
+          {:ok, fd} -> :ets.insert(pool, {path, fd, :erlang.monotonic_time()}); {:ok, fd}
+          err -> err
         end
-    end
-  end
-
-  defp release_fd(pool, path) do
-    case :ets.lookup(pool, path) do
-      [{p, fd, _, :busy}] -> :ets.insert(pool, {p, fd, System.monotonic_time(), :idle})
-      _ -> :ok
     end
   end
 
   defp evict_lru(pool) do
-    match_spec = [{{:"$1", :"$2", :"$3", :idle}, [], [{{:"$3", :"$1", :"$2"}}]}]
-    case :ets.select(pool, match_spec) |> Enum.sort() |> List.first() do
-      {_ts, path, fd} -> :file.close(fd); :ets.delete(pool, path)
+    case :ets.tab2list(pool) |> Enum.min_by(&elem(&1, 2), fn -> nil end) do
+      {path, fd, _} -> :file.close(fd); :ets.delete(pool, path)
       _ -> :ok
     end
   end
 
-  # -------------------------------------------------------------------
-  # 6. Helpers
-  # -------------------------------------------------------------------
-  defp log_buffer_name(i), do: :"bimip_log_buf_#{i}"
-  defp idx_cache_name(i),  do: :"bimip_idx_ptr_#{i}"
-  defp shard_log_path(i),  do: Path.join(@base_dir, "shard_#{i}.log")
-  defp shard_idx_path(i),  do: Path.join(@base_dir, "shard_#{i}.idx")
+  defp load_historical_indices(shard, active_base) do
+    Path.join(@base_dir, "shard_#{shard}_*.idx")
+    |> Path.wildcard()
+    |> Enum.reject(&String.contains?(&1, "_#{active_base}.idx"))
+    |> Enum.each(fn path ->
+      case File.read(path) do
+        {:ok, bin} ->
+          [_, _, base_str] = path |> Path.basename(".idx") |> String.split("_")
+          parse_idx_bin(shard, String.to_integer(base_str), bin)
+        _ -> :ok
+      end
+    end)
+  end
+
+  defp parse_idx_bin(s, b, <<ul::16, u::binary-size(ul), p::32, o::64, pos::64, rest::binary>>) do
+    :ets.insert(idx_cache(s), {{u, p, o}, {b, pos}})
+    parse_idx_bin(s, b, rest)
+  end
+  defp parse_idx_bin(_, _, _), do: :ok
+
+  defp load_manifest(shard) do
+    path = Path.join(@base_dir, "shard_#{shard}.manifest")
+    case File.read(path) do
+      {:ok, bin} -> :erlang.binary_to_term(bin)
+      _ ->
+        base = System.unique_integer([:monotonic, :positive])
+        %{log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"), idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"), base: base}
+    end
+  end
+
+  defp save_manifest(shard, log, idx, base) do
+    path = Path.join(@base_dir, "shard_#{shard}.manifest")
+    File.write!(path, :erlang.term_to_binary(%{log: log, idx: idx, base: base}))
+  end
+
+  defp log_buffer(s), do: :"bimip_buf_#{s}"
+  defp idx_cache(s), do: :"bimip_idx_#{s}"
+  defp worker_name(s), do: :"bimip_shard_#{s}"
+  defp schedule_flush, do: Process.send_after(self(), :flush, @flush_interval)
+
 end

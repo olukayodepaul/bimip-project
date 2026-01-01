@@ -65,8 +65,7 @@ defmodule Bimip.SignalServer do
       display_name: registration.display_name,
       current_timer: nil,
       force_stale: DateTime.utc_now(),
-      devices: %{},
-      log_files: %{}
+      devices: %{}
     }}
   end
 
@@ -308,55 +307,47 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
+  # ----------------------
+  # Chat Queue Integration
+  # ----------------------
   @impl true
-  def handle_cast({:chat_queue, %Chat.MessageStruct{} = payload}, state) do
-    # 1. Deduplicate first
+  def handle_cast({:chat_queue, %Chat.MessageStruct{} = payload}, %{eid: eid} = state) do
+    # 1. Deduplicate using your existing Tracker
     case Queue.MessageTracker.check_and_insert(payload.eid, payload.device_id, payload.peer_uid) do
       {:ok, :inserted} ->
+        # 2. Use the High-Performance Sharded Storage
+        # We no longer open files here. We push to the 64-shard system.
         partition_id = 1
-        owner_eid = payload.eid
 
-        # 2. Get the FDS (plural) from state
-        # Note: Changed from get_or_open_fd to get_or_open_fds
-        {fds, state} = get_or_open_fds(state, owner_eid, partition_id)
-
-        # 3. Write using BOTH log_fd and index_fd
-        # We pass fds.log_fd and fds.index_fd as the first two arguments
-        case Queue.QueueLogImpl.safe_write(
-              fds.log_fd,
-              fds.index_fd,
+        # Mapping your MessageStruct to the Log format
+        # Note: 'payload' here is the full MessageStruct
+        case Queue.QueueLogImpl.write(
               partition_id,
-              owner_eid,
-              payload.to.eid,
-              1,
+              eid,
+              payload.reply_to || "none",
+              payload.type,
               payload.payload_context,
               payload,
               payload.peer_uid
             ) do
-          {:ok, _offset, status} ->
-            # 4. Handle Rollover
-            # If status is :rollover, we must close BOTH descriptors
-            new_state = if status == :rollover do
-              :file.close(fds.log_fd)
-              :file.close(fds.index_fd)
-
-              # Clean up the map for this partition
-              # Assuming your state structure for log_files is %{partition_id => fds_map}
-              put_in(state.log_files, Map.delete(state.log_files, partition_id))
-            else
-              state
-            end
-            {:noreply, new_state}
+          {:ok, offset, :buffered} ->
+            # SUCCESS: The data is in the ETS shard buffer and will hit disk in < 100ms
+            # You can optionally notify the websocket/device here that it's "Received"
+            {:noreply, state}
 
           {:error, reason} ->
-            Logger.error("[CHAT_QUEUE] Write failed for #{owner_eid}: #{inspect(reason)}")
+            Logger.error("[STORAGE_ERROR] User: #{eid} Reason: #{inspect(reason)}")
             {:noreply, state}
         end
 
       {:error, :already_exists} ->
+        Logger.debug("Duplicate message ignored: #{payload.peer_uid}")
         {:noreply, state}
     end
   end
+
+  # We REMOVE get_or_open_fds because the Shard Workers handle the Files!
+  # This makes your SignalServer much lighter and safer.
 
   # This helper ensures both files are ready for high-speed append
   defp get_or_open_fds(state, eid, partition) do

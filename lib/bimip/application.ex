@@ -33,10 +33,7 @@ defmodule Bimip.Application do
     # -----------------------
 
     Queue.MessageTracker.init()
-    Queue.QueueLogImpl.__ets_startup__()
-    Queue.QueueLogImpl.init_fd_pool()
-    Queue.QueueLogImpl.start_lru_eviction()
-
+    Queue.DeviceBookmark.startup()
 
     # -----------------------
     # TCP / HTTP
@@ -82,7 +79,10 @@ defmodule Bimip.Application do
       {Supervisor.Server, []},
       {Supervisor.Client, []},
       {Queue.MessageTracker.Sweeper, []},
+      {Queue.BimipSupervisor, []},
     ]
+
+
 
     opts = [strategy: :one_for_one, name: Bimip.Supervisor]
     Supervisor.start_link(children, opts)
