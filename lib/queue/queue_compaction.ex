@@ -59,30 +59,50 @@ defmodule Queue.BimipCompactor do
     idx_path = Path.join(@base_dir, "shard_#{shard}_#{base}.idx")
     log_path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
 
-    case File.read(idx_path) do
-      {:ok, bin} -> process_idx_entries(log_path, out_log, out_idx, new_base, cutoff, bin, [])
+    # Open the SOURCE log file ONCE here
+    case {File.read(idx_path), :file.open(log_path, [:read, :raw, :binary])} do
+      {{:ok, bin}, {:ok, src_fd}} ->
+        acc = process_idx_entries(src_fd, out_log, out_idx, new_base, cutoff, bin, [])
+        :file.close(src_fd)
+        acc
       _ -> []
     end
   end
 
-  defp process_idx_entries(src, out_log, out_idx, new_base, cutoff, <<ul::16, u_bin::binary-size(ul), p::32, off::64, pos::64, rest::binary>>, acc) do
-    {:ok, fd} = :file.open(src, [:read, :raw, :binary])
-    {:ok, <<0xEE, size::32, crc::32, ulen::16, ts::64>>} = :file.pread(fd, pos, 19)
+  defp process_idx_entries(src_fd, out_log, out_idx, new_base, cutoff, <<ul::16, u_bin::binary-size(ul), p::32, off::64, pos::64, rest::binary>>, acc) do
+    # NO MORE :file.open here!
+    new_acc =
+      case :file.pread(src_fd, pos, 19) do
+        {:ok, <<0xEE, size::32, crc::32, ulen::16, ts::64>>} ->
+          if ts > cutoff do
+            # Record is within TTL, copy it
+            {:ok, body} = :file.pread(src_fd, pos + 19, ulen + 12 + size)
+            {:ok, n_pos} = :file.position(out_log, :cur)
 
-    acc = if ts > cutoff do
-      {:ok, body} = :file.pread(fd, pos + 19, ulen + 12 + size)
-      {:ok, n_pos} = :file.position(out_log, :cur)
-      :ok = :file.write(out_log, [<<0xEE, size::32, crc::32, ulen::16, ts::64>>, body])
-      :ok = :file.write(out_idx, <<ulen::16, u_bin::binary, p::32, off::64, n_pos::64>>)
-      user = try do String.to_existing_atom(u_bin) rescue _ -> u_bin end
-      [{{user, p, off}, {new_base, n_pos}} | acc]
-    else
-      acc
-    end
-    :file.close(fd)
-    process_idx_entries(src, out_log, out_idx, new_base, cutoff, rest, acc)
+            :ok = :file.write(out_log, [<<0xEE, size::32, crc::32, ulen::16, ts::64>>, body])
+            :ok = :file.write(out_idx, <<ulen::16, u_bin::binary, p::32, off::64, n_pos::64>>)
+
+            # Add the new mapping to the accumulator
+            [{{u_bin, p, off}, {new_base, n_pos}} | acc]
+          else
+            # Record expired, skip it
+            acc
+          end
+
+        _ ->
+          # Read error or corrupt entry, skip it
+          acc
+      end
+
+    # Continue processing the rest of the binary with the updated accumulator
+    process_idx_entries(src_fd, out_log, out_idx, new_base, cutoff, rest, new_acc)
   end
+
+  # Base case: when binary is empty, return the accumulated mappings
+  defp process_idx_entries(_src_fd, _out_log, _out_idx, _new_base, _cutoff, <<>>, acc), do: acc
   defp process_idx_entries(_, _, _, _, _, _, acc), do: acc
+
+
 
   defp find_historical_segments(shard) do
     active_base = case File.read(Path.join(@base_dir, "shard_#{shard}.manifest")) do

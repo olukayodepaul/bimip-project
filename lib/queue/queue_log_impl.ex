@@ -128,17 +128,28 @@ defmodule Queue.QueueLogImpl do
     :file.close(state.idx_fd)
   end
 
-  @impl true
   def handle_call({:compact_swap, old_bases, new_base, _files, mappings}, _from, state) do
     if state.active_base in old_bases do
       {:reply, {:error, :active_segment_collision}, state}
     else
+      # 1. Update the index with new locations
       :ets.insert(idx_cache(state.shard), mappings)
+
+      # 2. Clean up old files safely
       Enum.each(old_bases, fn base ->
-        path = Path.join(@base_dir, "shard_#{state.shard}_#{base}.log")
-        :ets.delete(@read_pool_log, path)
-        File.rm(path)
-        File.rm(Path.join(@base_dir, "shard_#{state.shard}_#{base}.idx"))
+        log_path = Path.join(@base_dir, "shard_#{state.shard}_#{base}.log")
+        idx_path = Path.join(@base_dir, "shard_#{state.shard}_#{base}.idx")
+
+        # CRITICAL: Close and remove from reader pool FIRST
+        case :ets.lookup(@read_pool_log, log_path) do
+          [{^log_path, fd, _}] ->
+            :file.close(fd)
+            :ets.delete(@read_pool_log, log_path)
+          [] -> :ok
+        end
+
+        File.rm(log_path)
+        File.rm(idx_path)
       end)
       {:reply, :ok, state}
     end
@@ -202,14 +213,32 @@ defmodule Queue.QueueLogImpl do
 
   defp read_from_disk(shard, base, pos) do
     path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
+
     with {:ok, fd} <- reader_fd(@read_pool_log, path),
-         {:ok, <<0xEE, size::32, crc::32, ulen::16, _ts::64>>} <- :file.pread(fd, pos, @header_size),
-         body_total = ulen + 12 + size,
-         {:ok, body} <- :file.pread(fd, pos + @header_size, body_total) do
-      payload = binary_part(body, ulen + 12, size)
-      if :erlang.crc32(payload) == crc, do: {:ok, :erlang.binary_to_term(payload, [:safe])}, else: {:error, :corrupt}
+        # 1. Read the fixed-size header
+        {:ok, <<0xEE, size::32, crc::32, ulen::16, _ts::64>>} <- :file.pread(fd, pos, @header_size) do
+
+      # 2. Calculate the exact start of the payload:
+      # Header (19) + Username (ulen) + Metadata (Partition 4 + Offset 8 = 12)
+      payload_pos = pos + @header_size + ulen + 12
+
+      case :file.pread(fd, payload_pos, size) do
+        {:ok, payload_bin} ->
+          if :erlang.crc32(payload_bin) == crc do
+            {:ok, :erlang.binary_to_term(payload_bin, [:safe])}
+          else
+            Logger.error("CRC mismatch in shard #{shard} at pos #{pos}")
+            {:error, :corrupt}
+          end
+
+        {:error, reason} ->
+          Logger.error("Failed to read payload: #{inspect(reason)}")
+          {:error, :read_failed}
+      end
     else
-      _ -> {:error, :read_failed}
+      err ->
+        Logger.error("Header read failed or file missing: #{inspect(err)}")
+        {:error, :read_failed}
     end
   end
 
