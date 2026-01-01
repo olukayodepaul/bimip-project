@@ -1,69 +1,74 @@
 ### 1. `Queue.QueueLogImpl` (The Core Sharded Engine)
 
-This is the "Brain" and "Hands" of the system. It manages the physical storage and retrieval of data.
+This module acts as the primary storage controller. It manages the **Active Segment** (the file currently receiving data) and handles all I/O operations.
 
-* **Partitioning/Sharding:** It splits the data into **64 independent shards**. When a message arrives, it uses a hash of the `user_id` to decide which shard (GenServer) handles the request. This prevents a "hot user" from slowing down the entire system.
-* **Two-Stage Writing:** To maximize throughput, it doesn't write to disk immediately. It first stores messages in a **Memory Buffer (ETS)**. Every 100ms (or when the buffer is full), it "flushes" those messages to the disk in a single batch.
-* **The Reader Pool:** It maintains a pool of file descriptors for reading. Instead of opening and closing files for every fetch request (which is very slow), it keeps them open in an **LRU (Least Recently Used) cache**.
-* **Indexing:** For every message written to a `.log` file, it writes a tiny entry into a `.idx` (index) file. This allows the system to find any message by its "Offset" instantly without scanning the whole file.
+* **Partitioning/Sharding:** Uses `:erlang.phash2(user, 64)` to distribute traffic across 64 individual GenServer workers. This ensures that a surge in one user's activity does not block others.
+* **Two-Stage Writing (Buffered I/O):**
+* **Stage 1:** In the `write/7` function, data is inserted into an ETS buffer (`log_buffer/1`).
+* **Stage 2:** The `perform_flush/1` function runs every 100ms, batch-writing everything from the ETS buffer to disk in a single sequential burst.
+
+
+* **Segment Rotation:** In `rotate_segment/1`, the engine monitors file sizes. Once a log exceeds `@max_segment_size` (100MB), it closes the files and creates a new "Segment" with a unique base ID.
+* **The Reader Pool:** The `reader_fd/2` function manages a pool of open file descriptors in a cache (`:bimip_log_reader_pool`). This uses an **LRU (Least Recently Used)** eviction strategy via `evict_lru/1` to stay within the OS file limit.
+* **Binary Alignment:** The `read_from_disk/3` function implements a precise binary pattern match to extract the payload using the header size (19 bytes) plus the variable username and metadata offsets.
 
 ---
 
 ### 2. `Queue.BimipCompactor` (The Lifecycle Manager)
 
-Since the queue is "Append-Only," files would grow forever if left alone. This module manages the disk space.
+This is a background maintenance worker that manages **Historical Segments** to ensure disk space is recycled and data integrity is maintained.
 
-* **Historical Analysis:** It looks for "Segments" (files) that are no longer the active writing target.
-* **TTL Enforcement:** It iterates through the index of old files. If a message is older than your `@retention_days` (7 days), it marks it for deletion.
-* **Merging & Swapping:** It takes the surviving messages from multiple old files and "compacts" them into one new, clean file.
-* **The Swap Call:** Once a new compacted file is ready, it sends a `:compact_swap` command to the `QueueLogImpl` to update the memory pointers to the new file and delete the old, bloated ones.
+* **Historical Analysis:** The `find_historical_segments/1` function scans the disk for `.idx` files that are not currently locked by a shard's manifest.
+* **Tail-Recursive Compaction:** The `process_idx_entries/7` function iterates through historical segments. It uses a **TTL (Time-To-Live)** check: `if ts > cutoff`. Records that pass are kept; those that fail (older than 7 days) are dropped.
+* **Atomic Swapping:** After creating a new, smaller segment, it calls `GenServer.call(worker, {:compact_swap, ...})`. This triggers the `handle_call` in `QueueLogImpl` to atomically update the index cache and delete old files.
+* **File Handle Safety:** It uses `copy_segment_with_retention/6` to open the source file once and stream data, preventing the "too many open files" error.
 
 ---
 
 ### 3. `Queue.MessageTracker` & `Sweeper` (The Deduplication Guard)
 
-This module ensures that the same message isn't processed twice, which is a common problem in distributed systems when network retries occur.
+This module provides "Exactly-Once" delivery semantics by preventing duplicate messages from entering the system.
 
-* **Generational Storage:** It uses two "generations" of memory. Instead of one giant table that is hard to clean, it fills up "Generation A," then moves to "Generation B."
-* **Persistent Term:** It uses `:persistent_term` to store which generation is currently active. This allows the system to check for duplicates with near-zero CPU overhead.
-* **The Sweeper:** This is a background process that periodically "rotates" the generations. It wipes the oldest generation to clear out memory for new message IDs, ensuring the RAM usage stays flat.
+* **Two-Generation ETS:** `init/0` creates two sets of tables (Gen 0 and Gen 1). This allows for "Zero-Downtime" clearing of old data.
+* **High-Speed Check:** `check_and_insert/4` uses a hash of the message key to find one of **256 partitions**. It checks the old generation first, then the current one, using `:ets.insert_new/2` for lock-free performance.
+* **Persistent Term Optimization:** It stores the active generation index in `:persistent_term`. This allows every shard to know which table to write to without hitting a bottlenecked central GenServer.
+* **The Sweeper:** `Queue.MessageTracker.Sweeper` manages the clock. It triggers `rotate/0` every 12 hours, which flips the active generation and clears the old one in a throttled background task to prevent CPU spikes.
 
 ---
 
 ### 4. `Queue.DeviceBookmark` (The State Tracker)
 
-This module remembers the progress of every single device connected to the system.
+This module acts as the "Cursor" for every connected client, tracking exactly what they have read.
 
-* **Cursor Management:** It stores a "Bookmark" (an integer offset) for every `{device, user, partition}` triplet.
-* **Hybrid Storage:** It uses **ETS** for ultra-fast lookups (so the device can ask "where am I?" constantly) and **Mnesia** to ensure that if the server reboots, the bookmark is not lost.
-* **The "Advance" Logic:** It includes logic to ensure bookmarks only move forward. It prevents a device from accidentally overwriting a new progress marker with an older one.
+* **Startup Recovery:** The `startup/0` function initializes **Mnesia** for disk-based persistence and then calls `load_cache_from_mnesia/2` to warm up ETS caches for instant lookup speed.
+* **Sharded Tracking:** Like the Log Engine, it shards bookmarks across 64 ETS tables to prevent lock contention when thousands of devices acknowledge messages simultaneously.
+* **Monotonic Advancement:** The `advance/4` function ensures the consumer's position never moves backward, protecting against race conditions where an older acknowledgement might arrive after a newer one.
 
 ---
 
 ### 5. `Queue.Persist` (The Data Architect)
 
-This is a functional utility module that defines the "Contract" of what a message looks like.
+This is a pure functional module that ensures every message saved to disk follows a strict schema.
 
-* **Struct Construction:** It transforms raw input data into a strictly defined `%Bimip.Message{}` struct.
-* **Metadata Tagging:** It injects system-level metadata into the message, such as the `writer_device`, `encryption_type`, and `transmission_mode`.
-* **Layering:** It ensures that the storage engine (`QueueLogImpl`) doesn't need to know the details of the message content; it just sees a standardized package.
+* **Struct Construction:** The `build/6` function takes the raw payload and wraps it in a `%Bimip.Message{}` struct.
+* **Writer Attribution:** It explicitly assigns the `writer_device` to the struct. This is the crucial data point used by `fetch_for_device/4` in the Log Engine to filter out a device's own messages during a fetch.
+* **Uniformity:** It ensures that whether a message is a "Chat," "System," or "Command" type, it is serialized into the same binary format for the storage engine.
 
 ---
 
 ### 6. `Queue.Application` & `Supervisor` (The Safety Net)
 
-* **Startup Orchestration:** These modules ensure the system starts in the correct order (e.g., creating the ETS tables before starting the Shards that need them).
-* **Fault Tolerance:** If one shard crashes due to a corrupt file, the Supervisor restarts only that shard, leaving the other 63 shards running perfectly.
+This module manages the system's "Tree of Life."
+
+* **Boot Sequencing:** It calls `QueueLogImpl.__startup__` and `Queue.DeviceBookmark.startup` before starting any workers. This ensures all ETS tables exist before the Shards try to use them.
+* **Granular Supervision:** Each of the 64 shards is supervised individually. If Shard 12 crashes due to a hardware I/O error, Shards 0–11 and 13–63 remain online and operational.
 
 ---
 
 ### Summary of Interaction
 
-When a message is sent:
-
-1. **Tracker** checks if we've seen it.
-2. **Persist** builds the struct.
-3. **QueueLogImpl** buffers it in memory and eventually flushes it to disk.
-4. **Bookmark** tracks the reader's progress.
-5. **Compactor** eventually deletes it when it gets too old.
-
+1. **Ingress:** A message arrives. `MessageTracker` ensures it’s not a duplicate.
+2. **Structuring:** `Persist` creates the standardized `%Bimip.Message{}`.
+3. **Storage:** `QueueLogImpl` saves it to an **Active Segment** on disk and updates the `.idx` file.
+4. **Consumption:** A device asks for data. `DeviceBookmark` tells the system where to start reading. `QueueLogImpl` reads the segment, filtering out the message if the `writer_device` matches the caller.
+5. **Maintenance:** `BimipCompactor` merges full segments and removes expired data to keep the system lean.
