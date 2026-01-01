@@ -67,4 +67,3 @@ When a message is sent:
 4. **Bookmark** tracks the reader's progress.
 5. **Compactor** eventually deletes it when it gets too old.
 
-**Now that you have a detailed view of the modules, would you like me to create a "Management API" module? This would allow you to see stats like "Total Messages Stored" or "Active Compaction Status" across all shards.**
