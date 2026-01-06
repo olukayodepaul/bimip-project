@@ -100,16 +100,7 @@ defmodule Route.Connect do
     end
   end
 
-  def register_device_in_server({device_id, eid, exp, ws_pid}) do
-    case Horde.Registry.lookup(EidRegistry, eid) do
-      [{pid, _}] ->
-        GenServer.cast(pid, {:start_device, {eid, device_id, exp, ws_pid}})
-        :ok
-      []->
-        Logger.warning("No registry entry for #{device_id}, cannot maybe_start_mother")
-        {:error}
-    end
-  end
+
 
   def send_terminate_signal_to_server({device_id, eid}) do
     case Horde.Registry.lookup(EidRegistry, eid) do
@@ -197,6 +188,17 @@ defmodule Route.Connect do
       [] ->
         Logger.warning("No registry entry for, cannot maybe_start_mother")
         :error
+    end
+  end
+
+  def start_device({device_id, eid, exp, ws_pid, uupid}) do
+    case Horde.Registry.lookup(EidRegistry, eid) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:start_device, {eid, device_id, exp, ws_pid, uupid}})
+        :ok
+      []->
+        Logger.warning("No registry entry for #{device_id}, cannot maybe_start_mother")
+        {:error}
     end
   end
 

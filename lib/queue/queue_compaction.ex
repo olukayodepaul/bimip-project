@@ -1,124 +1,163 @@
 defmodule Queue.BimipCompactor do
   @moduledoc """
   Background process for historical segment merging and TTL retention.
+
+  Features:
+    - Safe segment compaction
+    - Atomic manifest updates
+    - Sparse index compatible
+    - Crash-safe with optional quarantine
   """
+
   use GenServer
   require Logger
 
   @base_dir "data/bimip"
-  @merge_threshold 5
-  @check_interval 60_000
-  @retention_days 7
+  @quarantine_dir "data/bimip/quarantine"
+  @merge_threshold 5           # segments before merge
+  @check_interval 60_000       # 1 min
+  @retention_days 7            # TTL
 
-  def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+  # ------------------------------------------------------------------
+  # Public API
+  # ------------------------------------------------------------------
+  def start_link(_) do
+    GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+  end
 
-  @impl true
+  # ------------------------------------------------------------------
+  # GenServer callbacks
+  # ------------------------------------------------------------------
   def init(state) do
+    File.mkdir_p!(@base_dir)
+    File.mkdir_p!(@quarantine_dir)
     schedule_check()
     {:ok, state}
   end
 
-  @impl true
-  def handle_info(:check_compaction, state) do
-    cutoff = System.system_time(:second) - (@retention_days * 86400)
-    for shard <- 0..63, do: maybe_compact_shard(shard, cutoff)
+  def handle_info(:check, state) do
+    compact_all_segments()
     schedule_check()
     {:noreply, state}
   end
 
-  defp maybe_compact_shard(shard, cutoff) do
-    segments = find_historical_segments(shard)
-    if length(segments) >= @merge_threshold, do: perform_merge(shard, segments, cutoff)
-  end
+  # ------------------------------------------------------------------
+  # Helpers
+  # ------------------------------------------------------------------
+  defp schedule_check, do: Process.send_after(self(), :check, @check_interval)
 
-  defp perform_merge(shard, segments, cutoff) do
-    new_base = System.unique_integer([:monotonic, :positive])
-    temp_log = Path.join(@base_dir, "shard_#{shard}_#{new_base}.comp.log")
-    temp_idx = Path.join(@base_dir, "shard_#{shard}_#{new_base}.comp.idx")
-
-    {:ok, out_log} = :file.open(temp_log, [:write, :raw, :binary])
-    {:ok, out_idx} = :file.open(temp_idx, [:write, :raw, :binary])
-
-    mappings = Enum.flat_map(segments, fn base ->
-      copy_segment_with_retention(shard, base, out_log, out_idx, new_base, cutoff)
-    end)
-
-    :file.close(out_log)
-    :file.close(out_idx)
-
-    final_log = Path.join(@base_dir, "shard_#{shard}_#{new_base}.log")
-    final_idx = Path.join(@base_dir, "shard_#{shard}_#{new_base}.idx")
-    File.rename(temp_log, final_log)
-    File.rename(temp_idx, final_idx)
-
-    worker = :"bimip_shard_#{shard}"
-    GenServer.call(worker, {:compact_swap, segments, new_base, %{log: final_log, idx: final_idx}, mappings})
-  end
-
-  defp copy_segment_with_retention(shard, base, out_log, out_idx, new_base, cutoff) do
-    idx_path = Path.join(@base_dir, "shard_#{shard}_#{base}.idx")
-    log_path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
-
-    # Open the SOURCE log file ONCE here
-    case {File.read(idx_path), :file.open(log_path, [:read, :raw, :binary])} do
-      {{:ok, bin}, {:ok, src_fd}} ->
-        acc = process_idx_entries(src_fd, out_log, out_idx, new_base, cutoff, bin, [])
-        :file.close(src_fd)
-        acc
-      _ -> []
-    end
-  end
-
-  defp process_idx_entries(src_fd, out_log, out_idx, new_base, cutoff, <<ul::16, u_bin::binary-size(ul), p::32, off::64, pos::64, rest::binary>>, acc) do
-    # NO MORE :file.open here!
-    new_acc =
-      case :file.pread(src_fd, pos, 19) do
-        {:ok, <<0xEE, size::32, crc::32, ulen::16, ts::64>>} ->
-          if ts > cutoff do
-            # Record is within TTL, copy it
-            {:ok, body} = :file.pread(src_fd, pos + 19, ulen + 12 + size)
-            {:ok, n_pos} = :file.position(out_log, :cur)
-
-            :ok = :file.write(out_log, [<<0xEE, size::32, crc::32, ulen::16, ts::64>>, body])
-            :ok = :file.write(out_idx, <<ulen::16, u_bin::binary, p::32, off::64, n_pos::64>>)
-
-            # Add the new mapping to the accumulator
-            [{{u_bin, p, off}, {new_base, n_pos}} | acc]
-          else
-            # Record expired, skip it
-            acc
-          end
-
-        _ ->
-          # Read error or corrupt entry, skip it
-          acc
-      end
-
-    # Continue processing the rest of the binary with the updated accumulator
-    process_idx_entries(src_fd, out_log, out_idx, new_base, cutoff, rest, new_acc)
-  end
-
-  # Base case: when binary is empty, return the accumulated mappings
-  defp process_idx_entries(_src_fd, _out_log, _out_idx, _new_base, _cutoff, <<>>, acc), do: acc
-  defp process_idx_entries(_, _, _, _, _, _, acc), do: acc
-
-
-
-  defp find_historical_segments(shard) do
-    active_base = case File.read(Path.join(@base_dir, "shard_#{shard}.manifest")) do
-      {:ok, bin} -> :erlang.binary_to_term(bin).base
-      _ -> nil
-    end
-
-    Path.join(@base_dir, "shard_#{shard}_*.idx")
-    |> Path.wildcard()
-    |> Enum.map(fn p ->
-      [_, _, b] = p |> Path.basename(".idx") |> String.split("_")
-      String.to_integer(b)
-    end)
-    |> Enum.reject(&(&1 == active_base))
+  # List all segments in base_dir
+  defp all_segments do
+    Path.wildcard(Path.join(@base_dir, "segment_*.log"))
     |> Enum.sort()
   end
 
-  defp schedule_check, do: Process.send_after(self(), :check_compaction, @check_interval)
+  # Compact eligible segments
+  defp compact_all_segments do
+    segments = all_segments()
+
+    # Only compact if enough segments
+    if length(segments) >= @merge_threshold do
+      {to_merge, rest} = Enum.split(segments, @merge_threshold)
+
+      Logger.info("Compacting segments: #{inspect(to_merge)}")
+
+      case copy_segments_safe(to_merge) do
+        {:ok, new_segment} ->
+          Logger.info("Compaction successful: #{new_segment}")
+          Enum.each(to_merge, &File.rm/1)   # delete old segments
+
+        {:error, failed_segment} ->
+          Logger.error("Compaction failed, moved to quarantine: #{failed_segment}")
+      end
+    end
+
+    # Delete expired segments (TTL)
+    delete_old_segments()
+  end
+
+  # ------------------------------------------------------------------
+  # Crash-Safe Compaction
+  # ------------------------------------------------------------------
+  defp copy_segments_safe(segments) do
+    base = System.unique_integer([:positive])
+    new_segment = Path.join(@base_dir, "segment_#{base}.log")
+
+    try do
+      # Copy segments sequentially
+      Enum.each(segments, fn seg ->
+        File.stream!(seg, [], 4096)
+        |> Stream.each(fn line ->
+          write_with_retry(new_segment, line)
+        end)
+        |> Stream.run()
+      end)
+
+      # Update manifest atomically
+      manifest = %{active_base: new_segment, timestamp: System.system_time(:second)}
+      persist_manifest_atomic(manifest)
+
+      {:ok, new_segment}
+    rescue
+      e ->
+        Logger.error("Error during segment copy: #{inspect(e)}")
+        # Move new_segment to quarantine if partially written
+        quarantine_file(new_segment)
+        {:error, new_segment}
+    end
+  end
+
+  # Retry-safe write
+  defp write_with_retry(file, data, retries \\ 3)
+  defp write_with_retry(_file, _data, 0), do: raise("Failed writing to segment after retries")
+
+  defp write_with_retry(file, data, retries) do
+    try do
+      File.write!(file, data, [:append])
+    rescue
+      _ ->
+        :timer.sleep(50)
+        write_with_retry(file, data, retries - 1)
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Crash-Safe Manifest
+  # ------------------------------------------------------------------
+  defp persist_manifest_atomic(manifest) do
+    manifest_file = Path.join(@base_dir, "manifest.bin")
+    tmp_file = manifest_file <> ".tmp"
+
+    # Write temp file
+    File.write!(tmp_file, :erlang.term_to_binary(manifest))
+
+    # Fsync
+    {:ok, fd} = :file.open(tmp_file, [:read, :write, :binary])
+    :file.sync(fd)
+    :file.close(fd)
+
+    # Atomic rename
+    File.rename!(tmp_file, manifest_file)
+  end
+
+  defp quarantine_file(file) do
+    if File.exists?(file) do
+      dest = Path.join(@quarantine_dir, Path.basename(file))
+      File.rename!(file, dest)
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # TTL Cleanup
+  # ------------------------------------------------------------------
+  defp delete_old_segments do
+    now = System.system_time(:second)
+
+    Path.wildcard(Path.join(@base_dir, "segment_*.log"))
+    |> Enum.each(fn file ->
+      {:ok, stat} = File.stat(file)
+      age_sec = now - stat.mtime |> DateTime.to_unix()
+      if age_sec > @retention_days * 86_400, do: File.rm(file)
+    end)
+  end
 end

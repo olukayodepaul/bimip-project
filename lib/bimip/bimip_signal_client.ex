@@ -12,12 +12,12 @@ defmodule Bimip.SignalClient do
   alias Bimip.PingPong
 
   # Start GenServer for device session
-  def start_link({_eid, device_id, _exp, _ws_pid} = state) do
+  def start_link({_eid, device_id, _exp, _ws_pid, _uupid} = state) do
     GenServer.start_link(__MODULE__, state, name: Registry.via_registry(device_id))
   end
 
   @impl true
-  def init({eid, device_id, exp, ws_pid}) do
+  def init({eid, device_id, exp, ws_pid, uupid}) do
 
     AdaptivePingPong.schedule_ping(device_id)
 
@@ -28,6 +28,7 @@ defmodule Bimip.SignalClient do
         timer: DateTime.utc_now(),
         eid: eid,
         device_id: device_id,
+        uupid: uupid,
         exp_time: exp, #token expiration time
         token_state: :active, # token state...
         ws_pid: ws_pid,
@@ -337,15 +338,14 @@ defmodule Bimip.SignalClient do
     {:noreply, state}
   end
 
-  def handle_cast({:chat_message,  data}, %{device_id: device_id, eid: eid} = state) do
+  def handle_cast({:chat_message,  data}, %{device_id: device_id, eid: eid, uupid: uupid} = state) do
     msg = Bimip.MessageScheme.decode(data)
     case msg.payload do
       {:message, %Bimip.Message{} = message} ->
         case Bimip.Validators.MessageValidator.validate(message) do
           :ok ->
             # get the queue_device_id from client genserver state. for now hard code it
-            app_device_id = 5
-            Chat.Message.Model.builder({message, app_device_id, eid, device_id })
+            Chat.Message.Model.builder({message, uupid, eid, device_id })
             |> server_route(:eid, :route_message, eid)
           {:error, err} ->
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"
@@ -370,5 +370,3 @@ defmodule Bimip.SignalClient do
 
 
 end
-
-# {:ok, result} = Queue.QueueLogImpl.fetch("a@domain.com", 1, "bbbbb2", 1, 10)

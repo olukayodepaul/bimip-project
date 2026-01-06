@@ -12,7 +12,7 @@ defmodule Chat.MessageStruct do
     :encrypted,
     :signature,
     :device_id,
-    :app_device_id,
+    :uupid,
     :eid,
     from: [],
     to: []

@@ -9,7 +9,7 @@ defmodule Queue.Persist do
 
   def build(%{ payload: payload} = _attrs, next_offset, reply_to, type, payload_context) do
 
-      %Bimip.Message{
+       %Bimip.Message{
           offset: next_offset,
           type: type,
           peer_uid: payload.peer_uid,

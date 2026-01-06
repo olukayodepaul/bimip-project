@@ -3,8 +3,8 @@ defmodule Queue.MessageTracker.Sweeper do
   require Logger
 
   # Intervals
-  @sweep_interval :timer.minutes(30) # Increased to reduce CPU scanning frequency
-  @rotate_interval :timer.hours(12)
+  @sweep_interval :timer.minutes(30) # Sweep frequency
+  @rotate_interval :timer.hours(12)  # Rotation frequency
 
   # -------------------------------------------------------------------
   # Client API
@@ -13,13 +13,12 @@ defmodule Queue.MessageTracker.Sweeper do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-
   # -------------------------------------------------------------------
   # Callbacks
   # -------------------------------------------------------------------
   @impl true
   def init(_opts) do
-    # Ensure tables are initialized when the sweeper starts
+    # Initialize MessageTracker tables
     Queue.MessageTracker.init()
 
     schedule_sweep()
@@ -31,11 +30,9 @@ defmodule Queue.MessageTracker.Sweeper do
 
   @impl true
   def handle_info(:sweep, state) do
-    # Only run sweep if you REALLY need to clear expired items before the 12h rotation
     Logger.debug("Sweeper: Starting background expiration scan...")
 
-    # We use a Task to prevent the GenServer from blocking incoming messages
-    # if the sweep takes too long.
+    # Run sweep asynchronously so GenServer isn't blocked
     Task.start(fn -> Queue.MessageTracker.sweep() end)
 
     schedule_sweep()
@@ -46,8 +43,16 @@ defmodule Queue.MessageTracker.Sweeper do
   def handle_info(:rotate, state) do
     Logger.info("Sweeper: Performing generational rotation...")
 
-    # Rotation is already throttled inside your MessageTracker.rotate function
-    Queue.MessageTracker.rotate()
+    # Perform rotation and get minimum valid offset post-rotation
+    min_valid_offset = Queue.MessageTracker.rotate()
+
+    # Adjust bookmarks only if current < min_valid_offset
+    Enum.each(Queue.MessageTracker.affected_devices(), fn {device_id, user, partition_id} ->
+      current = Queue.DeviceBookmark.get(device_id, user, partition_id)
+      if current < min_valid_offset do
+        Queue.DeviceBookmark.set(device_id, user, partition_id, min_valid_offset)
+      end
+    end)
 
     schedule_rotation()
     {:noreply, state}

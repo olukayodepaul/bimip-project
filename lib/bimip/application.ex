@@ -1,3 +1,6 @@
+# -----------------------
+# Bimip.Application
+# -----------------------
 defmodule Bimip.Application do
   use Application
 
@@ -13,11 +16,8 @@ defmodule Bimip.Application do
     # :mnesia.delete_schema([node()])
 
     case :mnesia.create_schema([node()]) do
-      :ok ->
-        Logger.info("Schema created.")
-
-      {:error, {_, {:already_exists, _}}} ->
-        :ok
+      :ok -> Logger.info("Schema created.")
+      {:error, {_, {:already_exists, _}}} -> :ok
     end
 
     :mnesia.start()
@@ -29,9 +29,8 @@ defmodule Bimip.Application do
     create_all_bimip_tables()
 
     # -----------------------
-    # ETS (GLOBAL INDEX CACHE)
+    # ETS / GLOBAL SETUP
     # -----------------------
-
     Queue.MessageTracker.init()
     Queue.DeviceBookmark.startup()
 
@@ -70,18 +69,18 @@ defmodule Bimip.Application do
     # -----------------------
     # SUPERVISION TREE
     # -----------------------
-    children = [
-      tcp_connection,
-      {Phoenix.PubSub, name: Bimip.PubSub},
-      {Redix, name: :redix},
-      {Horde.Registry, name: DeviceIdRegistry, keys: :unique, members: :auto},
-      {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},
-      {Supervisor.Server, []},
-      {Supervisor.Client, []},
-      {Queue.MessageTracker.Sweeper, []},
-      {Queue.BimipSupervisor, []},
-    ]
-
+   children = [
+    tcp_connection,
+    {Phoenix.PubSub, name: Bimip.PubSub},
+    {Redix, name: :redix},
+    {Horde.Registry, name: DeviceIdRegistry, keys: :unique, members: :auto},
+    {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},
+    {Supervisor.Server, []},
+    {Supervisor.Client, []},
+    {Queue.MessageTracker.Sweeper, []},
+    Queue.BimipSupervisor,        # THIS now handles all shard workers + compactor
+    {Task.Supervisor, name: Chat.TaskSupervisor}
+  ]
 
 
     opts = [strategy: :one_for_one, name: Bimip.Supervisor]
@@ -96,7 +95,6 @@ defmodule Bimip.Application do
       {:_, [{Connections.resource_path(), Bimip.Socket, []}]}
     ])
   end
-
 
   # -----------------------
   # MNESIA TABLE DEFINITIONS
@@ -129,15 +127,9 @@ defmodule Bimip.Application do
            {:disc_copies, [node()]},
            {:type, type}
          ]) do
-      {:atomic, :ok} ->
-        Logger.info("Created table #{inspect(table_name)}")
-
-      {:aborted, {:already_exists, _}} ->
-        Logger.debug("Table #{inspect(table_name)} already exists. Skipping.")
-
-      other ->
-        Logger.error("Failed creating #{inspect(table_name)}: #{inspect(other)}")
-        other
+      {:atomic, :ok} -> Logger.info("Created table #{inspect(table_name)}")
+      {:aborted, {:already_exists, _}} -> Logger.debug("Table #{inspect(table_name)} already exists. Skipping.")
+      other -> Logger.error("Failed creating #{inspect(table_name)}: #{inspect(other)}"); other
     end
   end
 end

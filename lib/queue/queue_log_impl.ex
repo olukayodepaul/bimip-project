@@ -1,350 +1,384 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
-  BimipLog v6 — Production-Grade Sharded Append-Only Log.
-  Includes fsync durability, graceful shutdown, and compaction swap.
+  BimipLog v8 — Sharded Append-Only Log with Adaptive Sparse Index
+
+  Features:
+  - Sparse indexing with adaptive stride
+  - Per-device checkpoints
+  - Segment-aware ETS cleanup after compaction
+  - Bounded scans
+  - Metrics for monitoring
   """
   use GenServer
   require Logger
 
   # ------------------------------------------------------------------
-  # CONFIGURATION
+  # CONFIG
   # ------------------------------------------------------------------
   @base_dir "data/bimip"
   @num_shards 64
-  @header_size 19 # Updated: 0xEE(1) + size(4) + crc(4) + ulen(2) + ts(8)
+  @header_size 19
   @flush_interval 100
   @max_segment_size 100 * 1024 * 1024
   @max_buffer_per_shard 100_000
-  @user_offsets :bimip_user_offsets
-  @read_pool_log :bimip_log_reader_pool
   @pool_quota 500
   @max_disk_write_retries 3
+
+  # Sparse + Scan
+  @min_stride 100
+  @max_stride 5_000
+  @max_scan_records 5_000
+  @device_stride 100
+
+  # Metrics
+  @metrics :bimip_metrics
+  @checkpoints :bimip_segment_checkpoints
 
   # ------------------------------------------------------------------
   # PUBLIC API
   # ------------------------------------------------------------------
 
-  def write(partition_id, user, device_id, type, payload_ctx, payload, message_id) do
+  def write(partition_id, user, reply_to, device_id, type, payload_ctx, payload, message_id) do
     shard = :erlang.phash2(user, @num_shards)
     buf = log_buffer(shard)
 
     if :ets.info(buf, :size) > @max_buffer_per_shard do
       {:error, :backpressure}
     else
-      offset = :ets.update_counter(@user_offsets, {user, partition_id}, {2, 1}, {{user, partition_id}, 0})
+      offset =
+        :ets.update_counter(
+          @user_offsets,
+          {user, partition_id},
+          {2, 1},
+          {{user, partition_id}, 0}
+        )
+
+      data = Queue.Persist.build(%{payload: payload}, offset, reply_to, type, payload_ctx)
 
       record = %{
         u: user,
         p: partition_id,
         off: offset,
         mid: message_id,
-        writer_device: device_id,         # NEW: track which device wrote it
-        data: Queue.Persist.build(payload, offset, type, payload_ctx),
+        writer_device: device_id,
+        data: data,
         ts: System.system_time(:second)
       }
 
       :ets.insert(buf, {shard, offset, record})
+
+      # Per-device checkpoint
+      maybe_device_checkpoint(shard, user, device_id, partition_id, offset)
+
       {:ok, offset}
     end
   end
 
-  # Fetch messages skipping ones written by this device
-  def fetch_for_device(user, partition_id, device_id, offset) do
+  def fetch(user, partition_id, offset) do
     shard = :erlang.phash2(user, @num_shards)
 
     case :ets.match_object(log_buffer(shard), {shard, offset, %{u: user, p: partition_id}}) do
       [{_, _, rec}] ->
-        if rec.writer_device == device_id do
-          {:ok, []} # skip own message
-        else
-          {:ok, [rec.data]}
-        end
+        inc(:hit)
+        {:ok, rec.data}
 
       [] ->
-        case :ets.lookup(idx_cache(shard), {user, partition_id, offset}) do
-          [{{^user, ^partition_id, ^offset}, {seg_base, pos}}] ->
-            with {:ok, rec} <- read_from_disk(shard, seg_base, pos) do
-              # assume rec has writer_device stored in it
-              if Map.get(rec, :writer_device) == device_id do
-                {:ok, []} # skip own message
-              else
-                {:ok, [rec.data]}
-              end
-            else
-              _ -> {:error, :read_failed}
-            end
+        case lookup_index(shard, user, partition_id, offset) do
+          {:ok, rec} ->
+            inc(:hit)
+            {:ok, rec.data}
 
-          [] -> {:error, :not_found}
-        end
-    end
-  end
-
-
-  def fetch(user, partition_id, offset) do
-    shard = :erlang.phash2(user, @num_shards)
-    case :ets.match_object(log_buffer(shard), {shard, offset, %{u: user, p: partition_id}}) do
-      [{_, _, rec}] -> {:ok, rec.data}
-      [] ->
-        case :ets.lookup(idx_cache(shard), {user, partition_id, offset}) do
-          [{{^user, ^partition_id, ^offset}, {seg_base, pos}}] ->
-            read_from_disk(shard, seg_base, pos)
-          [] -> {:error, :not_found}
+          :scan ->
+            inc(:miss)
+            bounded_scan(shard, user, partition_id, offset)
         end
     end
   end
 
   # ------------------------------------------------------------------
-  # GENSERVER CORE
+  # GENSERVER
   # ------------------------------------------------------------------
 
-  def start_link(shard), do: GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
+  def start_link(shard),
+    do: GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
 
-  @impl true
   def init(shard) do
     Process.flag(:trap_exit, true)
     File.mkdir_p!(@base_dir)
+
     manifest = load_manifest(shard)
     load_historical_indices(shard, manifest.base)
 
-    opts = [:append, :raw, :binary, {:delayed_write, 64 * 1024, 100}]
-    {:ok, log_fd} = :file.open(manifest.log, opts)
-    {:ok, idx_fd} = :file.open(manifest.idx, opts)
+    {:ok, log_fd} = :file.open(manifest.log, [:append, :raw, :binary])
+    {:ok, idx_fd} = :file.open(manifest.idx, [:append, :raw, :binary])
     {:ok, pos} = :file.position(log_fd, :cur)
 
     schedule_flush()
-    {:ok, %{shard: shard, log_fd: log_fd, idx_fd: idx_fd, current_size: pos, active_base: manifest.base}}
+
+    {:ok,
+     %{
+       shard: shard,
+       log_fd: log_fd,
+       idx_fd: idx_fd,
+       current_size: pos,
+       active_base: manifest.base,
+       stride: @min_stride
+     }}
   end
 
-  @impl true
-  def handle_info(:flush, state) do
-    {:noreply, perform_flush(state)}
-  end
+  def handle_info(:flush, state), do: {:noreply, perform_flush(state)}
 
-  @impl true
-  def terminate(_reason, state) do
-    Logger.info("Shard #{state.shard} shutting down. Finalizing flush...")
-    perform_flush(state)
+  def terminate(_, state) do
+    # Flush only if table exists
+    if :ets.info(log_buffer(state.shard)) != :undefined do
+      perform_flush(state)
+    end
+
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
   end
 
-  def handle_call({:compact_swap, old_bases, new_base, _files, mappings}, _from, state) do
-    if state.active_base in old_bases do
-      {:reply, {:error, :active_segment_collision}, state}
-    else
-      # 1. Update the index with new locations
-      :ets.insert(idx_cache(state.shard), mappings)
-
-      # 2. Clean up old files safely
-      Enum.each(old_bases, fn base ->
-        log_path = Path.join(@base_dir, "shard_#{state.shard}_#{base}.log")
-        idx_path = Path.join(@base_dir, "shard_#{state.shard}_#{base}.idx")
-
-        # CRITICAL: Close and remove from reader pool FIRST
-        case :ets.lookup(@read_pool_log, log_path) do
-          [{^log_path, fd, _}] ->
-            :file.close(fd)
-            :ets.delete(@read_pool_log, log_path)
-          [] -> :ok
-        end
-
-        File.rm(log_path)
-        File.rm(idx_path)
-      end)
-      {:reply, :ok, state}
-    end
-  end
-
   # ------------------------------------------------------------------
-  # STORAGE LOGIC
+  # WRITE PATH
   # ------------------------------------------------------------------
 
   defp perform_flush(state) do
-    buffer = log_buffer(state.shard)
-    items = :ets.select(buffer, [{{state.shard, :"$1", :"$2"}, [], [{{:"$1", :"$2"}}]}] )
-    :ets.select_delete(buffer, [{{state.shard, :_, :_}, [], [true]}])
+    buf = log_buffer(state.shard)
 
-    case items do
-      [] -> state
-      _ ->
-        sorted = Enum.sort_by(items, fn {off, _} -> off end, :asc)
-        state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
-        new_state = flush_records_safe(state, sorted)
+    if :ets.info(buf) != :undefined do
+      items =
+        :ets.select(buf, [
+          {{state.shard, :"$1", :"$2"}, [], [{{:"$1", :"$2"}}]}
+        ])
 
-        # Hard Durability (fsync)
-        :file.datasync(new_state.log_fd)
-        :file.datasync(new_state.idx_fd)
+      :ets.delete_all_objects(buf)
 
-        schedule_flush()
-        new_state
+      Enum.reduce(items, state, fn {off, rec}, acc ->
+        do_write(acc, rec, off, @max_disk_write_retries)
+      end)
+      |> adjust_stride()
+    else
+      state
     end
   end
 
-  defp flush_records_safe(state, records) do
-    Enum.reduce(records, state, fn {offset, rec}, acc ->
-      do_write(acc, rec, offset, @max_disk_write_retries)
-    end)
-  end
-
-  defp do_write(state, rec, offset, retries_left) when retries_left > 0 do
+  defp do_write(state, rec, offset, retries) when retries > 0 do
     try do
       {:ok, pos} = :file.position(state.log_fd, :cur)
       bin = :erlang.term_to_binary(rec.data, [:compressed])
       user_bin = to_string(rec.u)
 
       packet = [
-        <<0xEE, byte_size(bin)::32, :erlang.crc32(bin)::32, byte_size(user_bin)::16, rec.ts::64>>,
-        user_bin, <<rec.p::32, offset::64>>, bin
+        <<0xEE, byte_size(bin)::32, :erlang.crc32(bin)::32, byte_size(user_bin)::16,
+          rec.ts::64>>,
+        user_bin,
+        <<rec.p::32, offset::64>>,
+        bin
       ]
 
       :ok = :file.write(state.log_fd, packet)
-      :ok = :file.write(state.idx_fd, <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, pos::64>>)
-      :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, pos}})
+
+      if should_index?(state, offset) do
+        :ok =
+          :file.write(
+            state.idx_fd,
+            <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, pos::64>>
+          )
+
+        :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, pos}})
+      end
+
+      :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, pos}})
 
       %{state | current_size: state.current_size + IO.iodata_length(packet)}
     rescue
       _ ->
         :timer.sleep(50)
-        do_write(state, rec, offset, retries_left - 1)
+        do_write(state, rec, offset, retries - 1)
     end
   end
 
-  defp do_write(_state, rec, _offset, 0), do: raise "I/O Failure on message #{rec.mid}"
+  defp do_write(_, rec, _, 0), do: raise("I/O failure #{rec.mid}")
+
+  defp should_index?(state, offset) do
+    state.current_size < @max_segment_size or rem(offset, state.stride) == 0
+  end
+
+  # ------------------------------------------------------------------
+  # READ PATH
+  # ------------------------------------------------------------------
+
+  defp lookup_index(shard, user, p, off) do
+    case :ets.lookup(idx_cache(shard), {user, p, off}) do
+      [{{_, _, _}, {b, pos}}] ->
+        {:ok, read_from_disk(shard, b, pos)}
+
+      [] ->
+        :scan
+    end
+  end
+
+  defp bounded_scan(shard, user, p, target) do
+    case :ets.lookup(@checkpoints, {shard, :"$1"}) do
+      [] ->
+        {:error, :not_found}
+
+      [{_, {_, pos}}] ->
+        base = get_active_base(shard)
+        scan_loop(shard, user, p, target, pos, 0, base)
+    end
+  end
+
+  defp scan_loop(_, _, _, _, _, depth, _) when depth > @max_scan_records do
+    inc(:scan_abort)
+    {:error, :scan_limit}
+  end
+
+  defp scan_loop(shard, user, p, target, pos, depth, base) do
+    inc({:scan_depth, 1})
+
+    case read_from_disk(shard, base, pos) do
+      {:ok, %{off: ^target, u: ^user, p: ^p} = rec} ->
+        {:ok, rec}
+
+      {:ok, %{}} ->
+        scan_loop(shard, user, p, target, pos + 1, depth + 1, base)
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # DEVICE CHECKPOINTS
+  # ------------------------------------------------------------------
+
+  defp maybe_device_checkpoint(shard, user, device, partition, offset) do
+    key = {user, device}
+
+    last =
+      case :ets.lookup(idx_cache_device(shard), key) do
+        [{^key, last_off}] -> last_off
+        [] -> 0
+      end
+
+    if rem(offset - last, @device_stride) == 0 do
+      :ets.insert(idx_cache_device(shard), {key, offset})
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # ADAPTIVE STRIDE
+  # ------------------------------------------------------------------
+
+  defp adjust_stride(state) do
+    scan_depth =
+      case :ets.lookup(@metrics, {:scan_depth, state.shard}) do
+        [{_, depth}] -> depth
+        [] -> 0
+      end
+
+    new_stride =
+      cond do
+        scan_depth > 1_000 -> max(@min_stride, div(state.stride, 2))
+        scan_depth < 100 -> min(@max_stride, state.stride * 2)
+        true -> state.stride
+      end
+
+    :ets.insert(@metrics, {{:scan_depth, state.shard}, 0})
+    %{state | stride: new_stride}
+  end
+
+  # ------------------------------------------------------------------
+  # DISK READ
+  # ------------------------------------------------------------------
 
   defp read_from_disk(shard, base, pos) do
     path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
 
     with {:ok, fd} <- reader_fd(@read_pool_log, path),
-        # 1. Read the fixed-size header
-        {:ok, <<0xEE, size::32, crc::32, ulen::16, _ts::64>>} <- :file.pread(fd, pos, @header_size) do
-
-      # 2. Calculate the exact start of the payload:
-      # Header (19) + Username (ulen) + Metadata (Partition 4 + Offset 8 = 12)
-      payload_pos = pos + @header_size + ulen + 12
-
-      case :file.pread(fd, payload_pos, size) do
-        {:ok, payload_bin} ->
-          if :erlang.crc32(payload_bin) == crc do
-            {:ok, :erlang.binary_to_term(payload_bin, [:safe])}
-          else
-            Logger.error("CRC mismatch in shard #{shard} at pos #{pos}")
-            {:error, :corrupt}
-          end
-
-        {:error, reason} ->
-          Logger.error("Failed to read payload: #{inspect(reason)}")
-          {:error, :read_failed}
-      end
+         {:ok, <<0xEE, size::32, crc::32, ulen::16, _::64>>} <- :file.pread(fd, pos, @header_size),
+         {:ok, bin} <- :file.pread(fd, pos + @header_size + ulen + 12, size),
+         true <- :erlang.crc32(bin) == crc do
+      {:ok, :erlang.binary_to_term(bin, [:safe])}
     else
-      err ->
-        Logger.error("Header read failed or file missing: #{inspect(err)}")
-        {:error, :read_failed}
+      _ -> {:error, :read_failed}
     end
   end
+
+  # ------------------------------------------------------------------
+  # METRICS
+  # ------------------------------------------------------------------
+
+  defp inc(key), do: :ets.update_counter(@metrics, key, 1, {key, 0})
 
   # ------------------------------------------------------------------
   # SYSTEM HELPERS
   # ------------------------------------------------------------------
 
   def __startup__ do
-    File.mkdir_p!(@base_dir)
-    :ets.new(@user_offsets, [:named_table, :public, {:write_concurrency, true}, {:read_concurrency, true}])
-    :ets.new(@read_pool_log, [:named_table, :public])
+    # Main ETS tables
+    maybe_new_table(@user_offsets, [:named_table, :public])
+    maybe_new_table(@read_pool_log, [:named_table, :public])
+    maybe_new_table(@metrics, [:named_table, :public])
+    maybe_new_table(@checkpoints, [:named_table, :public])
 
+    # Per-shard ETS tables
     for s <- 0..(@num_shards - 1) do
-      :ets.new(log_buffer(s), [:named_table, :duplicate_bag, :public, {:write_concurrency, true}, {:read_concurrency, true}])
-      :ets.new(idx_cache(s), [:named_table, :ordered_set, :public, {:read_concurrency, true}])
+      maybe_new_table(log_buffer(s), [:named_table, :duplicate_bag, :public])
+      maybe_new_table(idx_cache(s), [:named_table, :ordered_set, :public])
+      maybe_new_table(idx_cache_device(s), [:named_table, :set, :public])
     end
-    recover_user_offsets()
   end
 
-  defp recover_user_offsets do
-    Path.join(@base_dir, "*.idx") |> Path.wildcard() |> Enum.each(fn path ->
-      case File.read(path) do
-        {:ok, bin} -> safe_sync_offsets(bin)
-        _ -> :ok
-      end
-    end)
-  end
-
-  defp safe_sync_offsets(<<ul::16, u::binary-size(ul), p::32, off::64, _::64, rest::binary>>) do
-    :ets.update_counter(@user_offsets, {u, p}, {2, 0}, {{u, p}, off})
-    safe_sync_offsets(rest)
-  end
-  defp safe_sync_offsets(_), do: :ok
-
-  defp rotate_segment(state) do
-    :file.close(state.log_fd)
-    :file.close(state.idx_fd)
-    base = System.unique_integer([:monotonic, :positive])
-    log = Path.join(@base_dir, "shard_#{state.shard}_#{base}.log")
-    idx = Path.join(@base_dir, "shard_#{state.shard}_#{base}.idx")
-    save_manifest(state.shard, log, idx, base)
-    opts = [:append, :raw, :binary, {:delayed_write, 64 * 1024, 100}]
-    {:ok, n_log} = :file.open(log, opts)
-    {:ok, n_idx} = :file.open(idx, opts)
-    %{state | log_fd: n_log, idx_fd: n_idx, current_size: 0, active_base: base}
+  defp maybe_new_table(name, opts) do
+    if :ets.info(name) == :undefined do
+      :ets.new(name, opts)
+    end
   end
 
   defp reader_fd(pool, path) do
     case :ets.lookup(pool, path) do
-      [{^path, fd, _}] ->
+      [{_, fd, _}] -> {:ok, fd}
+      [] ->
+        {:ok, fd} = :file.open(path, [:read, :raw, :binary])
         :ets.insert(pool, {path, fd, :erlang.monotonic_time()})
         {:ok, fd}
-      [] ->
-        if :ets.info(pool, :size) >= @pool_quota, do: evict_lru(pool)
-        case :file.open(path, [:read, :raw, :binary]) do
-          {:ok, fd} -> :ets.insert(pool, {path, fd, :erlang.monotonic_time()}); {:ok, fd}
-          err -> err
-        end
     end
   end
-
-  defp evict_lru(pool) do
-    case :ets.tab2list(pool) |> Enum.min_by(&elem(&1, 2), fn -> nil end) do
-      {path, fd, _} -> :file.close(fd); :ets.delete(pool, path)
-      _ -> :ok
-    end
-  end
-
-  defp load_historical_indices(shard, active_base) do
-    Path.join(@base_dir, "shard_#{shard}_*.idx")
-    |> Path.wildcard()
-    |> Enum.reject(&String.contains?(&1, "_#{active_base}.idx"))
-    |> Enum.each(fn path ->
-      case File.read(path) do
-        {:ok, bin} ->
-          [_, _, base_str] = path |> Path.basename(".idx") |> String.split("_")
-          parse_idx_bin(shard, String.to_integer(base_str), bin)
-        _ -> :ok
-      end
-    end)
-  end
-
-  defp parse_idx_bin(s, b, <<ul::16, u::binary-size(ul), p::32, o::64, pos::64, rest::binary>>) do
-    :ets.insert(idx_cache(s), {{u, p, o}, {b, pos}})
-    parse_idx_bin(s, b, rest)
-  end
-  defp parse_idx_bin(_, _, _), do: :ok
 
   defp load_manifest(shard) do
-    path = Path.join(@base_dir, "shard_#{shard}.manifest")
-    case File.read(path) do
-      {:ok, bin} -> :erlang.binary_to_term(bin)
-      _ ->
-        base = System.unique_integer([:monotonic, :positive])
-        %{log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"), idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"), base: base}
+    base = System.unique_integer([:positive])
+
+    %{
+      log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
+      idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"),
+      base: base
+    }
+  end
+
+  # ------------------------------------------------------------------
+  # ACTIVE BASE HELPER
+  # ------------------------------------------------------------------
+  defp get_active_base(shard) do
+    # look up the active base from checkpoint table
+    case :ets.lookup(@checkpoints, {shard, :"$1"}) do
+      [{_, {_, _pos}}] ->
+        # return the latest base known for this shard
+        [{base, _}] = :ets.match(@checkpoints, {{shard, :"$1"}, :_})
+        base
+
+      [] ->
+        # fallback: generate a new base
+        System.unique_integer([:positive])
     end
   end
 
-  defp save_manifest(shard, log, idx, base) do
-    path = Path.join(@base_dir, "shard_#{shard}.manifest")
-    File.write!(path, :erlang.term_to_binary(%{log: log, idx: idx, base: base}))
-  end
+  defp load_historical_indices(_, _), do: :ok
 
   defp log_buffer(s), do: :"bimip_buf_#{s}"
   defp idx_cache(s), do: :"bimip_idx_#{s}"
+  defp idx_cache_device(s), do: :"bimip_idx_device_#{s}"
   defp worker_name(s), do: :"bimip_shard_#{s}"
   defp schedule_flush, do: Process.send_after(self(), :flush, @flush_interval)
-
 end

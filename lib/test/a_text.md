@@ -434,3 +434,159 @@ defmodule Queue.QueueLogImpl do
     end
   end
 end
+
+
+
+
+
+defmodule Queue.QueueLogImpl do
+  # ... your existing code ...
+
+  # ------------------------------------------------------------------
+  # PUBLIC API
+  # ------------------------------------------------------------------
+
+  # Write message, now tracking writer device
+  def write(partition_id, user, device_id, type, payload_ctx, payload, message_id) do
+    shard = :erlang.phash2(user, @num_shards)
+    buf = log_buffer(shard)
+
+    if :ets.info(buf, :size) > @max_buffer_per_shard do
+      {:error, :backpressure}
+    else
+      offset = :ets.update_counter(@user_offsets, {user, partition_id}, {2, 1}, {{user, partition_id}, 0})
+
+      record = %{
+        u: user,
+        p: partition_id,
+        off: offset,
+        mid: message_id,
+        writer_device: device_id,         # NEW: track which device wrote it
+        data: Queue.Persist.build(payload, offset, type, payload_ctx),
+        ts: System.system_time(:second)
+      }
+
+      :ets.insert(buf, {shard, offset, record})
+      {:ok, offset}
+    end
+  end
+
+  # Fetch messages skipping ones written by this device
+  def fetch_for_device(user, partition_id, device_id, offset) do
+    shard = :erlang.phash2(user, @num_shards)
+
+    case :ets.match_object(log_buffer(shard), {shard, offset, %{u: user, p: partition_id}}) do
+      [{_, _, rec}] ->
+        if rec.writer_device == device_id do
+          {:ok, []} # skip own message
+        else
+          {:ok, [rec.data]}
+        end
+
+      [] ->
+        case :ets.lookup(idx_cache(shard), {user, partition_id, offset}) do
+          [{{^user, ^partition_id, ^offset}, {seg_base, pos}}] ->
+            with {:ok, rec} <- read_from_disk(shard, seg_base, pos) do
+              # assume rec has writer_device stored in it
+              if Map.get(rec, :writer_device) == device_id do
+                {:ok, []} # skip own message
+              else
+                {:ok, [rec.data]}
+              end
+            else
+              _ -> {:error, :read_failed}
+            end
+
+          [] -> {:error, :not_found}
+        end
+    end
+  end
+end
+
+defmodule Queue.DeviceBookmark do
+  @moduledoc """
+  Tracks per-device offsets (bookmarks) for V6 queue.
+  Uses ETS for fast in-memory access and Mnesia for durability.
+  """
+
+  @table :device_bookmarks       # Mnesia table
+  @cache :device_bookmarks_cache # ETS cache
+
+  # ------------------------------------------------------------------
+  # Startup (initialize Mnesia + ETS)
+  # ------------------------------------------------------------------
+  def startup do
+    :mnesia.start()
+
+    unless table_exists?(@table) do
+      :mnesia.create_table(@table, [
+        {:attributes, [:device_id, :user, :partition_id, :offset]},
+        {:type, :set},
+        {:disc_copies, [node()]},
+        {:index, [:user, :partition_id]}
+      ])
+    end
+
+    unless :ets.info(@cache) do
+      :ets.new(@cache, [:named_table, :public, :set, {:read_concurrency, true}, {:write_concurrency, true}])
+    end
+
+    load_cache_from_mnesia()
+    :ok
+  end
+
+  defp table_exists?(table) do
+    case :mnesia.table_info(table, :attributes) do
+      [_ | _] -> true
+      _ -> false
+    rescue
+      _ -> false
+    end
+  end
+
+  defp load_cache_from_mnesia do
+    :mnesia.transaction(fn ->
+      :mnesia.match_object({@table, :_, :_, :_, :_})
+    end)
+    |> case do
+      {:atomic, records} ->
+        Enum.each(records, fn {@table, device_id, user, partition_id, offset} ->
+          :ets.insert(@cache, {{device_id, user, partition_id}, offset})
+        end)
+      _ -> :ok
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Get last offset
+  # ------------------------------------------------------------------
+  def get(device_id, user, partition_id) do
+    case :ets.lookup(@cache, {device_id, user, partition_id}) do
+      [{{^device_id, ^user, ^partition_id}, offset}] -> offset
+      [] -> 0
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Set offset (overwrite)
+  # ------------------------------------------------------------------
+  def set(device_id, user, partition_id, offset) do
+    :ets.insert(@cache, {{device_id, user, partition_id}, offset})
+    :mnesia.transaction(fn ->
+      :mnesia.write({@table, device_id, user, partition_id, offset})
+    end)
+  end
+
+  # ------------------------------------------------------------------
+  # Advance offset if new_offset > current
+  # ------------------------------------------------------------------
+  def advance(device_id, user, partition_id, new_offset) do
+    current = get(device_id, user, partition_id)
+
+    if new_offset > current do
+      set(device_id, user, partition_id, new_offset)
+    else
+      :ok
+    end
+  end
+end

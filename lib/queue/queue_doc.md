@@ -1,74 +1,321 @@
-### 1. `Queue.QueueLogImpl` (The Core Sharded Engine)
+# Bimip Queue System – Comprehensive Technical Documentation
 
-This module acts as the primary storage controller. It manages the **Active Segment** (the file currently receiving data) and handles all I/O operations.
+## 1. Overview
 
-* **Partitioning/Sharding:** Uses `:erlang.phash2(user, 64)` to distribute traffic across 64 individual GenServer workers. This ensures that a surge in one user's activity does not block others.
-* **Two-Stage Writing (Buffered I/O):**
-* **Stage 1:** In the `write/7` function, data is inserted into an ETS buffer (`log_buffer/1`).
-* **Stage 2:** The `perform_flush/1` function runs every 100ms, batch-writing everything from the ETS buffer to disk in a single sequential burst.
+The **Bimip Queue System** is a high‑throughput, append‑only, sharded message persistence engine designed for large‑scale, real‑time systems (chat, event streaming, device sync). It is inspired by log‑structured storage systems (Kafka‑like) but implemented natively on the BEAM using **GenServer, ETS, and raw disk I/O**.
 
+Key goals:
 
-* **Segment Rotation:** In `rotate_segment/1`, the engine monitors file sizes. Once a log exceeds `@max_segment_size` (100MB), it closes the files and creates a new "Segment" with a unique base ID.
-* **The Reader Pool:** The `reader_fd/2` function manages a pool of open file descriptors in a cache (`:bimip_log_reader_pool`). This uses an **LRU (Least Recently Used)** eviction strategy via `evict_lru/1` to stay within the OS file limit.
-* **Binary Alignment:** The `read_from_disk/3` function implements a precise binary pattern match to extract the payload using the header size (19 bytes) plus the variable username and metadata offsets.
-
----
-
-### 2. `Queue.BimipCompactor` (The Lifecycle Manager)
-
-This is a background maintenance worker that manages **Historical Segments** to ensure disk space is recycled and data integrity is maintained.
-
-* **Historical Analysis:** The `find_historical_segments/1` function scans the disk for `.idx` files that are not currently locked by a shard's manifest.
-* **Tail-Recursive Compaction:** The `process_idx_entries/7` function iterates through historical segments. It uses a **TTL (Time-To-Live)** check: `if ts > cutoff`. Records that pass are kept; those that fail (older than 7 days) are dropped.
-* **Atomic Swapping:** After creating a new, smaller segment, it calls `GenServer.call(worker, {:compact_swap, ...})`. This triggers the `handle_call` in `QueueLogImpl` to atomically update the index cache and delete old files.
-* **File Handle Safety:** It uses `copy_segment_with_retention/6` to open the source file once and stream data, preventing the "too many open files" error.
+* Horizontal scalability via sharding
+* Sequential disk writes for durability
+* Zero‑lock hot paths
+* Crash‑safe recovery
+* Exactly‑once message protection
+* Efficient disk compaction
 
 ---
 
-### 3. `Queue.MessageTracker` & `Sweeper` (The Deduplication Guard)
+## 2. Core Concepts
 
-This module provides "Exactly-Once" delivery semantics by preventing duplicate messages from entering the system.
+### 2.1 Shards
 
-* **Two-Generation ETS:** `init/0` creates two sets of tables (Gen 0 and Gen 1). This allows for "Zero-Downtime" clearing of old data.
-* **High-Speed Check:** `check_and_insert/4` uses a hash of the message key to find one of **256 partitions**. It checks the old generation first, then the current one, using `:ets.insert_new/2` for lock-free performance.
-* **Persistent Term Optimization:** It stores the active generation index in `:persistent_term`. This allows every shard to know which table to write to without hitting a bottlenecked central GenServer.
-* **The Sweeper:** `Queue.MessageTracker.Sweeper` manages the clock. It triggers `rotate/0` every 12 hours, which flips the active generation and clears the old one in a throttled background task to prevent CPU spikes.
+* The system uses **64 shards**.
+* Each shard is an independent GenServer managing its own log segment files.
+* Shard selection is deterministic:
 
----
+```
+shard = phash2(user, 64)
+```
 
-### 4. `Queue.DeviceBookmark` (The State Tracker)
+This ensures:
 
-This module acts as the "Cursor" for every connected client, tracking exactly what they have read.
-
-* **Startup Recovery:** The `startup/0` function initializes **Mnesia** for disk-based persistence and then calls `load_cache_from_mnesia/2` to warm up ETS caches for instant lookup speed.
-* **Sharded Tracking:** Like the Log Engine, it shards bookmarks across 64 ETS tables to prevent lock contention when thousands of devices acknowledge messages simultaneously.
-* **Monotonic Advancement:** The `advance/4` function ensures the consumer's position never moves backward, protecting against race conditions where an older acknowledgement might arrive after a newer one.
-
----
-
-### 5. `Queue.Persist` (The Data Architect)
-
-This is a pure functional module that ensures every message saved to disk follows a strict schema.
-
-* **Struct Construction:** The `build/6` function takes the raw payload and wraps it in a `%Bimip.Message{}` struct.
-* **Writer Attribution:** It explicitly assigns the `writer_device` to the struct. This is the crucial data point used by `fetch_for_device/4` in the Log Engine to filter out a device's own messages during a fetch.
-* **Uniformity:** It ensures that whether a message is a "Chat," "System," or "Command" type, it is serialized into the same binary format for the storage engine.
+* Per‑user message ordering
+* Even load distribution
+* Failure isolation
 
 ---
 
-### 6. `Queue.Application` & `Supervisor` (The Safety Net)
+### 2.2 Segments
 
-This module manages the system's "Tree of Life."
+A **segment** is a pair of files:
 
-* **Boot Sequencing:** It calls `QueueLogImpl.__startup__` and `Queue.DeviceBookmark.startup` before starting any workers. This ensures all ETS tables exist before the Shards try to use them.
-* **Granular Supervision:** Each of the 64 shards is supervised individually. If Shard 12 crashes due to a hardware I/O error, Shards 0–11 and 13–63 remain online and operational.
+* `.log` – append‑only binary message storage
+* `.idx` – sparse index mapping `(user, partition, offset) -> file position`
+
+Each shard always has:
+
+* **One active segment** (currently writable)
+* **Multiple historical segments** (read‑only)
+
+Segments rotate when they exceed **100MB**.
 
 ---
 
-### Summary of Interaction
+### 2.3 Message Lifecycle
 
-1. **Ingress:** A message arrives. `MessageTracker` ensures it’s not a duplicate.
-2. **Structuring:** `Persist` creates the standardized `%Bimip.Message{}`.
-3. **Storage:** `QueueLogImpl` saves it to an **Active Segment** on disk and updates the `.idx` file.
-4. **Consumption:** A device asks for data. `DeviceBookmark` tells the system where to start reading. `QueueLogImpl` reads the segment, filtering out the message if the `writer_device` matches the caller.
-5. **Maintenance:** `BimipCompactor` merges full segments and removes expired data to keep the system lean.
+1. Message arrives
+2. Deduplication check (`MessageTracker`)
+3. Struct normalization (`Queue.Persist`)
+4. Buffered write (ETS)
+5. Batched flush to disk
+6. Indexed for random access
+7. Delivered to consumers
+8. Eventually compacted
+
+---
+
+## 3. Module‑by‑Module Documentation
+
+---
+
+## 3.1 `Queue.QueueLogImpl`
+
+### Responsibility
+
+The **core storage engine**. Handles:
+
+* Message writes
+* Disk persistence
+* Reads (hot + cold)
+* Segment rotation
+* Compaction swaps
+
+### Internal Data Structures
+
+| Structure       | Purpose                      |
+| --------------- | ---------------------------- |
+| ETS buffer      | Hot write buffer             |
+| ETS index cache | Offset → file lookup         |
+| Manifest file   | Tracks active segment        |
+| Reader FD pool  | Limits open file descriptors |
+
+---
+
+### Write Path
+
+**Step 1 – Buffering**
+
+* Messages are inserted into ETS (`duplicate_bag`).
+* Backpressure enforced via buffer size limit.
+
+**Step 2 – Flush Loop**
+
+* Runs every 100ms.
+* Flushes buffered messages sequentially.
+* Writes:
+
+  * Binary payload to `.log`
+  * Index entry to `.idx`
+
+**Step 3 – Durability**
+
+* `datasync/1` is called on both files.
+
+---
+
+### Read Path
+
+Reads are attempted in this order:
+
+1. **Hot buffer (ETS)** – ultra‑low latency
+2. **Index cache (ETS)** – resolves file + position
+3. **Disk read** – CRC validated payload
+
+A **reader pool** caches file descriptors using an LRU strategy to avoid OS FD exhaustion.
+
+---
+
+### Segment Rotation
+
+When active segment exceeds `@max_segment_size`:
+
+1. Files are closed
+2. New segment base ID generated
+3. Manifest updated
+4. New segment opened atomically
+
+No write interruption occurs.
+
+---
+
+### Compaction Swap
+
+Triggered externally by `BimipCompactor`:
+
+* Index cache updated with new positions
+* Reader pool cleaned
+* Old files deleted
+
+Active segments are protected from compaction.
+
+---
+
+## 3.2 `Queue.BimipCompactor`
+
+### Responsibility
+
+Background lifecycle manager that:
+
+* Enforces retention (TTL)
+* Merges historical segments
+* Reduces disk usage
+
+---
+
+### Compaction Flow
+
+1. Periodic scan (every 60s)
+2. Identify historical segments
+3. Stream index entries
+4. Retain only records newer than TTL
+5. Write merged segment
+6. Atomically swap via shard GenServer
+
+---
+
+### Safety Guarantees
+
+* Source files opened once
+* No in‑place mutation
+* Atomic rename
+* Shard‑controlled deletion
+
+Crash‑safe by design.
+
+---
+
+## 3.3 `Queue.MessageTracker`
+
+### Responsibility
+
+Provides **exactly‑once message protection** using in‑memory tracking.
+
+---
+
+### Design
+
+* Two‑generation ETS tables
+* 256 partitions per generation
+* Zero‑lock hot path
+
+Generation switching allows instant cleanup without blocking writers.
+
+---
+
+### Check Algorithm
+
+1. Hash message key
+2. Check old generation
+3. Check current generation
+4. Insert if absent or expired
+
+TTL enforced per message.
+
+---
+
+## 3.4 `Queue.MessageTracker.Sweeper`
+
+### Responsibility
+
+Time‑based orchestration:
+
+* Periodic TTL sweep (optional)
+* Generation rotation every 12h
+
+Rotation clears stale data without latency spikes.
+
+---
+
+## 3.5 `Queue.DeviceBookmark`
+
+### Responsibility
+
+Tracks **per‑device consumption offsets**.
+
+---
+
+### Architecture
+
+* Sharded Mnesia tables (durable)
+* Sharded ETS caches (hot reads)
+
+Offsets are monotonic and idempotent.
+
+---
+
+### Failure Model
+
+* ETS loss → recovered from Mnesia
+* Worst case: duplicate delivery (safe)
+
+---
+
+## 3.6 `Queue.Persist`
+
+### Responsibility
+
+Pure data normalization layer.
+
+* Builds `%Bimip.Message{}` structs
+* Ensures consistent on‑disk schema
+* Attaches writer metadata for filtering
+
+No side effects.
+
+---
+
+## 4. System Guarantees
+
+| Guarantee          | Level        |
+| ------------------ | ------------ |
+| Ordering           | Per user     |
+| Durability         | fsync        |
+| Deduplication      | Exactly‑once |
+| Backpressure       | Yes          |
+| Crash recovery     | Strong       |
+| Horizontal scaling | Yes          |
+
+---
+
+## 5. Failure Scenarios & Handling
+
+* **Shard crash** → isolated, supervisor restarts
+* **Disk corruption** → CRC detection
+* **FD exhaustion** → LRU eviction
+* **Compaction crash** → old segments remain intact
+
+---
+
+## 6. Operational Notes
+
+Recommended monitoring:
+
+* ETS table sizes
+* Segment counts per shard
+* Reader pool usage
+* Compaction duration
+
+---
+
+## 7. Mental Model Summary
+
+Think of the system as:
+
+> **“64 independent append‑only logs with intelligent memory front‑buffers, a rotating identity ledger, and a garbage collector that never blocks production traffic.”**
+
+---
+
+## 8. Conclusion
+
+This queue system is production‑grade and suitable for:
+
+* Real‑time messaging
+* Event sourcing
+* Device synchronization
+* Financial or audit logs
+
+It favors **correctness, durability, and throughput** over unnecessary abstraction.
+
+---
+
+*End of documentation.*

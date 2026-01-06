@@ -72,7 +72,7 @@ defmodule Bimip.Message do
   field :payload_context, 13, type: :int32, json_name: "payloadContext"
 end
 
-defmodule Bimip.MessagePeerAckSignal do
+defmodule Bimip.MessageAckSignal do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
@@ -83,7 +83,7 @@ defmodule Bimip.MessagePeerAckSignal do
   field :method, 4, type: :int32
   field :timestamp, 5, type: :int64
   field :status_code, 6, type: :int32, json_name: "statusCode"
-  field :peer_eid, 7, type: :string, json_name: "peerEid"
+  field :reply_to, 7, type: :string, json_name: "replyTo"
   field :offset, 8, type: :int64
 end
 
@@ -283,8 +283,8 @@ defmodule Bimip.MessageScheme do
   field :error, 11, type: Bimip.ErrorMessage, oneof: 0
   field :logout, 12, type: Bimip.Logout, oneof: 0
 
-  field :message_peer_ack_signal, 13,
-    type: Bimip.MessagePeerAckSignal,
-    json_name: "messagePeerAckSignal",
+  field :message_ack_signal, 13,
+    type: Bimip.MessageAckSignal,
+    json_name: "messageAckSignal",
     oneof: 0
 end

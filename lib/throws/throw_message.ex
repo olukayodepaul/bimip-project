@@ -53,7 +53,6 @@ defmodule ThrowMessageSchema do
         reply_to: reply_to,
         offset: offset
       }
-
     %Bimip.MessageScheme{
       route: 6,
       payload: {:message, message}
