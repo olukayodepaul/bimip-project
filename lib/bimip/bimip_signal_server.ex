@@ -1,12 +1,13 @@
 defmodule Bimip.SignalServer do
   use GenServer
   require Logger
+
+
+
   alias Supervisor.{Registry, Client}
   alias Route.SignalCommunication
   alias Chat.{SendMessage, ReceivedSignal}
   # refactoring
-
-
 
   alias Storage.DeviceStorage
   alias Storage.Registration
@@ -15,10 +16,9 @@ defmodule Bimip.SignalServer do
   alias Route.AwarenessFanOut
   alias ThrowAwarenessSchema
   alias Util.StatusMapper
-  alias Storage.Subscriber
   alias BimipLog
   alias BimipRPCClient
-  alias Storage.Registration
+
 
 
 
@@ -30,69 +30,145 @@ defmodule Bimip.SignalServer do
     GenServer.start_link(__MODULE__, state, name: Registry.via_monitor_registry(eid))
   end
 
+  # ----------------------
+  # Initialization
+  # ----------------------
   @impl true
-  def init(%{eid: eid, device_id: device_id, exp: _exp, ws_pid: ws_pid, uupid: uupid} = _state) do
-    {:ok,
-    %{
+  def init(%{eid: eid, device_id: device_id, ws_pid: ws_pid, exp: exp, uupid: uupid}) do
+    # Initial state with empty devices map
+    initial_state = %{
       eid: eid,
       current_timer: nil,
       force_stale: DateTime.utc_now(),
-      devices: %{
-        device_id => %{
-          ws_pid: ws_pid,
-          uupid: uupid,
-          last_seen: DateTime.utc_now()
-        }
-      }
-    }}
+      devices: %{}
+    }
+
+    {:ok, initial_state, {:continue, {:start_device, {eid, device_id, exp, ws_pid, uupid}}}}
   end
 
   # ----------------------
   # Device management
   # ----------------------
- `x@impl true
-  def handle_cast({:start_device, {_eid, device_id, exp, ws_pid, uupid}}, state) do
+  @impl true
+  def handle_cast({:start_device, {eid, device_id, exp, ws_pid, uupid}}, state) do
+    case Client.start_session({eid, device_id, exp, ws_pid, uupid}) do
+      {:ok, _pid} ->
+        now = DateTime.utc_now()
 
-    #start the device genserver....
+        device_info = %{
+          ws_pid: ws_pid,
+          device_id: device_id,
+          eid: eid,
+          uupid: uupid,
+          last_seen: now,
+          token_expiration: exp
+        }
 
-    device_info = %{
-      ws_pid: ws_pid,
-      uupid: uupid,
-      exp: exp,
-      last_seen: DateTime.utc_now()
-    }
-    new_devices = Map.put(state.devices, device_id, device_info)
-    new_state = %{state | devices: new_devices}
-    {:noreply, new_state}
+        new_state =
+          update_in(state, [:devices, device_id], fn
+            nil ->
+              device_info
+
+            existing ->
+              %{
+                existing
+                | ws_pid: ws_pid,
+                  last_seen: now,
+                  token_expiration: exp
+              }
+          end)
+
+          IO.inspect(new_state)
+
+        {:noreply, new_state}
+
+      {:error, reason} ->
+        Logger.error("Failed to start device #{device_id} for #{eid}: #{inspect(reason)}")
+        {:noreply, state}
+    end
+  end
+
+  # ----------------------
+  # Continue callback to handle init device startup
+  # ----------------------
+  @impl true
+  def handle_continue({:start_device, {eid, device_id, exp, ws_pid, uupid}}, state) do
+    handle_cast({:start_device, {eid, device_id, exp, ws_pid, uupid}}, state)
+  end
+
+
+  @impl true
+  def handle_cast({:route_message, %Chat.MessageStruct{} = payload},  state) do
+    user = payload.eid
+    device_id = payload.device_id
+    message_id = payload.peer_uid
+    payload_context = payload.payload_context
+    reply_to = payload.to.eid
+    uupid = payload.uupid
+    type = 1
+
+    case Queue.MessageTracker.check_and_insert(user, device_id, message_id) do
+      {:ok, :inserted} ->
+        queue = Queue.QueueLogImpl.write(payload_context, user, reply_to, uupid, type, payload_context, payload, message_id)
+        case queue do
+          {:ok, offset} ->
+            now = DateTime.utc_now()
+            Chat.SendMessage.send_received_ack_to_sender(message_id, user, reply_to, offset, device_id)
+            Chat.SendMessage.push_message_to_other_devices(payload, offset, :device, state.devices)
+
+            new_state = update_in(state.devices[device_id], fn
+              nil -> nil
+              device -> Map.put(device, :last_seen, now)
+            end)
+
+            {:noreply, new_state}
+          {:error, :backpressure} ->
+            {:noreply, state}
+        end
+      {:error, _reason} ->
+        {:noreply, state}
+    end
   end
 
   @impl true
-  def handle_cast({:persist_device_state, %{device_id: device_id, eid: eid, ws_pid: ws_pid, uupid: uupid}}, state) do
-    # now = DateTime.utc_now() |> DateTime.truncate(:second)
+  def handle_cast({:message_transmiter, payload}, state) do
+    user = state.eid
+    device_id = payload.from.connection_resource_id
+    message_id = payload.peer_uid
+    payload_context = payload.payload_context
+    reply_to = payload.from.eid
+    uupid = 0
+    type = 3
 
-    # payload = %{
-    #   device_id: device_id,
-    #   uupid: uupid,
-    #   eid: eid,
-    #   last_seen: now,
-    #   ws_pid: :erlang.pid_to_list(ws_pid) |> to_string(),
-    #   status: "ONLINE",
-    #   last_received_version: 0,
-    #   ip_address: nil,
-    #   app_version: nil,
-    #   os: nil,
-    #   last_activity: now,
-    #   supports_notifications: true,
-    #   supports_media: true,
-    #   status_source: "LOGIN",
-    #   visibility: state.visibility,
-    #   inserted_at: now
-    # }
+    case Queue.MessageTracker.check_and_insert(user, device_id, message_id) do
+      {:ok, :inserted} ->
 
-    # DeviceStorage.register_device_session(device_id, eid, payload)
-    # Broker.group(eid, ThrowAwarenessSchema.success(eid, device_id, "", "", 6), state.visibility)
-    {:noreply, state}
+        queue = Queue.QueueLogImpl.write(payload_context, user, reply_to, uupid, type, payload_context, payload, message_id)
+
+        case queue do
+        {:ok, offset} ->
+          new_payload = Chat.SendMessage.map_to_message_struct(payload)
+          Chat.SendMessage.push_message_to_other_devices(new_payload, offset, :reciever, state.devices)
+          {:noreply, state}
+        {:error, :backpressure} ->
+          {:noreply, state}
+        end
+
+      {:error, _reason} ->
+        {:noreply, state}
+    end
   end
+
+
+
+
+
+
+
+
+
+
+
 
   # ----------------------
   # Client pong handler
@@ -122,147 +198,9 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
-  # ----------------------
-  # Termination handling
-  # ----------------------
-  @impl true
-  def handle_cast({:send_terminate_signal_to_server, %{device_id: device_id, eid: eid}}, %{current_timer: current_timer} = state) do
-    # DeviceStorage.delete_device(device_id, eid)
-    # if Storage.DeviceStorage.remaining_active_devices?(eid) do
-    #   DeviceStorage.cancel_termination_if_any_device_are_online(current_timer)
-    #   {:noreply, state}
-    # else
-    #   DeviceStorage.schedule_termination_if_all_offline(state)
-    #   {:noreply, state}
-    # end
-    {:noreply, state}
-  end
-
-  def handle_info(:terminate, %{eid: eid, current_timer: current_timer} = state) do
-    # if Storage.DeviceStorage.remaining_active_devices?(eid) do
-    #   Logger.warning("Active devices detected. Skipping termination.", eid: eid, timer: current_timer, reason: :devices_still_active)
-    #   {:noreply, state}
-    # else
-    #   Logger.warning("Client process terminated gracefully", eid: eid, reason: :no_active_devices)
-    #   {:stop, :normal, state}
-    # end
-    {:noreply, state}
-  end
-
-  # ----------------------
-  # Awareness routing
-  # ----------------------
-  def handle_cast({:route_awareness, from_eid, from_device_id, to_eid, to_device_id, type, data}, %{visibility: visibility} = state) do
-
-    # case type do
-
-    #   s when s in 1..2 ->
-
-    #     DeviceStorage.update_device_status(from_device_id, from_eid, "AWARENESS", StatusMapper.status_name(type))
-    #     if type == 1 do
-    #       # fan out offline queue
-    #       IO.inspect("Fanout offline queue")
-    #     end
-    #       Broker.group(from_eid, data, visibility)
-
-    #   s when s in 3..6 ->
-    #     Broker.group(from_eid, data, visibility)
-    #   _ -> :ok
-    # end
-
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info({:awareness_update, encoded_msg}, %{eid: eid} = state) do
-    # with %Bimip.MessageScheme{payload: {:awareness, %Bimip.Awareness{} = awareness}} <- Bimip.MessageScheme.decode(encoded_msg) do
-    #   from_eid = awareness.from.eid
-    #   status = awareness.status
-
-    #   case status do
-    #     s when s in 1..2 ->
-    #       Subscriber.update_subscriber(eid, from_eid, StatusMapper.status_name(s))
-    #       AwarenessFanOut.group_fan_out(encoded_msg, eid)
-    #     s when s in 3..5 ->
-    #       Subscriber.update_subscriber(eid, from_eid, "ONLINE")
-    #     6 ->
-    #       Subscriber.update_subscriber(eid, from_eid, "ONLINE")
-    #       AwarenessFanOut.group_fan_out(encoded_msg, eid)
-    #     _ -> Logger.warning("Unknown awareness status: #{inspect(status)} from #{from_eid}")
-    #   end
-    # else
-    #   {:error, reason} -> Logger.error("Failed to decode awareness payload: #{inspect(reason)}")
-    # end
-
-    {:noreply, state}
-  end
-
-  def handle_cast({:route_awareness_visibility, visibility}, state) do
-    # # Log type for debugging
-    # IO.inspect(visibility.type, label: "Awareness type")
-
-    # # Call RPC to update global awareness state
-    # case BimipRPCClient.awareness_visibility(
-    #       visibility.id,
-    #       visibility.eid,
-    #       visibility.device_id,
-    #       visibility.type,
-    #       visibility.timestamp
-    #     ) do
-
-    #   {:ok, %BimipServer.AwarenessVisibilityRes{status: 0} = res} ->
-
-    #     Registration.upsert_registration(res.eid, res.type, res.display_name)
-    #     success_payload = {res.id, res.eid, res.device_id, res.type}
-    #     AwarenessFanOut.device_group_fan_out(success_payload, res.eid)
-
-    #   {:ok, %BimipServer.AwarenessVisibilityRes{status: status} = res} when status != 0 ->
-    #     error_payload = ThrowAwarenessVisibilitySchema.error(
-    #       res.id,
-    #       res.eid,
-    #       res.device_id,
-    #       res.message
-    #     )
-
-    #     AwarenessFanOut.pair_fan_out(error_payload, visibility.device_id)
-
-    #   {:error, reason} ->
-    #     error_payload = ThrowAwarenessVisibilitySchema.error(
-    #       visibility.id,
-    #       visibility.eid,
-    #       visibility.device_id,
-    #       "RPC call failed: #{inspect(reason)}"
-    #     )
-
-    #     AwarenessFanOut.pair_fan_out(error_payload, visibility.device_id)
-    # end
-
-    # Subscriber.update_subscriber(visibility.eid, visibility.device_id, "ONLINE")
-
-    {:noreply, state}
-  end
-
-
-
-
-
-  # ----------------------
-  # Fetch messages
-  # ----------------------
-  @impl true
-  def handle_cast({:fetch_batch_chat, eid, device_id}, state) do
-    # case BimipLog.fetch(eid, device_id, 1, 10) do
-    #   {:ok, %{messages: messages}} -> Enum.each(messages, &IO.inspect(&1))
-    #   {:error, reason} -> Logger.error("[FETCH] failed for eid=#{eid}: #{inspect(reason)}")
-    # end
-
-    {:noreply, state}
-  end
-
-
-  # ----------------------
+  # -------------------------------------
   # Catch-all for unexpected messages
-  # ----------------------
+  # -------------------------------------
   @impl true
   def handle_info(msg, state) do
     Logger.warning("Unhandled message received in Master GenServer: #{inspect(msg)}")
@@ -279,93 +217,40 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
+
   # ----------------------
-  # Chat Queue Integration
+  # Termination handling
   # ----------------------
   @impl true
-  def handle_cast({:route_message, %Chat.MessageStruct{} = payload},  state) do
-
-    message_id = payload.peer_uid
-    user = payload.eid
-
-    case Queue.MessageTracker.check_and_insert(user, payload.device_id, message_id) do
-      {:ok, :inserted} ->
-
-        %Chat.EntityStruct{eid: to_eid} = payload.to
-
-        reply_to = to_eid
-        uupid = payload.uupid
-        type = 1
-        partition_payloay_ctx = payload.payload_context
-
-        result = Queue.QueueLogImpl.write(partition_payloay_ctx, user, reply_to, uupid, type, partition_payloay_ctx, payload, message_id)
-
-        case result do
-          {:ok, offset} ->
-            IO.inspect({1, offset})
-            Chat.SendMessage.send_received_ack_to_sender(message_id, user, reply_to, offset, payload.device_id)
-            Chat.SendMessage.push_message_to_other_devices(payload, offset, :device)
-            {:noreply, state}
-
-          {:error, :backpressure} ->
-            {:noreply, state}
-        end
-
-      {:error, :already_exists} ->
-        Logger.debug("2 Duplicate message ignored: #{payload.peer_uid}")
-        {:noreply, state}
-    end
-  end
-
-  @impl true
-  def handle_cast({:message_transmiter, payload}, %{eid: eid} = state) do
-
-    message_id = payload.peer_uid
-    from_device = payload.from.connection_resource_id
-
-    case Queue.MessageTracker.check_and_insert(eid, from_device, message_id) do
-      {:ok, :inserted} ->
-
-        partition_payloay_ctx = payload.payload_context
-        reply_to = payload.from.eid
-        type = 3
-        from_device = payload.from.connection_resource_id
-
-        new_payload = %{
-          peer_uid: message_id,
-          timestamp: Until.UniPosTime.uni_pos_time(),
-          payload: payload.payload,
-          payload_context: partition_payloay_ctx,
-          encryption_type: payload.encryption_type,
-          encrypted: payload.encrypted,
-          signature: payload.signature,
-          device_id: from_device,
-          uupid: nil,
-          eid: reply_to,
-          from: %Chat.EntityStruct{
-            eid: reply_to,
-            connection_resource_id: from_device
-          },
-          to: %Chat.EntityStruct{eid: payload.to.eid, connection_resource_id: nil}
-        }
-        |> Chat.Message.Model.to_message_struct()
-
-        result = Queue.QueueLogImpl.write(partition_payloay_ctx, eid, reply_to, 0, type, partition_payloay_ctx, new_payload, message_id)
-
-        case result do
-          {:ok, offset} ->
-            {:noreply, state}
-
-          {:error, :backpressure} ->
-            {:noreply, state}
-        end
-
-      {:error, :already_exists} ->
-        Logger.debug("2 Duplicate message ignored: #{payload.peer_uid}")
-        {:noreply, state}
-    end
+  def handle_cast({:send_terminate_signal_to_server, %{device_id: device_id, eid: eid}}, %{current_timer: current_timer} = state) do
+    # DeviceStorage.delete_device(device_id, eid)
+    # if Storage.DeviceStorage.remaining_active_devices?(eid) do
+    #   DeviceStorage.cancel_termination_if_any_device_are_online(current_timer)
+    #   {:noreply, state}
+    # else
+    #   DeviceStorage.schedule_termination_if_all_offline(state)
+    #   {:noreply, state}
+    # end
     {:noreply, state}
   end
+
+
+  # ----------------------
+  # Fetch messages
+  # ----------------------
+  @impl true
+  def handle_cast({:fetch_batch_chat, eid, device_id}, state) do
+    # case BimipLog.fetch(eid, device_id, 1, 10) do
+    #   {:ok, %{messages: messages}} -> Enum.each(messages, &IO.inspect(&1))
+    #   {:error, reason} -> Logger.error("[FETCH] failed for eid=#{eid}: #{inspect(reason)}")
+    # end
+
+    {:noreply, state}
+  end
+
+
+
+
 
 
   # # -------------------------------

@@ -1,11 +1,12 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
-  BimipLog v8 — Sharded Append-Only Log with Adaptive Sparse Index
+  BimipLog v9 — Sharded Append-Only Log with Adaptive Sparse Index + Runtime Segment Rotation
 
   Features:
   - Sparse indexing with adaptive stride
   - Per-device checkpoints
-  - Segment-aware ETS cleanup after compaction
+  - Segment-aware ETS cleanup
+  - Runtime segment rotation when full
   - Bounded scans
   - Metrics for monitoring
   """
@@ -67,7 +68,6 @@ defmodule Queue.QueueLogImpl do
 
       :ets.insert(buf, {shard, offset, record})
 
-      # Per-device checkpoint
       maybe_device_checkpoint(shard, user, device_id, partition_id, offset)
 
       {:ok, offset}
@@ -129,7 +129,6 @@ defmodule Queue.QueueLogImpl do
   def handle_info(:flush, state), do: {:noreply, perform_flush(state)}
 
   def terminate(_, state) do
-    # Flush only if table exists
     if :ets.info(log_buffer(state.shard)) != :undefined do
       perform_flush(state)
     end
@@ -139,7 +138,31 @@ defmodule Queue.QueueLogImpl do
   end
 
   # ------------------------------------------------------------------
-  # WRITE PATH
+  # RUNTIME SEGMENT ROTATION
+  # ------------------------------------------------------------------
+
+  defp rotate_segment(state) do
+    new_base = System.unique_integer([:positive])
+    new_log = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log")
+    new_idx = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx")
+
+    {:ok, log_fd} = :file.open(new_log, [:append, :raw, :binary])
+    {:ok, idx_fd} = :file.open(new_idx, [:append, :raw, :binary])
+
+    Logger.info("Shard #{state.shard} rotated: new log #{Path.basename(new_log)}")
+
+    persist_manifest(state.shard, new_base)
+
+    %{state |
+      log_fd: log_fd,
+      idx_fd: idx_fd,
+      active_base: new_base,
+      current_size: 0
+    }
+  end
+
+  # ------------------------------------------------------------------
+  # FLUSH / WRITE
   # ------------------------------------------------------------------
 
   defp perform_flush(state) do
@@ -163,6 +186,9 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp do_write(state, rec, offset, retries) when retries > 0 do
+    # Rotate segment if full BEFORE writing
+    state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
+
     try do
       {:ok, pos} = :file.position(state.log_fd, :cur)
       bin = :erlang.term_to_binary(rec.data, [:compressed])
@@ -201,11 +227,26 @@ defmodule Queue.QueueLogImpl do
   defp do_write(_, rec, _, 0), do: raise("I/O failure #{rec.mid}")
 
   defp should_index?(state, offset) do
-    state.current_size < @max_segment_size or rem(offset, state.stride) == 0
+    rem(offset, state.stride) == 0
   end
 
   # ------------------------------------------------------------------
-  # READ PATH
+  # MANIFEST PERSISTENCE
+  # ------------------------------------------------------------------
+
+  defp persist_manifest(shard, base) do
+    manifest_file = Path.join(@base_dir, "shard_#{shard}.manifest")
+    tmp_file = manifest_file <> ".tmp"
+
+    File.write!(tmp_file, :erlang.term_to_binary(%{active_base: base}))
+    {:ok, fd} = :file.open(tmp_file, [:read, :write, :binary])
+    :file.sync(fd)
+    :file.close(fd)
+    File.rename!(tmp_file, manifest_file)
+  end
+
+  # ------------------------------------------------------------------
+  # READ / INDEX / SCAN
   # ------------------------------------------------------------------
 
   defp lookup_index(shard, user, p, off) do
@@ -317,13 +358,11 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
 
   def __startup__ do
-    # Main ETS tables
     maybe_new_table(@user_offsets, [:named_table, :public])
     maybe_new_table(@read_pool_log, [:named_table, :public])
     maybe_new_table(@metrics, [:named_table, :public])
     maybe_new_table(@checkpoints, [:named_table, :public])
 
-    # Per-shard ETS tables
     for s <- 0..(@num_shards - 1) do
       maybe_new_table(log_buffer(s), [:named_table, :duplicate_bag, :public])
       maybe_new_table(idx_cache(s), [:named_table, :ordered_set, :public])
@@ -348,28 +387,44 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp load_manifest(shard) do
-    base = System.unique_integer([:positive])
+    files = Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log"))
 
-    %{
-      log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
-      idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"),
-      base: base
-    }
+    case files do
+      [] ->
+        base = System.unique_integer([:positive])
+        %{
+          log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
+          idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"),
+          base: base
+        }
+
+      _ ->
+        latest_log = Enum.max_by(files, &File.stat!(&1).mtime)
+        base =
+          latest_log
+          |> Path.basename()
+          |> String.replace_prefix("shard_#{shard}_", "")
+          |> String.replace_suffix(".log", "")
+          |> String.to_integer()
+
+        %{
+          log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
+          idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"),
+          base: base
+        }
+    end
   end
 
   # ------------------------------------------------------------------
   # ACTIVE BASE HELPER
   # ------------------------------------------------------------------
   defp get_active_base(shard) do
-    # look up the active base from checkpoint table
     case :ets.lookup(@checkpoints, {shard, :"$1"}) do
       [{_, {_, _pos}}] ->
-        # return the latest base known for this shard
         [{base, _}] = :ets.match(@checkpoints, {{shard, :"$1"}, :_})
         base
 
       [] ->
-        # fallback: generate a new base
         System.unique_integer([:positive])
     end
   end

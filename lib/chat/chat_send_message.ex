@@ -1,8 +1,6 @@
 defmodule Chat.SendMessage do
 
   alias Route.Connect
-  alias Storage.DeviceStorage
-
 
   @stale_threshold_seconds Settings.ServerState.stale_threshold_seconds()
   @types 2
@@ -20,18 +18,14 @@ defmodule Chat.SendMessage do
     |> then(&Connect.outbouce(app_device_id, &1))
   end
 
-   def push_message_to_other_devices(%Chat.MessageStruct{} = payload, offset, recipient) do
-      set_message_fields(
-        payload,
-        offset,
-        recipient
-      )
+  def push_message_to_other_devices(%Chat.MessageStruct{} = payload, offset, recipient, devices) do
+    set_message_fields(payload,offset,recipient, devices)
   end
 
-  def set_message_fields(%Chat.MessageStruct{} = payload, offset, td) do
+  def set_message_fields(%Chat.MessageStruct{} = payload, offset, recipient, devices) do
 
     %Chat.EntityStruct{eid: from_eid, connection_resource_id: from_device} = payload.from
-    %Chat.EntityStruct{eid: to_eid, connection_resource_id: to_device} = payload.to
+    %Chat.EntityStruct{eid: to_eid} = payload.to
 
     message = %{
       peer_uid: payload.peer_uid,
@@ -39,8 +33,8 @@ defmodule Chat.SendMessage do
       timestamp: Until.UniPosTime.uni_pos_time(),
       type: @types,
       signature: payload.signature,
-      to: %{eid: to_eid, connection_resource_id: to_device},
       from: %{eid: from_eid, connection_resource_id: from_device},
+      to: %{eid: to_eid, connection_resource_id: nil},
       payload: payload.payload,
       payload_context: payload.payload_context,
       encryption_type: payload.encryption_type,
@@ -50,90 +44,71 @@ defmodule Chat.SendMessage do
     }
 
     Task.Supervisor.start_child(Chat.TaskSupervisor, fn ->
-      push_to_devices(message, from_eid, from_device, td)
+      push_to_devices(message, from_eid, from_device,  devices)
     end)
 
-    if td == :device do
+    if recipient == :device do
       Task.Supervisor.start_child(Chat.TaskSupervisor, fn ->
-        transmit_to_rcv(message, to_eid)
+       message
+        |> Map.put(:uupid, payload.uupid)
+        |> transmit_to_rcv(to_eid)
       end)
     end
 
   end
 
-  defp push_to_devices(payload, from_eid, from_device, td) do
+  defp push_to_devices(payload, from_eid, from_device,  devices) do
     now = DateTime.utc_now()
 
-    case td do
-      :device ->
+    online_devices =
+      devices
+      |> Enum.filter(fn {_device_id, dev} ->
+        DateTime.diff(now, dev.last_seen, :second) <= @stale_threshold_seconds and
+          dev.device_id != from_device
+      end)
+      |> Enum.map(fn {_device_id, dev} -> dev end)
 
-        DeviceStorage.fetch_devices_by_eid(from_eid)
-        |> Stream.filter(&(&1.status == "ONLINE" and DateTime.diff(now, &1.last_seen) <= @stale_threshold_seconds and &1.device_id != from_device))
-        |> Task.async_stream(fn dev ->
-          payload
-          |> then(&(%{ &1 | to: %{eid: dev.eid, connection_resource_id: dev.device_id}}))
-          |> ThrowMessageSchema.build_message()
-          |> then(&Connect.outbouce(dev.device_id, &1))
-        end,
-        max_concurrency: 10,
-        ordered: false,
-        timeout: 5_000
-        )
-        |> Stream.run()
-
-      :recipient ->
-       :ok # change this to recipient
-    end
+    online_devices
+    |> Task.async_stream(
+      fn dev ->
+        payload
+        |> then(&%{&1 | to: %{eid: dev.eid, connection_resource_id: dev.device_id}})
+        |> ThrowMessageSchema.build_message()
+        |> then(&Connect.outbouce(dev.device_id, &1))
+      end,
+      max_concurrency: 10,
+      ordered: false,
+      timeout: 5_000
+    )
+    |> Stream.run()
   end
+
 
   defp transmit_to_rcv(payload, to_eid) do
     payload
     |> then(&Connect.handle_inbouce_signal({:eid, to_eid, :message_transmiter, &1}))
   end
 
+  def map_to_message_struct(payload) do
+    %{
+        peer_uid: payload.peer_uid,
+        timestamp: Until.UniPosTime.uni_pos_time(),
+        payload: payload.payload,
+        payload_context: payload.payload_context,
+        encryption_type: payload.encryption_type,
+        encrypted: payload.encrypted,
+        signature: payload.signature,
+        device_id: payload.from.connection_resource_id,
+        uupid: payload.uupid,
+        eid: payload.from.eid,
+        from: %Chat.EntityStruct{
+          eid: payload.from.eid,
+          connection_resource_id: payload.from.connection_resource_id
+        },
+        to: %Chat.EntityStruct{eid: payload.to.eid, connection_resource_id: nil}
+      }
+      |> Chat.Message.Model.to_message_struct()
+      |> IO.inspect()
+  end
+
 end
-
-
-
-
-
-
-
-
-
-
-
-#       transmission_mode: transmission_mode,
-#       reply_to: reply_to
-
-#    message Message {
-#     string peer_uid = 1;
-#     Identity from = 2;
-#     Identity to = 3;
-#     int64 timestamp = 4;
-#     bytes payload = 5;
-#     string encryption_type = 6;
-#     string encrypted = 7;
-#     string signature = 8;
-#     optional int32 type = 9;
-#     optional int32 transmission_mode = 10;
-#     optional string reply_to = 11;
-#     optional int64 offset = 12;
-#     int32 payload_context = 13;
-#   }
-
-
-#   %Chat.MessageStruct{
-#   peer_uid: "vcNAQcDoIIB4TCCAd0CAQAxggE2MIIBMgI",
-#   timestamp: 1767297509803,
-#   payload: "\"This is the test message 👋\"",
-#   payload_context: 1,
-#   encryption_type: "E2E",
-#   encrypted: "MIIB8AYJKoZIhvcNAQcDoIIB4TCCAd0CAQAxggE2MIIBMgIBADAfMA4GCSqGSIb3DQEBCwUwggExBgsqhkiG9w0BCwEw",
-#   signature: "SHA256-R4f0S4E3V7gH6tK2mP9Yc0B1dZ2eG3h4iJ5kL7o9pQ8rT6uV5wX4yZ3aBcD1fG0hI7jKmNlOpZqRsT",
-#   device_id: 5,
-#   app_device_id: "aaaaa1",
-#   eid: "a@domain.com",
-#   from: %Chat.EntityStruct{eid: "a@domain.com", connection_resource_id: 5},
-#   to: %Chat.EntityStruct{eid: "b@domain.com", connection_resource_id: nil}
-# }
