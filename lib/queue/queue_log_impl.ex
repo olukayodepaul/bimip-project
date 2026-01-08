@@ -22,7 +22,6 @@ defmodule Queue.QueueLogImpl do
   @flush_interval 100
   @max_segment_size 100 * 1024 * 1024
   @max_buffer_per_shard 100_000
-  @pool_quota 500
   @max_disk_write_retries 3
 
   # Sparse + Scan
@@ -34,6 +33,10 @@ defmodule Queue.QueueLogImpl do
   # Metrics
   @metrics :bimip_metrics
   @checkpoints :bimip_segment_checkpoints
+  @user_offsets :bimip_user_offsets
+  @idx_cache_device_prefix :"bimip_idx_device_"
+  @idx_cache_prefix :"bimip_idx_"
+  @log_buffer_prefix :"bimip_buf_"
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -177,7 +180,7 @@ defmodule Queue.QueueLogImpl do
       :ets.delete_all_objects(buf)
 
       Enum.reduce(items, state, fn {off, rec}, acc ->
-        do_write(acc, rec, off, @max_disk_write_retries)
+        do_write(acc, rec, off, 3)
       end)
       |> adjust_stride()
     else
@@ -186,7 +189,6 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp do_write(state, rec, offset, retries) when retries > 0 do
-    # Rotate segment if full BEFORE writing
     state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
 
     try do
@@ -226,9 +228,7 @@ defmodule Queue.QueueLogImpl do
 
   defp do_write(_, rec, _, 0), do: raise("I/O failure #{rec.mid}")
 
-  defp should_index?(state, offset) do
-    rem(offset, state.stride) == 0
-  end
+  defp should_index?(state, offset), do: rem(offset, state.stride) == 0
 
   # ------------------------------------------------------------------
   # MANIFEST PERSISTENCE
@@ -261,9 +261,7 @@ defmodule Queue.QueueLogImpl do
 
   defp bounded_scan(shard, user, p, target) do
     case :ets.lookup(@checkpoints, {shard, :"$1"}) do
-      [] ->
-        {:error, :not_found}
-
+      [] -> {:error, :not_found}
       [{_, {_, pos}}] ->
         base = get_active_base(shard)
         scan_loop(shard, user, p, target, pos, 0, base)
@@ -331,19 +329,30 @@ defmodule Queue.QueueLogImpl do
   end
 
   # ------------------------------------------------------------------
-  # DISK READ
+  # DISK READ (uses sharded FD pool)
   # ------------------------------------------------------------------
-
   defp read_from_disk(shard, base, pos) do
     path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
 
-    with {:ok, fd} <- reader_fd(@read_pool_log, path),
-         {:ok, <<0xEE, size::32, crc::32, ulen::16, _::64>>} <- :file.pread(fd, pos, @header_size),
-         {:ok, bin} <- :file.pread(fd, pos + @header_size + ulen + 12, size),
-         true <- :erlang.crc32(bin) == crc do
-      {:ok, :erlang.binary_to_term(bin, [:safe])}
-    else
-      _ -> {:error, :read_failed}
+    try do
+      with {:ok, fd} <- Queue.FDPoolShard.get_fd(shard, path),
+          {:ok, <<0xEE, size::32, crc::32, ulen::16, _::64>>} <- :file.pread(fd, pos, @header_size),
+          {:ok, bin} <- :file.pread(fd, pos + @header_size + ulen + 12, size),
+          true <- :erlang.crc32(bin) == crc do
+        {:ok, :erlang.binary_to_term(bin, [:safe])}
+      else
+        {:error, reason} ->
+          Logger.error("Failed to read header or data from #{path} at pos #{pos}: #{inspect(reason)}")
+          {:error, :read_failed}
+
+        false ->
+          Logger.error("CRC mismatch for #{path} at pos #{pos}")
+          {:error, :read_failed}
+      end
+    rescue
+      e ->
+        Logger.error("Unexpected exception reading #{path} at pos #{pos}: #{Exception.format(:error, e, __STACKTRACE__)}")
+        {:error, :read_failed}
     end
   end
 
@@ -359,7 +368,6 @@ defmodule Queue.QueueLogImpl do
 
   def __startup__ do
     maybe_new_table(@user_offsets, [:named_table, :public])
-    maybe_new_table(@read_pool_log, [:named_table, :public])
     maybe_new_table(@metrics, [:named_table, :public])
     maybe_new_table(@checkpoints, [:named_table, :public])
 
@@ -371,20 +379,18 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp maybe_new_table(name, opts) do
-    if :ets.info(name) == :undefined do
-      :ets.new(name, opts)
-    end
+    if :ets.info(name) == :undefined, do: :ets.new(name, opts)
   end
 
-  defp reader_fd(pool, path) do
-    case :ets.lookup(pool, path) do
-      [{_, fd, _}] -> {:ok, fd}
-      [] ->
-        {:ok, fd} = :file.open(path, [:read, :raw, :binary])
-        :ets.insert(pool, {path, fd, :erlang.monotonic_time()})
-        {:ok, fd}
-    end
-  end
+  # ------------------------------------------------------------------
+  # TABLE HELPERS
+  # ------------------------------------------------------------------
+
+  defp log_buffer(s), do: :"#{@log_buffer_prefix}#{s}"
+  defp idx_cache(s), do: :"#{@idx_cache_prefix}#{s}"
+  defp idx_cache_device(s), do: :"#{@idx_cache_device_prefix}#{s}"
+  defp worker_name(s), do: :"bimip_shard_#{s}"
+  defp schedule_flush, do: Process.send_after(self(), :flush, @flush_interval)
 
   defp load_manifest(shard) do
     files = Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log"))
@@ -392,11 +398,9 @@ defmodule Queue.QueueLogImpl do
     case files do
       [] ->
         base = System.unique_integer([:positive])
-        %{
-          log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
+        %{log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
           idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"),
-          base: base
-        }
+          base: base}
 
       _ ->
         latest_log = Enum.max_by(files, &File.stat!(&1).mtime)
@@ -407,33 +411,20 @@ defmodule Queue.QueueLogImpl do
           |> String.replace_suffix(".log", "")
           |> String.to_integer()
 
-        %{
-          log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
+        %{log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
           idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"),
-          base: base
-        }
+          base: base}
     end
   end
 
-  # ------------------------------------------------------------------
-  # ACTIVE BASE HELPER
-  # ------------------------------------------------------------------
   defp get_active_base(shard) do
     case :ets.lookup(@checkpoints, {shard, :"$1"}) do
       [{_, {_, _pos}}] ->
         [{base, _}] = :ets.match(@checkpoints, {{shard, :"$1"}, :_})
         base
-
-      [] ->
-        System.unique_integer([:positive])
+      [] -> System.unique_integer([:positive])
     end
   end
 
   defp load_historical_indices(_, _), do: :ok
-
-  defp log_buffer(s), do: :"bimip_buf_#{s}"
-  defp idx_cache(s), do: :"bimip_idx_#{s}"
-  defp idx_cache_device(s), do: :"bimip_idx_device_#{s}"
-  defp worker_name(s), do: :"bimip_shard_#{s}"
-  defp schedule_flush, do: Process.send_after(self(), :flush, @flush_interval)
 end
