@@ -17,11 +17,31 @@ defmodule Queue.FDPoolShard do
     end
   end
 
+  # --- Add to the Client API section ---
+  def close_fd(shard_id, path) do
+    GenServer.call(via(shard_id), {:close_force, path})
+  end
+
+  # --- Add to the handle_call section ---
   @impl true
+  def handle_call({:close_force, path}, _from, state) do
+    table = state.table
+    # Find if we actually have this file open
+    case :ets.lookup(table, {:lookup, path}) do
+      [{_, fd, ts}] ->
+        :file.close(fd)
+        :ets.delete(table, {:lookup, path})
+        :ets.delete(table, {:evict, ts, path})
+        {:reply, :ok, state}
+      [] ->
+        # File wasn't in the cache anyway
+        {:reply, :ok, state}
+    end
+  end
+
   def init(shard_id) do
-    table = table_name(shard_id)
-    # MUST be :ordered_set for :ets.first to return the oldest timestamp
-    :ets.new(table, [:ordered_set, :public, read_concurrency: true])
+    # No :ets.new here! Just grab the name.
+    table = :"fd_pool_#{shard_id}"
     {:ok, %{shard: shard_id, table: table}}
   end
 

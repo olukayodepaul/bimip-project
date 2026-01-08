@@ -23,16 +23,7 @@ defmodule Bimip.Application do
     :mnesia.start()
     :mnesia.wait_for_tables([], 5_000)
 
-    # -----------------------
-    # MNESIA TABLES
-    # -----------------------
     create_all_bimip_tables()
-
-    # -----------------------
-    # ETS / GLOBAL SETUP
-    # -----------------------
-    Queue.MessageTracker.init()
-    Queue.DeviceBookmark.startup()
 
     # -----------------------
     # TCP / HTTP
@@ -77,8 +68,7 @@ defmodule Bimip.Application do
     {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},
     {Supervisor.Server, []},
     {Supervisor.Client, []},
-    {Queue.MessageTracker.Sweeper, []},
-    Queue.BimipSupervisor,        # THIS now handles all shard workers + compactor
+    {Queue.BimipSupervisor, []},
     {Task.Supervisor, name: Chat.TaskSupervisor}
   ]
 
