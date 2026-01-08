@@ -1,11 +1,7 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
   BimipLog v10 — Sharded Append-Only Log.
-
-  Logic:
-  - Checks ETS log_buffer first (real-time data).
-  - Falls back to Disk Log if not found in memory (historical data).
-  - Uses Birthmark Anchors for new device jumps.
+  Uses Unix Timestamps for segment IDs to ensure chronological order and restart safety.
   """
   use GenServer
   require Logger
@@ -17,7 +13,6 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 19
   @flush_interval 100
-  # @max_segment_size 100 * 1024 * 1024
   @max_segment_size 1_000_000
   @max_buffer_per_shard 100_000
   @max_disk_write_retries 3
@@ -39,7 +34,6 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
 
   def write(partition_id, user, reply_to, device_id, type, payload_ctx, payload, message_id) do
-    IO.inspect({partition_id, user, reply_to, device_id, type, payload_ctx, payload, message_id})
     shard = :erlang.phash2(user, @num_shards)
     buf = log_buffer(shard)
 
@@ -72,28 +66,18 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  @doc """
-  FETCH STRATEGY:
-  1. Check ETS log_buffer first.
-  2. If data is missing or incomplete, go to Disk.
-  """
   def fetch_batch(user, partition_id, device_id, batch_size \\ 50) do
     shard = :erlang.phash2(user, @num_shards)
     {seg_id, offset_or_pos} = Queue.DeviceBookmark.get(device_id, user, partition_id)
 
-    # Convert anchor/bookmark to a logical offset for the memory check
-    # If offset_or_pos is a large physical byte (pos > 10^9), we treat it as 0 for memory scan
     logical_start = if is_integer(offset_or_pos) and offset_or_pos < 1_000_000_000, do: offset_or_pos, else: 0
 
-    # 1. TRY MEMORY (ETS) FIRST
     mem_results = fetch_from_buffer(shard, user, partition_id, logical_start, batch_size)
 
     cond do
-      # If memory filled the batch, return immediately
       length(mem_results) >= batch_size ->
         {:ok, mem_results}
 
-      # 2. FALLBACK TO DISK
       true ->
         remaining = batch_size - length(mem_results)
 
@@ -110,7 +94,6 @@ defmodule Queue.QueueLogImpl do
           end
         end
 
-        # Return Disk results (Older) + Memory results (Newer)
         {:ok, disk_results ++ mem_results}
     end
   end
@@ -120,19 +103,15 @@ defmodule Queue.QueueLogImpl do
     spec = [{{shard, :"$1", %{u: user, p: partition_id, data: :"$2"}}, [{:>, :"$1", start_off}], [:"$2"]}]
 
     case :ets.select(buffer, spec, limit) do
-      :"$end_of_table" ->
-        []
-      {results, _continuation} ->
-        results
-      results when is_list(results) ->
-        results
-      _ ->
-        []
+      :"$end_of_table" -> []
+      {results, _continuation} -> results
+      results when is_list(results) -> results
+      _ -> []
     end
   end
 
   # ------------------------------------------------------------------
-  # STREAMING & SEGMENT HOPPING LOGIC
+  # STREAMING & SEGMENT HOPPING
   # ------------------------------------------------------------------
 
   defp stream_messages(_shard, _user, _p, _seg, _off, 0, acc), do: {:ok, Enum.reverse(acc)}
@@ -162,9 +141,7 @@ defmodule Queue.QueueLogImpl do
   defp find_next_segment(shard, current_seg_id) do
     segments =
       Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log"))
-      |> Enum.map(fn p ->
-        p |> Path.basename() |> String.replace(~r/shard_\d+_/, "") |> String.replace(".log", "") |> String.to_integer()
-      end)
+      |> Enum.map(fn p -> extract_timestamp(p) end)
       |> Enum.sort()
 
     case Enum.find(segments, fn s -> s > current_seg_id end) do
@@ -193,17 +170,13 @@ defmodule Queue.QueueLogImpl do
     {:ok, %{shard: shard, log_fd: log_fd, idx_fd: idx_fd, current_size: pos, active_base: manifest.base, stride: @min_stride}}
   end
 
-  # 1. This catches the message that was causing the crash
-  def handle_info(:flush_buffer, state) do
-    handle_info(:flush, state)
-  end
-
-  # 2. This uses your existing logic
   def handle_info(:flush, state) do
     new_state = perform_flush(state)
-    schedule_flush() # <--- ADD THIS LINE to keep the loop going!
+    schedule_flush()
     {:noreply, new_state}
   end
+
+  def handle_info(:flush_buffer, state), do: handle_info(:flush, state)
 
   defp perform_flush(state) do
     buf = log_buffer(state.shard)
@@ -213,20 +186,14 @@ defmodule Queue.QueueLogImpl do
 
       Enum.sort_by(items, fn {off, _} -> off end)
       |> Enum.reduce(state, fn {off, rec}, acc ->
-        # --- ADJUSTMENT HERE ---
-        # 1. Capture physical byte position before writing
         {:ok, physical_pos} = :file.position(acc.log_fd, :cur)
-
-        # 2. Perform the write (this handles rotation internally)
         updated_state = do_write(acc, rec, off, 3)
 
-        # 3. Update Bookmark with all 3 variables
         if off == 1 do
           Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, physical_pos)
         end
 
         Queue.DeviceBookmark.advance(rec.writer_device, rec.u, rec.p, updated_state.active_base, off, physical_pos)
-
         updated_state
       end)
       |> adjust_stride()
@@ -267,9 +234,16 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp rotate_segment(state) do
-    new_base = System.unique_integer([:positive])
+    # FIXED: Using 10-digit Unix Seconds instead of unique_integer(69)
+    new_base = System.system_time(:second)
+    new_base = if new_base <= state.active_base, do: state.active_base + 1, else: new_base
+
     new_log = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log")
     new_idx = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx")
+
+    :file.close(state.log_fd)
+    :file.close(state.idx_fd)
+
     {:ok, log_fd} = :file.open(new_log, [:append, :raw, :binary])
     {:ok, idx_fd} = :file.open(new_idx, [:append, :raw, :binary])
     persist_manifest(state.shard, new_base)
@@ -300,12 +274,9 @@ defmodule Queue.QueueLogImpl do
       {:error, :not_found}
     else
       case read_from_disk(shard, base, pos) do
-        {:ok, %{off: ^target, u: ^user, p: ^p} = rec, _next_pos} ->
-          {:ok, rec}
-        {:ok, _, next_pos} ->
-          scan_loop(shard, user, p, target, next_pos, depth + 1, base)
-        _ ->
-          {:error, :not_found}
+        {:ok, %{off: ^target, u: ^user, p: ^p} = rec, _next_pos} -> {:ok, rec}
+        {:ok, _, next_pos} -> scan_loop(shard, user, p, target, next_pos, depth + 1, base)
+        _ -> {:error, :not_found}
       end
     end
   end
@@ -319,16 +290,9 @@ defmodule Queue.QueueLogImpl do
            {:ok, full_payload} <- :file.pread(fd, pos + @header_size, meta_and_body_size) do
 
         <<user_bin::binary-size(ulen), p::32, off::64, body_bin::binary>> = full_payload
-
         if :erlang.crc32(body_bin) == crc do
           next_pos = pos + @header_size + meta_and_body_size
-          record = %{
-            data: :erlang.binary_to_term(body_bin, [:safe]),
-            off: off,
-            u: user_bin,
-            p: p
-          }
-          {:ok, record, next_pos}
+          {:ok, %{data: :erlang.binary_to_term(body_bin, [:safe]), off: off, u: user_bin, p: p}, next_pos}
         else
           {:error, :crc_failed}
         end
@@ -359,7 +323,7 @@ defmodule Queue.QueueLogImpl do
   defp load_historical_indices(shard, _) do
     Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.idx"))
     |> Enum.each(fn path ->
-      base = path |> Path.basename() |> String.replace(~r/shard_\d+_/, "") |> String.replace(".idx", "") |> String.to_integer()
+      base = extract_timestamp(path)
       File.stream!(path, [], 2048)
       |> Enum.each(fn
         <<ulen::16, _user::binary-size(ulen), _p::32, off::64, pos::64>> ->
@@ -379,18 +343,33 @@ defmodule Queue.QueueLogImpl do
 
   defp load_manifest(shard) do
     manifest_path = Path.join(@base_dir, "shard_#{shard}.manifest")
+
     if File.exists?(manifest_path) do
       %{active_base: base} = :erlang.binary_to_term(File.read!(manifest_path))
-      %{log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"), idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"), base: base}
+      %{log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
+        idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"),
+        base: base}
     else
       files = Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log"))
       base = case files do
-        [] -> System.unique_integer([:positive])
-        _ -> files |> Enum.map(fn p -> p |> Path.basename() |> String.replace(~r/shard_#{shard}_|\.log/, "") |> String.to_integer() end) |> Enum.max()
+        [] -> System.system_time(:second)
+        _ -> files |> Enum.map(&extract_timestamp/1) |> Enum.max()
       end
+
       persist_manifest(shard, base)
-      %{log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"), idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"), base: base}
+      %{log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
+        idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx"),
+        base: base}
     end
+  end
+
+  defp extract_timestamp(path) do
+    path
+    |> Path.basename()
+    |> String.split("_")
+    |> List.last()
+    |> String.replace(~r/\.(log|idx)$/, "")
+    |> String.to_integer()
   end
 
   defp adjust_stride(state), do: state

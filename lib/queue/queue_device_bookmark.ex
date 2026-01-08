@@ -152,7 +152,9 @@ defmodule Queue.DeviceBookmark do
     cache = cache_name(shard)
     entries = :ets.tab2list(cache)
 
-    # We save even if empty to ensure the disk reflects the current state
+    # FIX: Ensure the directory exists right before we try to write to it
+    File.mkdir_p!(@persist_dir)
+
     path = shard_file(shard)
     tmp_path = "#{path}.tmp"
 
