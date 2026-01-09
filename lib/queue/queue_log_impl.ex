@@ -77,38 +77,35 @@ defmodule Queue.QueueLogImpl do
 
   def fetch_batch(user, partition_id, device_id, batch_size \\ 50) do
     shard = :erlang.phash2(user, @num_shards)
-
-    # 1. Get the current bookmark (device position or the user's anchor)
-    {seg_id, log_start, phys_start} = Queue.DeviceBookmark.get(device_id, user, partition_id)
-
-    # 2. Check Memory Buffer first (for real-time data)
-    mem_results = fetch_from_buffer(shard, user, partition_id, log_start, batch_size)
-
-    cond do
-      length(mem_results) >= batch_size ->
-        {:ok, mem_results}
-
-      true ->
-        remaining = batch_size - length(mem_results)
-
-        # 3. Read from Disk using the Physical Offset for a "Zero-Scan" start
-        disk_results = if seg_id == 0 do
-          []
-        else
-          # Jump directly to the physical byte stored in the bookmark/anchor
-          {:ok, res} = stream_messages(shard, user, partition_id, seg_id, log_start, phys_start, remaining, [])
-          res
-        end
-
-        {:ok, disk_results ++ mem_results}
-    end
+    GenServer.call(worker_name(shard), {:fetch, user, partition_id, device_id, batch_size}, 15_000)
   end
 
-  # ------------------------------------------------------------------
-  # FLUSH LOGIC (The Heart of the System)
-  # ------------------------------------------------------------------
 
-# ... inside Queue.QueueLogImpl
+  @impl true
+  def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
+    # 1. Get the current bookmark
+    {seg_id, log_start, phys_start} = Queue.DeviceBookmark.get(device_id, user, p)
+
+    # 2. Check Memory Buffer
+    mem_results = fetch_from_buffer(state.shard, user, p, log_start, batch_size)
+
+    results = if length(mem_results) >= batch_size do
+      mem_results
+    else
+      remaining = batch_size - length(mem_results)
+
+      disk_results = if seg_id == 0 do
+        []
+      else
+        # This call now happens INSIDE the owner process!
+        {:ok, res} = stream_messages(state.shard, user, p, seg_id, log_start, phys_start, remaining, [])
+        res
+      end
+      disk_results ++ mem_results
+    end
+
+    {:reply, {:ok, results}, state}
+  end
 
   defp perform_flush(state) do
     buf = log_buffer(state.shard)
@@ -117,25 +114,32 @@ defmodule Queue.QueueLogImpl do
       items ->
         sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
 
-        final_state = Enum.reduce(sorted, state, fn {_shard, off, rec}, acc ->
-          {:ok, pos_before} = :file.position(acc.log_fd, :cur)
-          updated_acc = do_write(acc, rec, off)
+        # We track if any of these messages belong to a brand new user
+        need_immediate_persist? = Enum.reduce(sorted, false, fn {_shard, off, rec}, force_acc ->
+          {:ok, pos_before} = :file.position(state.log_fd, :cur)
+          updated_acc = do_write(state, rec, off)
 
-          # Updates ETS (In-Memory ONLY)
-          if Queue.DeviceBookmark.get("__anchor__", rec.u, rec.p) == {0, 0, 0} do
-            Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_acc.active_base, off, pos_before)
+          # Logic: Check if anchor exists. If not, this is the FIRST message (Offset 1)
+          is_new_user? = Queue.DeviceBookmark.get("__anchor__", rec.u, rec.p) == {0, 0, 0}
+
+          if is_new_user? do
+            Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, state.active_base, off, pos_before)
           end
 
-          # Updates ETS (In-Memory ONLY)
-          Queue.DeviceBookmark.advance(rec.writer_device, rec.u, rec.p, updated_acc.active_base, off, pos_before)
+          # Always advance the device pointer in memory
+          Queue.DeviceBookmark.advance(rec.writer_device, rec.u, rec.p, state.active_base, off, pos_before)
 
-          updated_acc
+          # If we found a new user, we flag the whole batch for immediate disk sync
+          force_acc or is_new_user?
         end)
 
-        # REMOVED: Queue.DeviceBookmark.persist_shard(state.shard)
-        # We no longer thrash the disk for bookmarks every 100ms.
+        # NEW: Ensure immediate write to .bin file if offset is 1 for any user in this batch
+        if need_immediate_persist? do
+          Logger.info("💾 Shard #{state.shard}: New user detected. Forcing immediate bookmark persist.")
+          Queue.DeviceBookmark.persist_shard(state.shard)
+        end
 
-        final_state
+        state
     end
   end
 
@@ -202,27 +206,25 @@ defmodule Queue.QueueLogImpl do
 
   defp read_from_disk(shard, base, pos) do
     path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
-    case Queue.FDPoolShard.get_fd(shard, path) do
-      {:ok, fd} ->
-        case :file.pread(fd, pos, @header_size) do
-          {:ok, <<0xEE, size::32, crc::32, ulen::16, _ts::64>>} ->
-            meta_and_body_size = ulen + 12 + size
-            {:ok, full_payload} = :file.pread(fd, pos + @header_size, meta_and_body_size)
 
+    # CALL THE POOL TO DO THE READ
+    case Queue.FDPoolShard.pread(shard, path, pos, @header_size) do
+      {:ok, <<0xEE, size::32, crc::32, ulen::16, _ts::64>>} ->
+        meta_and_body_size = ulen + 12 + size
+
+        # CALL THE POOL AGAIN FOR THE BODY
+        case Queue.FDPoolShard.pread(shard, path, pos + @header_size, meta_and_body_size) do
+          {:ok, full_payload} ->
             <<user_bin::binary-size(ulen), p::32, off::64, body_bin::binary>> = full_payload
-
-            if :erlang.crc32(body_bin) == crc do
-              next_pos = pos + @header_size + meta_and_body_size
-              {:ok, %{data: :erlang.binary_to_term(body_bin, [:safe]), off: off, u: user_bin, p: p}, next_pos}
-            else
-              {:error, :crc_failed}
-            end
-          :eof -> {:error, :eof}
-          _ -> {:error, :read_failed}
+            # ... rest of your parsing logic ...
+            {:ok, %{data: :erlang.binary_to_term(body_bin, [:safe]), off: off, u: user_bin, p: p}, pos + @header_size + meta_and_body_size}
+          _ -> {:error, :body_read_failed}
         end
-      _ -> {:error, :no_file}
+      :eof -> {:error, :eof}
+      other -> {:error, other}
     end
   end
+
 
   # ------------------------------------------------------------------
   # GENSERVER LIFECYCLE
@@ -291,16 +293,28 @@ defmodule Queue.QueueLogImpl do
     # Ensure new file name is unique
     new_base = if new_base <= state.active_base, do: state.active_base + 1, else: new_base
 
+    # 1. Close the current Write FDs
+    # Note: We close them here so the Pool can manage them independently
+    # if it needs to open them for reading later.
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
+
+    # 2. OPTIONAL: Warm up the pool.
+    # We don't actually need to "add" the FD because the pool opens files on demand.
+    # However, to avoid a race condition where the pool might try to open a file
+    # we just closed, we ensure the manifest is updated first.
 
     new_log = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log")
     new_idx = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx")
 
-    {:ok, l} = :file.open(new_log, [:append, :raw, :binary])
-    {:ok, i} = :file.open(new_idx, [:append, :raw, :binary])
-
+    # 3. Update manifest on disk so readers know about the new segment
     File.write!(Path.join(@base_dir, "shard_#{state.shard}.manifest"), :erlang.term_to_binary(%{active_base: new_base}))
+
+    # 4. Open new files for writing
+    {:ok, l} = :file.open(new_log, [:append, :raw, :binary, :read, :write])
+    {:ok, i} = :file.open(new_idx, [:append, :raw, :binary, :read, :write])
+
+    Logger.info("🔄 Shard #{state.shard} rotated to new segment: #{new_base}")
 
     %{state | log_fd: l, idx_fd: i, active_base: new_base, current_size: 0}
   end

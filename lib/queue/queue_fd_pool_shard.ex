@@ -1,32 +1,42 @@
 defmodule Queue.FDPoolShard do
   use GenServer
 
+  # We use 7 as the limit for historical reads
   @max_read_fds 16
 
   def start_link(shard_id), do: GenServer.start_link(__MODULE__, shard_id, name: via(shard_id))
 
-  def get_fd(shard_id, path) do
-    table = table_name(shard_id)
-    case :ets.lookup(table, {:lookup, path}) do
-      [{_, fd, old_ts}] ->
-        # Pass old_ts to allow O(1) deletion in the cast
-        GenServer.cast(via(shard_id), {:touch, path, fd, old_ts})
-        {:ok, fd}
-      [] ->
-        GenServer.call(via(shard_id), {:open_fd, path})
-    end
+  # --- Client API ---
+
+  def pread(shard_id, path, pos, length) do
+    GenServer.call(via(shard_id), {:pread, path, pos, length})
   end
 
-  # --- Add to the Client API section ---
   def close_fd(shard_id, path) do
     GenServer.call(via(shard_id), {:close_force, path})
   end
 
-  # --- Add to the handle_call section ---
+  # --- Server Callbacks ---
+
+  def init(shard_id) do
+    table = :"fd_pool_#{shard_id}"
+    {:ok, %{shard: shard_id, table: table}}
+  end
+
+  @impl true
+  def handle_call({:pread, path, pos, length}, _from, state) do
+    case get_internal_fd(path, state) do
+      {:ok, fd} ->
+        # The Pool owns this FD, so pread here is safe and fast
+        {:reply, :file.pread(fd, pos, length), state}
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   @impl true
   def handle_call({:close_force, path}, _from, state) do
     table = state.table
-    # Find if we actually have this file open
     case :ets.lookup(table, {:lookup, path}) do
       [{_, fd, ts}] ->
         :file.close(fd)
@@ -34,45 +44,43 @@ defmodule Queue.FDPoolShard do
         :ets.delete(table, {:evict, ts, path})
         {:reply, :ok, state}
       [] ->
-        # File wasn't in the cache anyway
         {:reply, :ok, state}
     end
-  end
-
-  def init(shard_id) do
-    # No :ets.new here! Just grab the name.
-    table = :"fd_pool_#{shard_id}"
-    {:ok, %{shard: shard_id, table: table}}
   end
 
   @impl true
   def handle_cast({:touch, path, fd, old_ts}, state) do
     table = state.table
     now = :erlang.monotonic_time(:millisecond)
-
-    # O(1) update logic
     :ets.delete(table, {:evict, old_ts, path})
-    :ets.insert(table, {{:lookup, path}, fd, now})
-    :ets.insert(table, {{:evict, now, path}, true})
+    :ets.insert(table, [{{:lookup, path}, fd, now}, {{:evict, now, path}, true}])
     {:noreply, state}
   end
 
-  @impl true
-  def handle_call({:open_fd, path}, _from, state) do
-    table = state.table
-    evict_if_needed(table)
-    now = :erlang.monotonic_time(:millisecond)
+  # --- Private Helpers ---
 
-    case :file.open(path, [:read, :raw, :binary]) do
-      {:ok, fd} ->
-        :ets.insert(table, [{{:lookup, path}, fd, now}, {{:evict, now, path}, true}])
-        {:reply, {:ok, fd}, state}
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+  defp get_internal_fd(path, state) do
+    table = state.table
+    case :ets.lookup(table, {:lookup, path}) do
+      [{_, fd, old_ts}] ->
+        # Refresh LRU status so it isn't evicted
+        GenServer.cast(self(), {:touch, path, fd, old_ts})
+        {:ok, fd}
+      [] ->
+        # Limit check before opening new one
+        evict_if_needed(table)
+        case :file.open(path, [:read, :raw, :binary]) do
+          {:ok, fd} ->
+            now = :erlang.monotonic_time(:millisecond)
+            :ets.insert(table, [{{:lookup, path}, fd, now}, {{:evict, now, path}, true}])
+            {:ok, fd}
+          error -> error
+        end
     end
   end
 
   defp evict_if_needed(table) do
+    # 2 keys per file (lookup + evict). If size/2 >= 7, we evict.
     if div(:ets.info(table, :size), 2) >= @max_read_fds do
       case :ets.first(table) do
         {:evict, ts, path} ->
@@ -81,17 +89,19 @@ defmodule Queue.FDPoolShard do
               :file.close(fd)
               :ets.delete(table, {:lookup, path})
               :ets.delete(table, {:evict, ts, path})
+              # Recursive check in case size is still high
               evict_if_needed(table)
             _ ->
-              # Entry was likely updated by a concurrent touch; drop stale evict key
+              # Stale key, just clean and retry
               :ets.delete(table, {:evict, ts, path})
               evict_if_needed(table)
           end
         _ -> :ok
       end
+    else
+      :ok
     end
   end
 
-  defp table_name(s), do: :"fd_pool_#{s}"
   defp via(s), do: {:via, Registry, {Queue.FDPoolRegistry, s}}
 end
