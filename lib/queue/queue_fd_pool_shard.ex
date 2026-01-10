@@ -2,7 +2,7 @@ defmodule Queue.FDPoolShard do
   use GenServer
 
   # We use 7 as the limit for historical reads
-  @max_read_fds 16
+  @max_read_fds 11
 
   def start_link(shard_id), do: GenServer.start_link(__MODULE__, shard_id, name: via(shard_id))
 
