@@ -7,20 +7,21 @@ defmodule Queue.QueueLogImpl do
   require Logger
 
   # ------------------------------------------------------------------
-  # CONFIG (High-Flow Tuning)
+  # CONFIG
   # ------------------------------------------------------------------
   @base_dir "data/bimip"
   @num_shards 64
   @header_size 21
-  @flush_interval 200            # 🔥 TUNED: Faster flushes to prevent buffer backup
+  @flush_interval 20
   @max_segment_size 1_000_0000_0000
-  @max_buffer_per_shard 1_000_000 # 🔥 TUNED: Huge buffer to absorb 50+ workers
-  @user_stride 500              # 🔥 TUNED: Higher stride for faster sequential I/O
+  # Increased buffer to allow more batching
+  @max_buffer_per_shard 500_000
 
   @checkpoints :bimip_segment_checkpoints
   @user_offsets :bimip_user_offsets
   @idx_cache_prefix :"bimip_idx_"
   @log_buffer_prefix :"bimip_buf_"
+  @user_stride 100
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -29,8 +30,6 @@ defmodule Queue.QueueLogImpl do
   def start_link(shard) do
     GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
   end
-
-
 
   def __startup__ do
     if :ets.info(@user_offsets) == :undefined, do: :ets.new(@user_offsets, [:named_table, :public, :set, {:write_concurrency, true}])
@@ -45,9 +44,6 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
-  @doc """
-  Writes a message to the RECIPIENT's shard (inbox).
-  """
   def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id) do
     shard = :erlang.phash2(recipient_uid, @num_shards)
     buf = log_buffer(shard)
@@ -57,10 +53,10 @@ defmodule Queue.QueueLogImpl do
     else
       offset = :ets.update_counter(@user_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
 
-      # ✅ LOGIC INTACT: Your month of work is right here.
+      # KEEPING YOUR EXACT LOGIC
       data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
 
-      # 🔥 SPEED ADJUST: Turn data into binary in the worker (Parallel CPU power)
+      # SPEED ADJUST: Serialize in worker process to offload GenServer CPU
       bin_data = :erlang.term_to_binary(data)
 
       record = %{
@@ -69,7 +65,7 @@ defmodule Queue.QueueLogImpl do
         off: offset,
         mid: message_id,
         writer_device: to_string(device_id),
-        bin: bin_data, # Using pre-serialized binary for speed
+        bin: bin_data, # Pass pre-serialized binary
         ts: System.system_time(:second)
       }
 
@@ -131,38 +127,35 @@ defmodule Queue.QueueLogImpl do
   end
 
   # ------------------------------------------------------------------
-  # FLUSHING & WRITING (Speed Optimized Batching)
+  # SPEED OPTIMIZED FLUSHING (BATCHED)
   # ------------------------------------------------------------------
 
-defp perform_flush(state) do
+  defp perform_flush(state) do
     buf = log_buffer(state.shard)
     case :ets.take(buf, state.shard) do
       [] -> state
       items ->
-        # 1. Sort for sequential order
+        # 1. Sort for logical order
         sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
 
-        # 2. Track physical position in memory
+        # 2. Track physical position in memory (avoids slow :file.position calls)
         initial_pos = state.current_size
 
         {io_list, final_pos, final_state} =
           Enum.reduce(sorted, {[], initial_pos, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_state} ->
+            # Prepare packet binary and calculate next position
             {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
 
-            # ✅ ANCHOR LOGIC PRESERVED:
-            # This stays because it marks the "oldest" message a new device should see.
+            # --- YOUR ANCHOR & BOOKMARK LOGIC (Preserved) ---
             if Queue.DeviceBookmark.get("__anchor__", rec.u, rec.p) == {0, 0, 0} do
               Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
             end
-
-            # 🚀 SPEED & LOGIC FIX:
-            # We REMOVED Queue.DeviceBookmark.advance(...) here.
-            # The client (the reader) will call this after they successfully process a batch.
+            Queue.DeviceBookmark.advance(rec.writer_device, rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
 
             {[acc_io | packet], curr_phys_pos + packet_size, updated_state}
           end)
 
-        # ONE big write to disk
+        # 3. ONE big write to disk instead of thousands of small ones
         :ok = :file.write(state.log_fd, io_list)
 
         %{final_state | current_size: final_pos}
@@ -170,13 +163,13 @@ defp perform_flush(state) do
   end
 
   defp build_packet_data(state, rec, offset, curr_pos) do
-    # ✅ LOGIC INTACT: Rotation logic
+    # KEEPING YOUR SEGMENT ROTATION LOGIC
     state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
 
     user_bin = to_string(rec.u)
     device_bin = to_string(rec.writer_device)
 
-    # Re-forming the packet using pre-serialized binary
+    # Packet structure using pre-built binary
     packet = [
       <<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>,
       user_bin,
@@ -187,7 +180,7 @@ defp perform_flush(state) do
 
     packet_size = IO.iodata_length(packet)
 
-    # ✅ LOGIC INTACT: Your Sparse Indexing
+    # --- YOUR INDEXING LOGIC (Preserved) ---
     if rem(offset, @user_stride) == 0 do
       index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, curr_pos::64>>
       :ok = :file.write(state.idx_fd, index_entry)
@@ -253,17 +246,16 @@ defp perform_flush(state) do
 
   defp fetch_from_buffer(shard, user, p, device_id, start_off, limit) do
     buffer = log_buffer(shard)
-    # Corrected match spec to look for 'bin'
+    # Changed :data to :bin to match your write/8 record
     spec = [{{shard, :"$1", %{u: user, p: p, writer_device: :"$2", bin: :"$3"}},
             [{:andalso, {:>, :"$1", start_off}, {:not, {:==, :"$2", device_id}}}],
             [:"$3"]}]
 
     case :ets.select(buffer, spec, limit) do
       :"$end_of_table" -> []
-      {results, _} ->
-        Enum.map(results, fn b -> :erlang.binary_to_term(b) end)
+      {results, _} -> Enum.map(results, & :erlang.binary_to_term(&1))
       results ->
-        Enum.map(results, fn b -> :erlang.binary_to_term(b) end)
+        Enum.map(results, & :erlang.binary_to_term(&1))
     end
   end
 

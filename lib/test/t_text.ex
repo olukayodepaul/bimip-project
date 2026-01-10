@@ -1,5 +1,5 @@
 defmodule Queue.Benchmark do
-  @total_messages 10_000_000
+  @total_messages 30_000_000
   @concurrency 12          # 🚀 TENSION: Matches CPU cores for higher speed
   @batch_size 5_000        # 🚀 TENSION: Larger pallets to flood the ETS buffers
 
