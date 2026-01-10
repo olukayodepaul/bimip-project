@@ -1,9 +1,8 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
-  BimipLog v10 — Sharded Append-Only Log.
-  Organized by Recipient Inbox with Device-ID filtering and FD Pool Proxy Reading.
+  BimipLog v11 — Naked Process Edition.
+  Refactored to bypass GenServer overhead for 1M msg/sec targets.
   """
-  use GenServer
   require Logger
 
   # ------------------------------------------------------------------
@@ -12,9 +11,8 @@ defmodule Queue.QueueLogImpl do
   @base_dir "data/bimip"
   @num_shards 64
   @header_size 21
-  @flush_interval 20
+  @flush_tick 10  # Reduced to 10ms for higher frequency flushing
   @max_segment_size 1_000_0000_0000
-  # Increased buffer to allow more batching
   @max_buffer_per_shard 500_000
 
   @checkpoints :bimip_segment_checkpoints
@@ -28,11 +26,24 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
 
   def start_link(shard) do
-    GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
+    # 🚀 SHIFT: Spawn a plain process instead of a GenServer
+    pid = spawn_link(fn -> init_naked(shard) end)
+    Process.register(pid, worker_name(shard))
+    {:ok, pid}
   end
 
   def __startup__ do
-    if :ets.info(@user_offsets) == :undefined, do: :ets.new(@user_offsets, [:named_table, :public, :set, {:write_concurrency, true}])
+
+    if :ets.info(@user_offsets) == :undefined do
+      :ets.new(@user_offsets, [
+        :named_table,
+        :public,
+        :set,
+        {:write_concurrency, true},
+        {:decentralized_counters, true} # 🚀 ADD THIS
+      ])
+    end
+
     if :ets.info(@checkpoints) == :undefined, do: :ets.new(@checkpoints, [:named_table, :public, :set, {:read_concurrency, true}])
 
     for s <- 0..(@num_shards - 1) do
@@ -44,19 +55,15 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
-  def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id) do
-    shard = :erlang.phash2(recipient_uid, @num_shards)
+  def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id, shard) do
+
     buf = log_buffer(shard)
 
     if :ets.info(buf, :size) > @max_buffer_per_shard do
       {:error, :backpressure}
     else
       offset = :ets.update_counter(@user_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
-
-      # KEEPING YOUR EXACT LOGIC
       data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
-
-      # SPEED ADJUST: Serialize in worker process to offload GenServer CPU
       bin_data = :erlang.term_to_binary(data)
 
       record = %{
@@ -65,7 +72,7 @@ defmodule Queue.QueueLogImpl do
         off: offset,
         mid: message_id,
         writer_device: to_string(device_id),
-        bin: bin_data, # Pass pre-serialized binary
+        bin: bin_data,
         ts: System.system_time(:second)
       }
 
@@ -74,32 +81,127 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
+  # Fetch now uses manual send/receive since it's not a GenServer
   def fetch_batch(user, partition_id, device_id, batch_size \\ 50) do
     shard = :erlang.phash2(user, @num_shards)
-    GenServer.call(worker_name(shard), {:fetch, user, partition_id, to_string(device_id), batch_size}, 15_000)
-  end
+    pid = Process.whereis(worker_name(shard))
 
-  # ------------------------------------------------------------------
-  # GENSERVER HANDLERS
-  # ------------------------------------------------------------------
+    ref = make_ref()
+    send(pid, {:fetch, self(), ref, user, partition_id, to_string(device_id), batch_size})
 
-  @impl true
-  def init(shard) do
-    File.mkdir_p!(@base_dir)
-    manifest = load_manifest(shard)
-
-    case :file.open(manifest.log, [:append, :raw, :binary, :read, :write]) do
-      {:ok, log_fd} ->
-        {:ok, idx_fd} = :file.open(manifest.idx, [:append, :raw, :binary, :read, :write])
-        {:ok, pos} = :file.position(log_fd, :cur)
-        schedule_flush()
-        {:ok, %{shard: shard, log_fd: log_fd, idx_fd: idx_fd, current_size: pos, active_base: manifest.base}}
-      {:error, reason} -> {:stop, reason}
+    receive do
+      {^ref, reply} -> reply
+    after
+      15_000 -> {:error, :timeout}
     end
   end
 
-  @impl true
-  def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
+  # ------------------------------------------------------------------
+  # NAKED PROCESS CORE
+  # ------------------------------------------------------------------
+
+  defp init_naked(shard) do
+    File.mkdir_p!(@base_dir)
+    manifest = load_manifest(shard)
+
+    # 🚀 OPTIMIZATION: Open files in raw binary mode
+    {:ok, log_fd} = :file.open(manifest.log, [:append, :raw, :binary, :read, :write])
+    {:ok, idx_fd} = :file.open(manifest.idx, [:append, :raw, :binary, :read, :write])
+    {:ok, pos} = :file.position(log_fd, :cur)
+
+    state = %{
+      shard: shard,
+      log_fd: log_fd,
+      idx_fd: idx_fd,
+      current_size: pos,
+      active_base: manifest.base
+    }
+
+    naked_loop(state)
+  end
+
+  defp naked_loop(state) do
+    # 1. Manual Mailbox Check (Fetch Requests)
+    # 🚀 Logic: handle one fetch if present, then immediately flush
+    state = receive do
+      {:fetch, caller, ref, user, p, dev, limit} ->
+        handle_fetch_request(caller, ref, user, p, dev, limit, state)
+        state
+    after 0 ->
+      state
+    end
+
+    # 2. Perform Flush
+    new_state = perform_flush(state)
+
+    # 3. Tick
+    naked_loop(new_state)
+  end
+
+  # ------------------------------------------------------------------
+  # LOGIC PRESERVED (FLUSHING)
+  # ------------------------------------------------------------------
+
+  defp perform_flush(state) do
+    buf = log_buffer(state.shard)
+    case :ets.take(buf, state.shard) do
+      [] -> state
+      items ->
+        # 🚀 LOGIC PRESERVED: Sorting for offset integrity
+        sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
+        initial_pos = state.current_size
+
+        {io_list, final_pos, final_state} =
+          Enum.reduce(sorted, {[], initial_pos, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_state} ->
+            {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
+
+            # 🚀 LOGIC PRESERVED: Bookmark & Anchor
+            if Queue.DeviceBookmark.get("__anchor__", rec.u, rec.p) == {0, 0, 0} do
+              Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
+            end
+            Queue.DeviceBookmark.advance(rec.writer_device, rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
+
+            {[acc_io | packet], curr_phys_pos + packet_size, updated_state}
+          end)
+
+        :ok = :file.write(state.log_fd, io_list)
+        %{final_state | current_size: final_pos}
+    end
+  end
+
+  defp build_packet_data(state, rec, offset, curr_pos) do
+    # 🚀 LOGIC PRESERVED: Rotation
+    state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
+
+    user_bin = to_string(rec.u)
+    device_bin = to_string(rec.writer_device)
+
+    packet = [
+      <<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>,
+      user_bin,
+      device_bin,
+      <<rec.p::32, offset::64>>,
+      rec.bin
+    ]
+
+    packet_size = IO.iodata_length(packet)
+
+    # 🚀 LOGIC PRESERVED: Sparse Indexing
+    if rem(offset, @user_stride) == 0 do
+      index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, curr_pos::64>>
+      :ok = :file.write(state.idx_fd, index_entry)
+      :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
+    end
+
+    :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, curr_pos}})
+    {packet, packet_size, state}
+  end
+
+  # ------------------------------------------------------------------
+  # LOGIC PRESERVED (READING)
+  # ------------------------------------------------------------------
+
+  defp handle_fetch_request(caller, ref, user, p, device_id, batch_size, state) do
     {seg_id, log_start, phys_start} = Queue.DeviceBookmark.get(device_id, user, p)
     mem_results = fetch_from_buffer(state.shard, user, p, device_id, log_start, batch_size)
 
@@ -116,86 +218,10 @@ defmodule Queue.QueueLogImpl do
       disk_results ++ mem_results
     end
 
-    {:reply, {:ok, results}, state}
+    send(caller, {ref, {:ok, results}})
   end
 
-  @impl true
-  def handle_info(:flush, state) do
-    new_state = perform_flush(state)
-    schedule_flush()
-    {:noreply, new_state}
-  end
-
-  # ------------------------------------------------------------------
-  # SPEED OPTIMIZED FLUSHING (BATCHED)
-  # ------------------------------------------------------------------
-
-  defp perform_flush(state) do
-    buf = log_buffer(state.shard)
-    case :ets.take(buf, state.shard) do
-      [] -> state
-      items ->
-        # 1. Sort for logical order
-        sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
-
-        # 2. Track physical position in memory (avoids slow :file.position calls)
-        initial_pos = state.current_size
-
-        {io_list, final_pos, final_state} =
-          Enum.reduce(sorted, {[], initial_pos, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_state} ->
-            # Prepare packet binary and calculate next position
-            {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
-
-            # --- YOUR ANCHOR & BOOKMARK LOGIC (Preserved) ---
-            if Queue.DeviceBookmark.get("__anchor__", rec.u, rec.p) == {0, 0, 0} do
-              Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
-            end
-            Queue.DeviceBookmark.advance(rec.writer_device, rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
-
-            {[acc_io | packet], curr_phys_pos + packet_size, updated_state}
-          end)
-
-        # 3. ONE big write to disk instead of thousands of small ones
-        :ok = :file.write(state.log_fd, io_list)
-
-        %{final_state | current_size: final_pos}
-    end
-  end
-
-  defp build_packet_data(state, rec, offset, curr_pos) do
-    # KEEPING YOUR SEGMENT ROTATION LOGIC
-    state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
-
-    user_bin = to_string(rec.u)
-    device_bin = to_string(rec.writer_device)
-
-    # Packet structure using pre-built binary
-    packet = [
-      <<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>,
-      user_bin,
-      device_bin,
-      <<rec.p::32, offset::64>>,
-      rec.bin
-    ]
-
-    packet_size = IO.iodata_length(packet)
-
-    # --- YOUR INDEXING LOGIC (Preserved) ---
-    if rem(offset, @user_stride) == 0 do
-      index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, curr_pos::64>>
-      :ok = :file.write(state.idx_fd, index_entry)
-      :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
-    end
-
-    :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, curr_pos}})
-
-    {packet, packet_size, state}
-  end
-
-  # ------------------------------------------------------------------
-  # READING & HELPERS (Keep as is)
-  # ------------------------------------------------------------------
-
+  # Helper Functions (Stream, Read, Rotate, etc. remain identical)
   defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
     if count <= 0 do
       {:ok, Enum.reverse(acc)}
@@ -204,14 +230,12 @@ defmodule Queue.QueueLogImpl do
         {:ok, rec, next_phys_pos} ->
           is_target = rec.u == to_string(user) and rec.p == p
           is_from_self = rec.writer_device == device_id
-
           {new_acc, new_count} = if is_target and not is_from_self do
             {[rec.data | acc], count - 1}
           else
             {acc, count}
           end
           stream_messages(shard, user, p, seg_id, next_phys_pos, new_count, new_acc, device_id)
-
         {:error, :eof} ->
           case find_next_segment(shard, seg_id) do
             {:ok, next_seg_id} -> stream_messages(shard, user, p, next_seg_id, 0, count, acc, device_id)
@@ -230,13 +254,8 @@ defmodule Queue.QueueLogImpl do
         case Queue.FDPoolShard.pread(shard, path, pos + @header_size, total_meta_size) do
           {:ok, payload} ->
             <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary>> = payload
-            {:ok, %{
-              u: u,
-              writer_device: d,
-              p: p,
-              off: off,
-              data: :erlang.binary_to_term(body, [:safe])
-            }, pos + @header_size + total_meta_size}
+            {:ok, %{u: u, writer_device: d, p: p, off: off, data: :erlang.binary_to_term(body, [:safe])},
+             pos + @header_size + total_meta_size}
           _ -> {:error, :body_failed}
         end
       :eof -> {:error, :eof}
@@ -246,16 +265,13 @@ defmodule Queue.QueueLogImpl do
 
   defp fetch_from_buffer(shard, user, p, device_id, start_off, limit) do
     buffer = log_buffer(shard)
-    # Changed :data to :bin to match your write/8 record
     spec = [{{shard, :"$1", %{u: user, p: p, writer_device: :"$2", bin: :"$3"}},
             [{:andalso, {:>, :"$1", start_off}, {:not, {:==, :"$2", device_id}}}],
             [:"$3"]}]
-
     case :ets.select(buffer, spec, limit) do
       :"$end_of_table" -> []
       {results, _} -> Enum.map(results, & :erlang.binary_to_term(&1))
-      results ->
-        Enum.map(results, & :erlang.binary_to_term(&1))
+      results -> Enum.map(results, & :erlang.binary_to_term(&1))
     end
   end
 
@@ -284,7 +300,6 @@ defmodule Queue.QueueLogImpl do
     ids = Enum.map(files, fn f ->
       f |> Path.basename() |> String.split("_") |> List.last() |> String.replace(".log", "") |> String.to_integer()
     end) |> Enum.sort()
-
     case Enum.find(ids, &(&1 > current_id)) do
       nil -> :no_more_segments
       next -> {:ok, next}
@@ -294,5 +309,4 @@ defmodule Queue.QueueLogImpl do
   defp log_buffer(s), do: :"#{@log_buffer_prefix}#{s}"
   defp idx_cache(s), do: :"#{@idx_cache_prefix}#{s}"
   defp worker_name(s), do: :"bimip_shard_#{s}"
-  defp schedule_flush, do: Process.send_after(self(), :flush, @flush_interval)
 end

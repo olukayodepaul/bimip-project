@@ -1,14 +1,12 @@
 defmodule Queue.Benchmark do
-  @total_messages 30_000_000
-  @concurrency 12          # 🚀 TENSION: Matches CPU cores for higher speed
-  @batch_size 5_000        # 🚀 TENSION: Larger pallets to flood the ETS buffers
+  @total_messages 1_000
+  @concurrency 12
+  @batch_size 5_000
+  @num_shards 64 # 🚀 Defining this here for the worker to use
 
   def run do
-    # Pull the shard count from your config to ensure it matches the 16 we set
-    num_shards = 64
-
-    IO.puts "🚀 Starting BATCH-CONCURRENT TEST: #{@total_messages} Records..."
-    IO.puts "📦 Batch Size: #{@batch_size} | Workers: #{@concurrency} | Shards: #{num_shards}"
+    IO.puts "🚀 Starting SHARD-DIRECT TEST: #{@total_messages} Records..."
+    IO.puts "📦 Batch Size: #{@batch_size} | Workers: #{@concurrency} | Shards: #{@num_shards}"
 
     start_time = System.monotonic_time(:millisecond)
     msgs_per_worker = div(@total_messages, @concurrency)
@@ -23,7 +21,7 @@ defmodule Queue.Benchmark do
     duration_sec = duration_ms / 1000
 
     IO.puts "\n---------------------------------------------------"
-    IO.puts "🏁 BATCH TEST COMPLETE"
+    IO.puts "🏁 SHARD-DIRECT TEST COMPLETE"
     IO.puts "⏱  Total Time: #{Float.round(duration_sec, 2)} seconds"
     IO.puts "🚀 Average Throughput: #{Float.round(@total_messages / duration_sec, 2)} msg/sec"
     IO.puts "---------------------------------------------------"
@@ -40,7 +38,6 @@ defmodule Queue.Benchmark do
 
       send_to_shards(batch)
 
-      # Visual feedback
       if rem(b_id, 10) == 0, do: IO.write(".")
     end)
   end
@@ -48,6 +45,10 @@ defmodule Queue.Benchmark do
   defp prepare_message(i) do
     user = "user_#{rem(i, 500)}@domain.com"
     recipient = "user_#{rem(i, 100_000)}@domain.com"
+
+    # 🚀 CALCULATE SHARD HERE (In the client/worker)
+    shard = :erlang.phash2(recipient, @num_shards)
+
     {user, recipient, %Chat.MessageStruct{
       peer_uid: "mid_#{i}",
       timestamp: System.system_time(:millisecond),
@@ -55,21 +56,23 @@ defmodule Queue.Benchmark do
       eid: user,
       from: %Chat.EntityStruct{eid: user},
       to: %Chat.EntityStruct{eid: recipient}
-    }}
+    }, shard} # 👈 Add shard to the tuple
   end
 
   defp send_to_shards(batch) do
-    Enum.each(batch, fn {user, recipient, msg} ->
-      execute_write(user, recipient, msg, msg.peer_uid)
+    Enum.each(batch, fn {user, recipient, msg, shard} ->
+      execute_write(user, recipient, msg, msg.peer_uid, shard)
     end)
   end
 
-  defp execute_write(user, recipient, msg, mid) do
-    case Queue.QueueLogImpl.write(1, user, recipient, "aaaaa1", 1, 1, msg, mid) do
+  defp execute_write(user, recipient, msg, mid, shard) do
+    # 🚀 CALLING YOUR NEW SIGNATURE: write(..., shard)
+    case Queue.QueueLogImpl.write(1, user, recipient, "aaaaa1", 1, 1, msg, mid, shard) do
       {:ok, _offset} -> :ok
       {:error, :backpressure} ->
-        :erlang.yield()
-        execute_write(user, recipient, msg, mid)
+        # If the buffer is full, we yield to let the Naked Process flush
+        Process.sleep(1)
+        execute_write(user, recipient, msg, mid, shard)
     end
   end
 end

@@ -29,4 +29,4 @@ defmodule Queue.FileAuditor do
   end
 end
 
-Queue.FileAuditor.audit_all()
+# Queue.FileAuditor.audit_all()
