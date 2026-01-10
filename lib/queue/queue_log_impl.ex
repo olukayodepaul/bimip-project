@@ -12,7 +12,7 @@ defmodule Queue.QueueLogImpl do
   @base_dir "data/bimip"
   @num_shards 64
   @header_size 21
-  @flush_interval 20            # 🔥 TUNED: Faster flushes to prevent buffer backup
+  @flush_interval 200            # 🔥 TUNED: Faster flushes to prevent buffer backup
   @max_segment_size 1_000_0000_0000
   @max_buffer_per_shard 1_000_000 # 🔥 TUNED: Huge buffer to absorb 50+ workers
   @user_stride 500              # 🔥 TUNED: Higher stride for faster sequential I/O
@@ -29,6 +29,8 @@ defmodule Queue.QueueLogImpl do
   def start_link(shard) do
     GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
   end
+
+
 
   def __startup__ do
     if :ets.info(@user_offsets) == :undefined, do: :ets.new(@user_offsets, [:named_table, :public, :set, {:write_concurrency, true}])
