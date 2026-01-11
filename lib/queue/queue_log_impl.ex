@@ -14,14 +14,15 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 20
-  @max_segment_size 2000
+  # 🚀 CHANGED: Now using message count for rotation
+  @max_messages_per_seg 10_000
   @max_buffer_per_shard 500_000
 
   @checkpoints :bimip_segment_checkpoints
   @user_offsets :bimip_user_offsets
   @idx_cache_prefix :"bimip_idx_"
   @log_buffer_prefix :"bimip_buf_"
-  @user_stride 3
+  @user_stride 1000
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -56,7 +57,6 @@ defmodule Queue.QueueLogImpl do
     if :ets.info(buf, :size) > @max_buffer_per_shard do
       {:error, :backpressure}
     else
-      # 🚀 CONTINUITY: This pulls from the recovery-primed ETS table
       offset = :ets.update_counter(@user_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
 
       data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
@@ -64,6 +64,7 @@ defmodule Queue.QueueLogImpl do
 
       record = %{
         u: recipient_uid,
+        s: sender_uid,
         p: partition_id,
         off: offset,
         mid: message_id,
@@ -91,18 +92,15 @@ defmodule Queue.QueueLogImpl do
     File.mkdir_p!(@base_dir)
     File.mkdir_p!("data/device_bookmarks")
 
-    # 1. RECOVERY: Prime memory from the Bin Anchor
     bin_path = Path.join("data/device_bookmarks", "shard_#{shard}.bin")
-    recovery = recover_counters_from_anchor(shard, bin_path)
+    recover_counters_from_anchor(shard, bin_path)
 
-    # 2. SEGMENT SELECTION: Use recovery base or manifest
     manifest = load_manifest(shard)
-    base = recovery.base || manifest.base
+    base = manifest.base
 
     log_path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
     idx_path = Path.join(@base_dir, "shard_#{shard}_#{base}.idx")
 
-    # 3. FD POOL: Open all 3 required descriptors
     {:ok, log_fd} = :file.open(log_path, [:append, :raw, :binary, :read, :write])
     {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
     {:ok, bin_fd} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
@@ -112,9 +110,7 @@ defmodule Queue.QueueLogImpl do
       File.write!(manifest_path, :erlang.term_to_binary(%{active_base: base}))
     end
 
-    # 4. POSITIONING: Align current_size with disk reality
     {:ok, actual_pos} = :file.position(log_fd, :cur)
-    pos = if recovery.pos > 0, do: recovery.pos, else: actual_pos
 
     schedule_flush()
 
@@ -123,34 +119,30 @@ defmodule Queue.QueueLogImpl do
       log_fd: log_fd,
       idx_fd: idx_fd,
       bin_fd: bin_fd,
-      current_size: pos,
+      current_size: actual_pos,
+      msg_count: 0, # 🚀 Initialize count for this segment
       active_base: base
     }}
   end
 
   defp recover_counters_from_anchor(shard, bin_path) do
-    default = %{base: nil, pos: 0}
     if File.exists?(bin_path) do
       case File.read(bin_path) do
         {:ok, binary} when binary != <<>> ->
           try do
             anchor_data = :erlang.binary_to_term(binary)
-            Enum.reduce(anchor_data, default, fn
-              {user, %{"__anchor__" => {base, offset, pos}}}, _acc ->
-                # Prime ETS so write/8 continues sequence
+            Enum.each(anchor_data, fn
+              {user, %{"__anchor__" => {_base, offset, _pos}}} ->
                 :ets.insert(@user_offsets, {{user, 1}, offset})
-                Logger.info("📈 Shard #{shard} Resumed: User #{user} at Offset #{offset}")
-                %{base: base, pos: pos}
-              _, acc -> acc
+              _ -> :ok
             end)
           rescue
-            _ -> default
+            _ -> :ok
           end
-        _ -> default
+        _ -> :ok
       end
-    else
-      default
     end
+    :ok
   end
 
   @impl true
@@ -161,21 +153,23 @@ defmodule Queue.QueueLogImpl do
 
   @impl true
   def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
-    {seg_id, log_start, phys_start} = Queue.DeviceBookmark.get(device_id, user, p)
-    mem_results = fetch_from_buffer(state.shard, user, p, device_id, log_start, batch_size)
+    {seg_id, log_off, phys_pos} = Queue.DeviceBookmark.get(device_id, user, p)
 
-    results = if length(mem_results) >= batch_size do
-      mem_results
+    gate_off = if log_off > 0 do
+      log_off - rem(log_off - 1, @user_stride)
     else
-      remaining = batch_size - length(mem_results)
-      disk_results = if seg_id == 0 do [] else
-        {:ok, res} = stream_messages(state.shard, user, p, seg_id, phys_start, remaining, [], device_id)
-        res
-      end
-      disk_results ++ mem_results
+      0
     end
 
-    {:reply, {:ok, results}, state}
+    {actual_seg, actual_phys} = case :ets.lookup(idx_cache(state.shard), {user, p, gate_off}) do
+      [{_, {s, pos}}] -> {s, pos}
+      _ -> {seg_id, phys_pos}
+    end
+
+    {:ok, disk_results} = stream_messages(state.shard, user, p, actual_seg, actual_phys, batch_size, [], device_id)
+    filtered_results = Enum.filter(disk_results, fn msg -> msg.off > log_off end)
+
+    {:reply, {:ok, filtered_results}, state}
   end
 
   @impl true
@@ -193,34 +187,50 @@ defmodule Queue.QueueLogImpl do
     case :ets.take(buf, state.shard) do
       [] -> state
       items ->
-        state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
+        # 🚀 ROTATION BY COUNT: Check if current segment is full by message count
+        state = if state.msg_count >= @max_messages_per_seg, do: rotate_segment(state), else: state
+
         sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
         initial_pos = state.current_size
 
-        {io_list, final_pos, final_state} =
-          Enum.reduce(sorted, {[], initial_pos, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_state} ->
+        # We now track final_msg_count in the reduction
+        {io_list, final_pos, final_msg_count, final_state} =
+          Enum.reduce(sorted, {[], initial_pos, state.msg_count, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_count, acc_state} ->
+
+            if off == 1 do
+              Queue.DeviceBookmark.mark_initializer(
+                rec.u,
+                rec.p,
+                {rec.s, acc_state.active_base, off, curr_phys_pos}
+              )
+            end
+
             {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
+
             Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
-            {[acc_io | packet], curr_phys_pos + packet_size, updated_state}
+
+            {[acc_io | packet], curr_phys_pos + packet_size, acc_count + 1, updated_state}
           end)
 
         case :file.write(final_state.log_fd, io_list) do
           :ok ->
-            # Update Persistent Anchor
             bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
             :file.pwrite(final_state.bin_fd, 0, :erlang.term_to_binary(bookmark_data))
 
-            %{final_state | current_size: final_pos}
-          {:error, _} -> final_state
+            # Update both the byte size and the message count
+            %{final_state | current_size: final_pos, msg_count: final_msg_count}
+
+          {:error, err} ->
+            Logger.error("Flush failed: #{inspect(err)}")
+            final_state
         end
-    end
   end
+end
 
   defp rotate_segment(state) do
     new_base = System.system_time(:second)
     new_base = if new_base <= state.active_base, do: state.active_base + 1, else: new_base
 
-    # 🔥 OPTIMIZED: Close log/idx but KEEP bin_fd open
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
 
@@ -235,10 +245,9 @@ defmodule Queue.QueueLogImpl do
     {:ok, i} = :file.open(new_idx, [:append, :raw, :binary, :read, :write])
 
     IO.puts "🔄 SHARD #{state.shard} ROTATED -> Segment #{new_base}"
-    %{state | log_fd: l, idx_fd: i, active_base: new_base, current_size: 0}
+    # 🚀 RESET: msg_count returns to 0 for the new file
+    %{state | log_fd: l, idx_fd: i, active_base: new_base, current_size: 0, msg_count: 0}
   end
-
-  # ... [build_packet_data, stream_messages, read_from_disk, fetch_from_buffer, load_manifest untouched] ...
 
   defp build_packet_data(state, rec, offset, curr_pos) do
     user_bin = to_string(rec.u)
@@ -246,11 +255,23 @@ defmodule Queue.QueueLogImpl do
     packet = [<<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>, user_bin, device_bin, <<rec.p::32, offset::64>>, rec.bin]
     packet_size = IO.iodata_length(packet)
 
-    if rem(offset, @user_stride) == 0 do
-      index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, curr_pos::64>>
+    # 🚀 PURE CLOCK: Fixed stride indexing (1, 1001, 2001...)
+    if rem(offset, @user_stride) == 1 do
+      index_entry = <<
+        byte_size(user_bin)::16,
+        user_bin::binary,
+        rec.p::32,
+        offset::64,
+        state.active_base::64,
+        curr_pos::64
+      >>
+
       :ok = :file.write(state.idx_fd, index_entry)
+      :file.datasync(state.idx_fd)
+
       :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
     end
+
     :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, curr_pos}})
     {packet, packet_size, state}
   end

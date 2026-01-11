@@ -1,8 +1,8 @@
 
 
-shard_14_1768123126.log
-shard_14_1768123127.log
-log_path = "data/bimip/shard_14_1768123104.log"
+shard_14_1768123478.log
+shard_14_1768123523.log
+log_path = "data/bimip/shard_14_1768150305.log"
 case File.read(log_path) do
   {:ok, binary} ->
     # Recursive function to walk the binary
@@ -30,17 +30,19 @@ end
 
 
 
-
-idx_path = "data/bimip/shard_14_1768115874.idx"
+shard_14_1768123478.idx
+shard_14_1768123523.idx
+idx_path = "data/bimip/shard_14_1768151796.idx"
 case File.read(idx_path) do
   {:ok, binary} ->
     parse_idx = fn
-      recursive, <<ulen::16, user_bin::binary-size(ulen), _p::32, off::64, phys::64, rest::binary>> ->
-        IO.puts "📍 [#{user_bin}] Offset: #{off} -> Pos: #{phys} bytes"
+      recursive, <<ulen::16, user_bin::binary-size(ulen), p::32, off::64, seg::64, phys::64, rest::binary>> ->
+        IO.puts "📍 [#{user_bin}] Offset: #{off} | Seg: #{seg} | Pos: #{phys} bytes"
         recursive.(recursive, rest)
       
       _, <<>> -> IO.puts "🏁 End of Index."
-      _, _ -> IO.puts "⚠️ Index contains partial entry."
+      _, rest -> 
+        IO.puts "⚠️ Index contains partial entry. Remaining bytes: #{byte_size(rest)}"
     end
 
     parse_idx.(parse_idx, binary)
@@ -51,28 +53,34 @@ end
 
 
 
-bin_path = "data/device_bookmarks/shard_14.bin"
-
-case File.read(bin_path) do
-  {:ok, <<>>} -> 
-    IO.puts("⚠️ File is empty (0 bytes). No flush has happened yet.")
-    
-  {:ok, bin} -> 
-    try do
-      anchors = :erlang.binary_to_term(bin)
-      IO.inspect(anchors, label: "📍 Current Anchors")
-    rescue
-      _ -> IO.puts("❌ File contains data, but it's not a valid Erlang term.")
-    end
-
-  {:error, reason} -> 
-    IO.puts("❌ Could not open file: #{reason}")
-end
-
 
 
 
 manifest_path = "data/bimip/shard_14.manifest"
-binary = File.read!(manifest_path)
-%{active_base: current_base} = :erlang.binary_to_term(binary)
-IO.puts "🌟 Current Active Segment ID: #{current_base}"
+case File.read(manifest_path) do
+  {:ok, binary} ->
+    try do
+      data = :erlang.binary_to_term(binary)
+      IO.puts "📜 Manifest Content: #{inspect(data)}"
+      
+      # Link it to the files on disk
+      if Map.has_key?(data, :active_base) do
+        IO.puts "🎯 Current Active Segment: shard_14_#{data.active_base}.log"
+      end
+    rescue
+      _ -> IO.puts "❌ Error: File is not a valid Erlang term."
+    end
+
+  {:error, reason} -> 
+    IO.puts "Could not open manifest: #{reason}"
+end
+
+bookmark_path = "data/device_bookmarks/shard_14.bin"
+binary = File.read!(bookmark_path)
+entries = :erlang.binary_to_term(binary)
+IO.inspect(entries, label: "📱 Device Bookmarks in Shard 14")
+
+bookmark_path = "data/bimip/shard_14_1768150305.idx"
+binary = File.read!(bookmark_path)
+entries = :erlang.binary_to_term(binary)
+IO.inspect(entries, label: "📱 Device Bookmarks in Shard 14")

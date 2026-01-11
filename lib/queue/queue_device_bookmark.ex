@@ -124,15 +124,53 @@ defmodule Queue.DeviceBookmark do
   # Public API
   # ------------------------------------------------------------------
 
+# ------------------------------------------------------------------
+  # Public API
+  # ------------------------------------------------------------------
+
   def get(device_id, user, _partition_id) do
     shard = shard_for(user)
     cache = cache_name(shard)
 
     case :ets.lookup(cache, user) do
       [{^user, map}] ->
-        Map.get(map, device_id) || Map.get(map, "__anchor__") || {0, 0, 0}
+        # 🚀 SMART PRIORITY:
+        # 1. Specific Device (where I left off)
+        # 2. Initializer (the birth of my history from User A)
+        # 3. Anchor (the moving system tail)
+        # 4. Zero (absolute beginning)
+
+        cond do
+          val = Map.get(map, device_id) -> val
+          val = Map.get(map, "__initializer__") ->
+            # If we use initializer, we return the coords but strip the sender_id
+            # to match the {seg, log, phys} return type
+            {_sender, seg, off, phys} = val
+            {seg, off, phys}
+          val = Map.get(map, "__anchor__") -> val
+          true -> {0, 0, 0}
+        end
       [] ->
         {0, 0, 0}
+    end
+  end
+
+  # NEW: Records the genesis point for a user
+  def mark_initializer(user, _partition_id, {sender_uid, segment_id, logical_offset, physical_pos}) do
+    shard = shard_for(user)
+    cache = cache_name(shard)
+
+    map = case :ets.lookup(cache, user) do
+      [{^user, existing_map}] -> existing_map
+      [] -> %{}
+    end
+
+    # Immutable: Only write if it doesn't exist yet
+    if !Map.has_key?(map, "__initializer__") do
+      updated_map = Map.put(map, "__initializer__", {sender_uid, segment_id, logical_offset, physical_pos})
+      :ets.insert(cache, {user, updated_map})
+    else
+      :ok
     end
   end
 
