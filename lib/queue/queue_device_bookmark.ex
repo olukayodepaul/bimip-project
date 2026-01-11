@@ -93,6 +93,9 @@ defmodule Queue.DeviceBookmark do
   Saves a single shard to disk.
   Used by the GenServer timer AND the Compactor (for immediate repair).
   """
+# No changes to get/set/mark_anchor.
+# We just ensure persist_shard is accessible for the Log flush.
+
   def persist_shard(shard) do
     cache = cache_name(shard)
     entries = :ets.tab2list(cache)
@@ -102,6 +105,7 @@ defmodule Queue.DeviceBookmark do
       path = shard_file(shard)
       tmp_path = "#{path}.tmp"
       try do
+        # Use raw write for speed within the flush cycle
         File.write!(tmp_path, :erlang.term_to_binary(entries))
         File.rename!(tmp_path, path)
         :ok

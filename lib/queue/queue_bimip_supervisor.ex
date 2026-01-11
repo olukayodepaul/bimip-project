@@ -29,12 +29,7 @@ defmodule Queue.BimipSupervisor do
 
     # 3. Define the 64 shards as direct children
     shard_children = for s <- 0..63 do
-      %{
-        id: :"shard_#{s}",
-        start: {Queue.QueueLogImpl, :start_link, [s]},
-        restart: :permanent,
-        type: :worker
-      }
+      Supervisor.child_spec({Queue.QueueLogImpl, s}, id: :"shard_#{s}")
     end
 
     # 4. Change strategy to :one_for_one
@@ -42,11 +37,4 @@ defmodule Queue.BimipSupervisor do
     Supervisor.init(base_children ++ shard_children, strategy: :one_for_one)
   end
 
-  defp start_shards do
-    for s <- 0..63 do
-      Supervisor.start_child(__MODULE__,
-        Supervisor.child_spec({Queue.QueueLogImpl, s}, id: :"shard_#{s}")
-      )
-    end
-  end
 end
