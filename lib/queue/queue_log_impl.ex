@@ -14,7 +14,7 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 20
-  # 🚀 CHANGED: Now using message count for rotation
+  # 🚀 NUMBERS ONLY: Rotate every 10,000 messages
   @max_messages_per_seg 10_000
   @max_buffer_per_shard 500_000
 
@@ -93,10 +93,16 @@ defmodule Queue.QueueLogImpl do
     File.mkdir_p!("data/device_bookmarks")
 
     bin_path = Path.join("data/device_bookmarks", "shard_#{shard}.bin")
+
+    # 1. Recover global offsets from Bin Anchor
     recover_counters_from_anchor(shard, bin_path)
 
+    # 2. Load manifest for the active file segment
     manifest = load_manifest(shard)
     base = manifest.base
+
+    # 🚀 RECOVERY MATH: Sync msg_count with the recovered global offset
+    recovered_msg_count = calculate_current_count(shard, base)
 
     log_path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
     idx_path = Path.join(@base_dir, "shard_#{shard}_#{base}.idx")
@@ -120,9 +126,22 @@ defmodule Queue.QueueLogImpl do
       idx_fd: idx_fd,
       bin_fd: bin_fd,
       current_size: actual_pos,
-      msg_count: 0, # 🚀 Initialize count for this segment
+      msg_count: recovered_msg_count,
       active_base: base
     }}
+  end
+
+  # Helper to determine how many messages are already in the current file
+  defp calculate_current_count(shard, base) do
+    # We match all user offsets currently in ETS to find the highest progression
+    case :ets.match(@user_offsets, {{:"$1", :"$2"}, :"$3"}) do
+      [] -> 0
+      matches ->
+        # Find the highest offset among all users in this shard
+        max_off = Enum.reduce(matches, 0, fn [_, off], acc -> max(off, acc) end)
+        # If max_off is 1500 and base is 1001, msg_count is 500
+        if max_off >= base, do: max_off - (base - 1), else: 0
+    end
   end
 
   defp recover_counters_from_anchor(shard, bin_path) do
@@ -155,11 +174,7 @@ defmodule Queue.QueueLogImpl do
   def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
     {seg_id, log_off, phys_pos} = Queue.DeviceBookmark.get(device_id, user, p)
 
-    gate_off = if log_off > 0 do
-      log_off - rem(log_off - 1, @user_stride)
-    else
-      0
-    end
+    gate_off = if log_off > 0, do: log_off - rem(log_off - 1, @user_stride), else: 0
 
     {actual_seg, actual_phys} = case :ets.lookup(idx_cache(state.shard), {user, p, gate_off}) do
       [{_, {s, pos}}] -> {s, pos}
@@ -187,26 +202,20 @@ defmodule Queue.QueueLogImpl do
     case :ets.take(buf, state.shard) do
       [] -> state
       items ->
-        # 🚀 ROTATION BY COUNT: Check if current segment is full by message count
+        # 🚀 ROTATION BY COUNT
         state = if state.msg_count >= @max_messages_per_seg, do: rotate_segment(state), else: state
 
         sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
         initial_pos = state.current_size
 
-        # We now track final_msg_count in the reduction
         {io_list, final_pos, final_msg_count, final_state} =
           Enum.reduce(sorted, {[], initial_pos, state.msg_count, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_count, acc_state} ->
 
             if off == 1 do
-              Queue.DeviceBookmark.mark_initializer(
-                rec.u,
-                rec.p,
-                {rec.s, acc_state.active_base, off, curr_phys_pos}
-              )
+              Queue.DeviceBookmark.mark_initializer(rec.u, rec.p, {rec.s, acc_state.active_base, off, curr_phys_pos})
             end
 
             {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
-
             Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
 
             {[acc_io | packet], curr_phys_pos + packet_size, acc_count + 1, updated_state}
@@ -216,20 +225,18 @@ defmodule Queue.QueueLogImpl do
           :ok ->
             bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
             :file.pwrite(final_state.bin_fd, 0, :erlang.term_to_binary(bookmark_data))
-
-            # Update both the byte size and the message count
             %{final_state | current_size: final_pos, msg_count: final_msg_count}
 
           {:error, err} ->
             Logger.error("Flush failed: #{inspect(err)}")
             final_state
         end
+    end
   end
-end
 
   defp rotate_segment(state) do
-    new_base = System.system_time(:second)
-    new_base = if new_base <= state.active_base, do: state.active_base + 1, else: new_base
+    # New base is the perfect next offset based on the previous count
+    new_base = state.active_base + state.msg_count
 
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
@@ -245,7 +252,6 @@ end
     {:ok, i} = :file.open(new_idx, [:append, :raw, :binary, :read, :write])
 
     IO.puts "🔄 SHARD #{state.shard} ROTATED -> Segment #{new_base}"
-    # 🚀 RESET: msg_count returns to 0 for the new file
     %{state | log_fd: l, idx_fd: i, active_base: new_base, current_size: 0, msg_count: 0}
   end
 
@@ -255,20 +261,11 @@ end
     packet = [<<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>, user_bin, device_bin, <<rec.p::32, offset::64>>, rec.bin]
     packet_size = IO.iodata_length(packet)
 
-    # 🚀 PURE CLOCK: Fixed stride indexing (1, 1001, 2001...)
+    # 🚀 STRIDE INDEXING (1, 1001, 2001...)
     if rem(offset, @user_stride) == 1 do
-      index_entry = <<
-        byte_size(user_bin)::16,
-        user_bin::binary,
-        rec.p::32,
-        offset::64,
-        state.active_base::64,
-        curr_pos::64
-      >>
-
+      index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, state.active_base::64, curr_pos::64>>
       :ok = :file.write(state.idx_fd, index_entry)
       :file.datasync(state.idx_fd)
-
       :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
     end
 
@@ -277,7 +274,7 @@ end
   end
 
   defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
-    if count <= 0 do {:ok, Enum.reverse(acc)} else
+    if count <= 0, do: {:ok, Enum.reverse(acc)}, else:
       case read_from_disk(shard, seg_id, phys_pos) do
         {:ok, rec, next_phys_pos} ->
           if rec.u == to_string(user) and rec.p == p and rec.writer_device != device_id do
@@ -292,7 +289,6 @@ end
           end
         _ -> {:ok, Enum.reverse(acc)}
       end
-    end
   end
 
   defp read_from_disk(shard, base, pos) do
@@ -321,7 +317,7 @@ end
   defp load_manifest(shard) do
     path = Path.join(@base_dir, "shard_#{shard}.manifest")
     if File.exists?(path), do: %{base: :erlang.binary_to_term(File.read!(path)).active_base, exists: true},
-    else: %{base: System.system_time(:second), exists: false}
+    else: %{base: 1, exists: false}
   end
 
   defp find_next_segment(shard, current_id) do
