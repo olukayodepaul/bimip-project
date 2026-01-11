@@ -58,7 +58,11 @@ defmodule Queue.BimipCompactor do
     now = System.system_time(:second)
 
     to_archive = files
-      |> Enum.filter(fn f -> (now - extract_id(f)) > @retention_seconds end)
+      |> Enum.filter(fn f ->
+        # Check the actual last modified time of the file on disk
+        {:ok, info} = File.stat(f, time: :posix)
+        (now - info.mtime) > @retention_seconds
+      end)
       |> Enum.reject(fn f -> extract_id(f) == active_seg_id end)
 
     if to_archive != [] do
