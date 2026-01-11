@@ -292,29 +292,33 @@ end
     end
   end
 
-defp rotate_segment(state) do
+  defp rotate_segment(state) do
     new_base = System.system_time(:second)
-    # Safety: Ensure the timestamp always moves forward
     new_base = if new_base <= state.active_base, do: state.active_base + 1, else: new_base
 
     # ------------------------------------------------------------------
-    # 1. PERSIST THE MANIFEST (The "GPS" for restarts)
+    # ATOMIC MANIFEST UPDATE
     # ------------------------------------------------------------------
     manifest_path = Path.join(@base_dir, "shard_#{state.shard}.manifest")
-    manifest_data = :erlang.term_to_binary(%{active_base: new_base})
-    File.write!(manifest_path, manifest_data)
+    tmp_path = manifest_path <> ".tmp"
 
-    # 2. Close the old handles
+    manifest_data = :erlang.term_to_binary(%{active_base: new_base})
+
+    # Write to temp file first
+    File.write!(tmp_path, manifest_data)
+    # Atomic rename ensures the file is either OLD or NEW, never broken
+    File.rename!(tmp_path, manifest_path)
+
+    # 2. Close the old "Write-Trinity"
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
     :file.close(state.bin_fd)
 
-    # 3. Define new paths
+    # 3. Open New Files
     new_log = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log")
     new_idx = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx")
     bin_path = Path.join("data/device_bookmarks", "shard_#{state.shard}.bin")
 
-    # 4. Open New "Write-Trinity"
     {:ok, l} = :file.open(new_log, [:append, :raw, :binary, :read, :write])
     {:ok, i} = :file.open(new_idx, [:append, :raw, :binary, :read, :write])
     {:ok, b} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
