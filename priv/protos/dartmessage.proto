@@ -50,18 +50,19 @@ message OWNERS {
     string signature = 8;
     optional int32 type = 9;         
     optional int32 transmission_mode = 10; 
-    optional string peer_eid = 11;
+    optional string reply_to = 11;
     optional int64 offset = 12;
+    int32 payload_context = 13;
   }
 
-  message MessagePeerAckSignal {
+  message MessageAckSignal {
     Identity to = 1;
     Identity from = 2;
     string peer_uid = 3;
     int32 method = 4;
     int64 timestamp = 5;  
     int32 status_code = 6; 
-    string peer_eid = 7;
+    string reply_to = 7;
     int64 offset = 8;
   }
 
@@ -227,8 +228,11 @@ message MessageScheme {
     Body body = 10;
     ErrorMessage error = 11;
     Logout logout = 12;
-    MessagePeerAckSignal message_peer_ack_signal = 13;
+    MessageAckSignal message_ack_signal = 13;
   }
 }
+
+  
+
 
   

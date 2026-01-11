@@ -1,33 +1,78 @@
-```
-message PingPong {
-  Identity from = 1;              // Sender's identity (user or device)
-  Identity to = 2;                // Target identity (used if resource = OTHERS)
-  int32 resource = 3;             // 1=SAME (server ping), 2=OTHERS (user-to-user ping)
-  int32 type = 4;                 // 1=PING, 2=PONG, 3=ERROR
-  int64 ping_time = 5;            // Unix UTC timestamp (ms)
-  int64 pong_time = 6;            // Unix UTC timestamp (ms)
-  string error_reason = 7;        // Optional: only set when type = 3 (ERROR)
-}
 
-logout = %Bimip.PingPong {
-to: %Bimip.Identity{
-eid: "b@domain.com",
-connection_resource_id: "bbbbb1",
-},
-from: %Bimip.Identity{
-eid: "a@domain.com",
-connection_resource_id: "aaaaa1",
-},
-resource: 2,
-type: 1,
-ping_time: System.system_time(:millisecond)
-}
-is_logout = %Bimip.MessageScheme{
-route: 3,
-payload: {:ping_pong, logout}
-}
 
-binary = Bimip.MessageScheme.encode(is_logout)
-hex = Base.encode16(binary, case: :upper)
+shard_14_1768123126.log
+shard_14_1768123127.log
+log_path = "data/bimip/shard_14_1768123104.log"
+case File.read(log_path) do
+  {:ok, binary} ->
+    # Recursive function to walk the binary
+    parse_log = fn 
+      recursive, <<0xEE, size::32, _crc::32, ulen::16, dlen::16, ts::64, rest::binary>> ->
+        <<user::binary-size(ulen), device::binary-size(dlen), p::32, off::64, body::binary-size(size), next::binary>> = rest
+        
+        IO.puts "------------------------------------------------"
+        IO.puts "📜 OFFSET: #{off} | USER: #{user} | TIME: #{ts}"
+        # Decodes the actual message data
+        IO.inspect(:erlang.binary_to_term(body), label: "Payload")
+        
+        recursive.(recursive, next)
+      
+      _, <<>> -> IO.puts "\n🏁 End of Log reached."
+      _, _ -> IO.puts "⚠️ Partial or corrupt packet at end of file."
+    end
 
-```
+    parse_log.(parse_log, binary)
+
+  {:error, reason} -> IO.puts "Could not open log: #{reason}"
+end
+
+
+
+
+
+
+idx_path = "data/bimip/shard_14_1768115874.idx"
+case File.read(idx_path) do
+  {:ok, binary} ->
+    parse_idx = fn
+      recursive, <<ulen::16, user_bin::binary-size(ulen), _p::32, off::64, phys::64, rest::binary>> ->
+        IO.puts "📍 [#{user_bin}] Offset: #{off} -> Pos: #{phys} bytes"
+        recursive.(recursive, rest)
+      
+      _, <<>> -> IO.puts "🏁 End of Index."
+      _, _ -> IO.puts "⚠️ Index contains partial entry."
+    end
+
+    parse_idx.(parse_idx, binary)
+
+  {:error, reason} -> IO.puts "Could not open index: #{reason}"
+end
+
+
+
+
+bin_path = "data/device_bookmarks/shard_14.bin"
+
+case File.read(bin_path) do
+  {:ok, <<>>} -> 
+    IO.puts("⚠️ File is empty (0 bytes). No flush has happened yet.")
+    
+  {:ok, bin} -> 
+    try do
+      anchors = :erlang.binary_to_term(bin)
+      IO.inspect(anchors, label: "📍 Current Anchors")
+    rescue
+      _ -> IO.puts("❌ File contains data, but it's not a valid Erlang term.")
+    end
+
+  {:error, reason} -> 
+    IO.puts("❌ Could not open file: #{reason}")
+end
+
+
+
+
+manifest_path = "data/bimip/shard_14.manifest"
+binary = File.read!(manifest_path)
+%{active_base: current_base} = :erlang.binary_to_term(binary)
+IO.puts "🌟 Current Active Segment ID: #{current_base}"
