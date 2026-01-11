@@ -1,5 +1,8 @@
-log_path = "data/bimip/shard_14_1768118361.log"
 
+
+shard_14_1768123126.log
+shard_14_1768123127.log
+log_path = "data/bimip/shard_14_1768123104.log"
 case File.read(log_path) do
   {:ok, binary} ->
     # Recursive function to walk the binary

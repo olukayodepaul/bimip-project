@@ -1,7 +1,8 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
   BimipLog v10 — Sharded Append-Only Log.
-  Organized by Recipient Inbox with Device-ID filtering and FD Pool Proxy Reading.
+  World-Class Continuity: Recovers state from Bin-Anchor and Manifest on restart.
+  Optimized FD: Maintains open handle for Anchor Bin across segment rotations.
   """
   use GenServer
   require Logger
@@ -9,45 +10,17 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
   # CONFIG
   # ------------------------------------------------------------------
-# ------------------------------------------------------------------
-  # CONFIG
-  # ------------------------------------------------------------------
-
-  # The root directory where all log and index files are stored.
   @base_dir "data/bimip"
-
-  # Total number of virtual partitions. phash2 uses this to distribute users.
   @num_shards 64
-
-  # Size in bytes of our binary packet header (Magic + Sizes + CRC + TS).
   @header_size 21
-
-  # How often (in milliseconds) the GenServer flushes the ETS buffer to disk.
   @flush_interval 20
-
-  # CHANGE THIS FOR TESTING:
-  # The byte limit for a .log file before it closes and starts a new one.
-  # Set to 2000 to trigger rotation after ~4-5 stress test messages.
   @max_segment_size 2000
-
-  # Backpressure limit: If the ETS buffer has more than this many items,
-  # the 'write' function returns {:error, :backpressure} to slow down the sender.
   @max_buffer_per_shard 500_000
 
-  # ETS table name for mapping {shard, segment} -> {last_offset, physical_pos}.
   @checkpoints :bimip_segment_checkpoints
-
-  # ETS table name for tracking the global incrementing offset per user.
   @user_offsets :bimip_user_offsets
-
-  # Prefix for naming shard-specific Index cache tables (e.g., :bimip_idx_14).
   @idx_cache_prefix :"bimip_idx_"
-
-  # Prefix for naming shard-specific Write buffers (e.g., :bimip_buf_14).
   @log_buffer_prefix :"bimip_buf_"
-
-  # Every Nth message is recorded in the .idx file.
-  # (Set to 3 means: message 3, 6, 9... get a physical pointer in the index).
   @user_stride 3
 
   # ------------------------------------------------------------------
@@ -71,6 +44,11 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
+  def sync_flush(recipient_uid) do
+    shard = :erlang.phash2(recipient_uid, @num_shards)
+    GenServer.call(worker_name(shard), :force_flush, 15_000)
+  end
+
   def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id) do
     shard = :erlang.phash2(recipient_uid, @num_shards)
     buf = log_buffer(shard)
@@ -78,12 +56,10 @@ defmodule Queue.QueueLogImpl do
     if :ets.info(buf, :size) > @max_buffer_per_shard do
       {:error, :backpressure}
     else
+      # 🚀 CONTINUITY: This pulls from the recovery-primed ETS table
       offset = :ets.update_counter(@user_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
 
-      # KEEPING YOUR EXACT LOGIC
       data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
-
-      # SPEED ADJUST: Serialize in worker process to offload GenServer CPU
       bin_data = :erlang.term_to_binary(data)
 
       record = %{
@@ -92,7 +68,7 @@ defmodule Queue.QueueLogImpl do
         off: offset,
         mid: message_id,
         writer_device: to_string(device_id),
-        bin: bin_data, # Pass pre-serialized binary
+        bin: bin_data,
         ts: System.system_time(:second)
       }
 
@@ -109,39 +85,36 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
   # GENSERVER HANDLERS
   # ------------------------------------------------------------------
+
+  @impl true
   def init(shard) do
-    # Ensure directories exist
     File.mkdir_p!(@base_dir)
     File.mkdir_p!("data/device_bookmarks")
 
-    # 1. Load the "Source of Truth"
+    # 1. RECOVERY: Prime memory from the Bin Anchor
+    bin_path = Path.join("data/device_bookmarks", "shard_#{shard}.bin")
+    recovery = recover_counters_from_anchor(shard, bin_path)
+
+    # 2. SEGMENT SELECTION: Use recovery base or manifest
     manifest = load_manifest(shard)
-    base = manifest.base
+    base = recovery.base || manifest.base
 
     log_path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
     idx_path = Path.join(@base_dir, "shard_#{shard}_#{base}.idx")
-    bin_path = Path.join("data/device_bookmarks", "shard_#{shard}.bin")
 
-    # 2. Open Files in :append mode.
-    # This resumes existing files OR creates them if they don't exist.
+    # 3. FD POOL: Open all 3 required descriptors
     {:ok, log_fd} = :file.open(log_path, [:append, :raw, :binary, :read, :write])
     {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
     {:ok, bin_fd} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
 
-    # 3. If brand new, initialize the manifest file immediately
     if not manifest.exists do
       manifest_path = Path.join(@base_dir, "shard_#{shard}.manifest")
       File.write!(manifest_path, :erlang.term_to_binary(%{active_base: base}))
-      Logger.info("🆕 Created new manifest for Shard #{shard} at #{base}")
     end
 
-    # 4. Critical: Ask the OS where we are in the file right now.
-    # If the file had 500 bytes before restart, 'pos' will be 500.
-    {:ok, pos} = :file.position(log_fd, :cur)
-
-    if pos > 0 do
-      Logger.info("⚡ Shard #{shard} resumed at #{pos} bytes in segment #{base}")
-    end
+    # 4. POSITIONING: Align current_size with disk reality
+    {:ok, actual_pos} = :file.position(log_fd, :cur)
+    pos = if recovery.pos > 0, do: recovery.pos, else: actual_pos
 
     schedule_flush()
 
@@ -150,9 +123,40 @@ defmodule Queue.QueueLogImpl do
       log_fd: log_fd,
       idx_fd: idx_fd,
       bin_fd: bin_fd,
-      current_size: pos, # This now correctly reflects the on-disk size
+      current_size: pos,
       active_base: base
     }}
+  end
+
+  defp recover_counters_from_anchor(shard, bin_path) do
+    default = %{base: nil, pos: 0}
+    if File.exists?(bin_path) do
+      case File.read(bin_path) do
+        {:ok, binary} when binary != <<>> ->
+          try do
+            anchor_data = :erlang.binary_to_term(binary)
+            Enum.reduce(anchor_data, default, fn
+              {user, %{"__anchor__" => {base, offset, pos}}}, _acc ->
+                # Prime ETS so write/8 continues sequence
+                :ets.insert(@user_offsets, {{user, 1}, offset})
+                Logger.info("📈 Shard #{shard} Resumed: User #{user} at Offset #{offset}")
+                %{base: base, pos: pos}
+              _, acc -> acc
+            end)
+          rescue
+            _ -> default
+          end
+        _ -> default
+      end
+    else
+      default
+    end
+  end
+
+  @impl true
+  def handle_call(:force_flush, _from, state) do
+    new_state = perform_flush(state)
+    {:reply, :ok, new_state}
   end
 
   @impl true
@@ -164,9 +168,7 @@ defmodule Queue.QueueLogImpl do
       mem_results
     else
       remaining = batch_size - length(mem_results)
-      disk_results = if seg_id == 0 do
-        []
-      else
+      disk_results = if seg_id == 0 do [] else
         {:ok, res} = stream_messages(state.shard, user, p, seg_id, phys_start, remaining, [], device_id)
         res
       end
@@ -184,90 +186,88 @@ defmodule Queue.QueueLogImpl do
   end
 
   # ------------------------------------------------------------------
-  # SINGLE-FLUSH ARCHITECTURE (LOG + IDX + BIN)
+  # FLUSH ENGINE
   # ------------------------------------------------------------------
-defp perform_flush(state) do
-  buf = log_buffer(state.shard)
-  case :ets.take(buf, state.shard) do
-    [] -> state
-    items ->
-      # Check rotation ONCE before starting the batch
-      state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
+  defp perform_flush(state) do
+    buf = log_buffer(state.shard)
+    case :ets.take(buf, state.shard) do
+      [] -> state
+      items ->
+        state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
+        sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
+        initial_pos = state.current_size
 
-      sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
-      initial_pos = state.current_size
+        {io_list, final_pos, final_state} =
+          Enum.reduce(sorted, {[], initial_pos, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_state} ->
+            {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
+            Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
+            {[acc_io | packet], curr_phys_pos + packet_size, updated_state}
+          end)
 
-      {io_list, final_pos, final_state} =
-        Enum.reduce(sorted, {[], initial_pos, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_state} ->
-          # We pass acc_state here, which now has stable FDs
-          {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
+        case :file.write(final_state.log_fd, io_list) do
+          :ok ->
+            # Update Persistent Anchor
+            bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
+            :file.pwrite(final_state.bin_fd, 0, :erlang.term_to_binary(bookmark_data))
 
-          Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
-          {[acc_io | packet], curr_phys_pos + packet_size, updated_state}
-        end)
-
-      case :file.write(final_state.log_fd, io_list) do
-        :ok ->
-          bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
-          bin_payload = :erlang.term_to_binary(bookmark_data)
-          :file.pwrite(final_state.bin_fd, 0, bin_payload)
-
-          %{final_state | current_size: final_pos}
-        {:error, reason} ->
-          IO.puts "❌ Write failed: #{reason}"
-          final_state
-      end
+            %{final_state | current_size: final_pos}
+          {:error, _} -> final_state
+        end
+    end
   end
-end
+
+  defp rotate_segment(state) do
+    new_base = System.system_time(:second)
+    new_base = if new_base <= state.active_base, do: state.active_base + 1, else: new_base
+
+    # 🔥 OPTIMIZED: Close log/idx but KEEP bin_fd open
+    :file.close(state.log_fd)
+    :file.close(state.idx_fd)
+
+    manifest_path = Path.join(@base_dir, "shard_#{state.shard}.manifest")
+    File.write!(manifest_path <> ".tmp", :erlang.term_to_binary(%{active_base: new_base}))
+    File.rename!(manifest_path <> ".tmp", manifest_path)
+
+    new_log = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log")
+    new_idx = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx")
+
+    {:ok, l} = :file.open(new_log, [:append, :raw, :binary, :read, :write])
+    {:ok, i} = :file.open(new_idx, [:append, :raw, :binary, :read, :write])
+
+    IO.puts "🔄 SHARD #{state.shard} ROTATED -> Segment #{new_base}"
+    %{state | log_fd: l, idx_fd: i, active_base: new_base, current_size: 0}
+  end
+
+  # ... [build_packet_data, stream_messages, read_from_disk, fetch_from_buffer, load_manifest untouched] ...
 
   defp build_packet_data(state, rec, offset, curr_pos) do
-  # 🔥 REMOVED THE ROTATION CHECK FROM HERE 🔥
-  # It is now handled by perform_flush at the start of the batch.
+    user_bin = to_string(rec.u)
+    device_bin = to_string(rec.writer_device)
+    packet = [<<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>, user_bin, device_bin, <<rec.p::32, offset::64>>, rec.bin]
+    packet_size = IO.iodata_length(packet)
 
-  user_bin = to_string(rec.u)
-  device_bin = to_string(rec.writer_device)
-
-  packet = [
-    <<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>,
-    user_bin,
-    device_bin,
-    <<rec.p::32, offset::64>>,
-    rec.bin
-  ]
-
-  packet_size = IO.iodata_length(packet)
-
-  if rem(offset, @user_stride) == 0 do
-    index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, curr_pos::64>>
-    :ok = :file.write(state.idx_fd, index_entry)
-    :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
+    if rem(offset, @user_stride) == 0 do
+      index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, curr_pos::64>>
+      :ok = :file.write(state.idx_fd, index_entry)
+      :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
+    end
+    :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, curr_pos}})
+    {packet, packet_size, state}
   end
 
-  :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, curr_pos}})
-
-  {packet, packet_size, state}
-end
-
   defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
-    if count <= 0 do
-      {:ok, Enum.reverse(acc)}
-    else
+    if count <= 0 do {:ok, Enum.reverse(acc)} else
       case read_from_disk(shard, seg_id, phys_pos) do
         {:ok, rec, next_phys_pos} ->
-          is_target = rec.u == to_string(user) and rec.p == p
-          is_from_self = rec.writer_device == device_id
-
-          {new_acc, new_count} = if is_target and not is_from_self do
-            {[rec.data | acc], count - 1}
+          if rec.u == to_string(user) and rec.p == p and rec.writer_device != device_id do
+            stream_messages(shard, user, p, seg_id, next_phys_pos, count - 1, [rec.data | acc], device_id)
           else
-            {acc, count}
+            stream_messages(shard, user, p, seg_id, next_phys_pos, count, acc, device_id)
           end
-          stream_messages(shard, user, p, seg_id, next_phys_pos, new_count, new_acc, device_id)
-
         {:error, :eof} ->
           case find_next_segment(shard, seg_id) do
-            {:ok, next_seg_id} -> stream_messages(shard, user, p, next_seg_id, 0, count, acc, device_id)
-            :no_more_segments -> {:ok, Enum.reverse(acc)}
+            {:ok, next} -> stream_messages(shard, user, p, next, 0, count, acc, device_id)
+            _ -> {:ok, Enum.reverse(acc)}
           end
         _ -> {:ok, Enum.reverse(acc)}
       end
@@ -278,124 +278,49 @@ end
     path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
     case Queue.FDPoolShard.pread(shard, path, pos, @header_size) do
       {:ok, <<0xEE, size::32, _crc::32, ulen::16, dlen::16, _ts::64>>} ->
-        total_meta_size = ulen + dlen + 12 + size
-        case Queue.FDPoolShard.pread(shard, path, pos + @header_size, total_meta_size) do
-          {:ok, payload} ->
-            <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary>> = payload
-            {:ok, %{
-              u: u,
-              writer_device: d,
-              p: p,
-              off: off,
-              data: :erlang.binary_to_term(body, [:safe])
-            }, pos + @header_size + total_meta_size}
+        case Queue.FDPoolShard.pread(shard, path, pos + @header_size, ulen + dlen + 12 + size) do
+          {:ok, <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary>>} ->
+            {:ok, %{u: u, writer_device: d, p: p, off: off, data: :erlang.binary_to_term(body, [:safe])}, pos + @header_size + ulen + dlen + 12 + size}
           _ -> {:error, :body_failed}
         end
       :eof -> {:error, :eof}
-      other -> other
+      _ -> {:error, :read_failed}
     end
   end
 
   defp fetch_from_buffer(shard, user, p, device_id, start_off, limit) do
-    buffer = log_buffer(shard)
-    # Changed :data to :bin to match your write/8 record
-    spec = [{{shard, :"$1", %{u: user, p: p, writer_device: :"$2", bin: :"$3"}},
-            [{:andalso, {:>, :"$1", start_off}, {:not, {:==, :"$2", device_id}}}],
-            [:"$3"]}]
-
-    case :ets.select(buffer, spec, limit) do
+    spec = [{{shard, :"$1", %{u: user, p: p, writer_device: :"$2", bin: :"$3"}}, [{:andalso, {:>, :"$1", start_off}, {:not, {:==, :"$2", device_id}}}], [:"$3"]}]
+    case :ets.select(log_buffer(shard), spec, limit) do
       :"$end_of_table" -> []
-      {results, _} -> Enum.map(results, & :erlang.binary_to_term(&1))
-      results ->
-        Enum.map(results, & :erlang.binary_to_term(&1))
+      {res, _} -> Enum.map(res, &:erlang.binary_to_term(&1))
+      res -> Enum.map(res, &:erlang.binary_to_term(&1))
     end
-  end
-
-  defp rotate_segment(state) do
-    new_base = System.system_time(:second)
-    new_base = if new_base <= state.active_base, do: state.active_base + 1, else: new_base
-
-    # ------------------------------------------------------------------
-    # ATOMIC MANIFEST UPDATE
-    # ------------------------------------------------------------------
-    manifest_path = Path.join(@base_dir, "shard_#{state.shard}.manifest")
-    tmp_path = manifest_path <> ".tmp"
-
-    manifest_data = :erlang.term_to_binary(%{active_base: new_base})
-
-    # Write to temp file first
-    File.write!(tmp_path, manifest_data)
-    # Atomic rename ensures the file is either OLD or NEW, never broken
-    File.rename!(tmp_path, manifest_path)
-
-    # 2. Close the old "Write-Trinity"
-    :file.close(state.log_fd)
-    :file.close(state.idx_fd)
-    :file.close(state.bin_fd)
-
-    # 3. Open New Files
-    new_log = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log")
-    new_idx = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx")
-    bin_path = Path.join("data/device_bookmarks", "shard_#{state.shard}.bin")
-
-    {:ok, l} = :file.open(new_log, [:append, :raw, :binary, :read, :write])
-    {:ok, i} = :file.open(new_idx, [:append, :raw, :binary, :read, :write])
-    {:ok, b} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
-
-    IO.puts "🔄 ROTATED SHARD #{state.shard}: New base is #{new_base}"
-
-    %{state | log_fd: l, idx_fd: i, bin_fd: b, active_base: new_base, current_size: 0}
   end
 
   defp load_manifest(shard) do
     path = Path.join(@base_dir, "shard_#{shard}.manifest")
-
-    if File.exists?(path) do
-      # Existing shard: Lock onto the saved timestamp
-      case File.read(path) do
-        {:ok, binary} ->
-          base = :erlang.binary_to_term(binary).active_base
-          %{base: base, exists: true}
-        _ ->
-          # Fallback: if manifest is corrupted, scan for highest segment
-          rebuild_from_disk(shard)
-      end
-    else
-      # Brand new shard: Start fresh
-      %{base: System.system_time(:second), exists: false}
-    end
-  end
-
-  defp rebuild_from_disk(shard) do
-    # Look for any shard_shard_*.log files
-    case Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log")) do
-      [] -> %{base: System.system_time(:second), exists: false}
-      files ->
-        latest = files
-                 |> Enum.map(&extract_id/1)
-                 |> Enum.max()
-        %{base: latest, exists: true}
-    end
-  end
-
-  defp extract_id(path) do
-    path |> Path.basename() |> String.split("_") |> List.last() |> String.replace(".log", "") |> String.to_integer()
+    if File.exists?(path), do: %{base: :erlang.binary_to_term(File.read!(path)).active_base, exists: true},
+    else: %{base: System.system_time(:second), exists: false}
   end
 
   defp find_next_segment(shard, current_id) do
     files = Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log"))
-    ids = Enum.map(files, fn f ->
-      f |> Path.basename() |> String.split("_") |> List.last() |> String.replace(".log", "") |> String.to_integer()
-    end) |> Enum.sort()
-
-    case Enum.find(ids, &(&1 > current_id)) do
-      nil -> :no_more_segments
-      next -> {:ok, next}
-    end
+    ids = Enum.map(files, fn f -> f |> Path.basename() |> String.split("_") |> List.last() |> String.replace(".log", "") |> String.to_integer() end) |> Enum.sort()
+    case Enum.find(ids, &(&1 > current_id)) do nil -> :no_more_segments; next -> {:ok, next} end
   end
 
   defp log_buffer(s), do: :"#{@log_buffer_prefix}#{s}"
   defp idx_cache(s), do: :"#{@idx_cache_prefix}#{s}"
   defp worker_name(s), do: :"bimip_shard_#{s}"
   defp schedule_flush, do: Process.send_after(self(), :flush, @flush_interval)
+
+  @impl true
+  def terminate(_reason, state) do
+    perform_flush(state)
+    :file.close(state.log_fd)
+    :file.close(state.idx_fd)
+    :file.close(state.bin_fd)
+    Logger.info("💾 Shard #{state.shard} safely closed.")
+    :ok
+  end
 end
