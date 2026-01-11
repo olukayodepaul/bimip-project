@@ -21,7 +21,7 @@ defmodule Queue.QueueLogImpl do
   @user_offsets :bimip_user_offsets
   @idx_cache_prefix :"bimip_idx_"
   @log_buffer_prefix :"bimip_buf_"
-  @user_stride 100
+  @user_stride 3 # determin when to write into idx
 
   # ------------------------------------------------------------------
   # PUBLIC API
