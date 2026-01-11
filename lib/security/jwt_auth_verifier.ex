@@ -11,6 +11,7 @@ defmodule Bimip.Auth.TokenVerifier do
     default_claims(skip: [:aud])
     |> add_claim("device_id", nil, &is_binary/1)
     |> add_claim("eid", nil, &is_binary/1)
+    |> add_claim("uupid", nil, &is_integer/1)
     |> add_claim("jti", fn -> System.unique_integer([:positive]) |> Integer.to_string() end, &is_binary/1)
     |> add_claim("type", nil, &(&1 in ["access", "refresh"]))
   end
