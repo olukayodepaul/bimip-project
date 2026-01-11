@@ -1,4 +1,4 @@
-log_path = "data/bimip/shard_14_1768113319.log"
+log_path = "data/bimip/shard_14_1768115850.log"
 
 case File.read(log_path) do
   {:ok, binary} ->
@@ -65,3 +65,11 @@ case File.read(bin_path) do
   {:error, reason} -> 
     IO.puts("❌ Could not open file: #{reason}")
 end
+
+
+
+
+manifest_path = "data/bimip/shard_14.manifest"
+binary = File.read!(manifest_path)
+%{active_base: current_base} = :erlang.binary_to_term(binary)
+IO.puts "🌟 Current Active Segment ID: #{current_base}"

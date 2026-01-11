@@ -9,19 +9,46 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
   # CONFIG
   # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+  # CONFIG
+  # ------------------------------------------------------------------
+
+  # The root directory where all log and index files are stored.
   @base_dir "data/bimip"
+
+  # Total number of virtual partitions. phash2 uses this to distribute users.
   @num_shards 64
+
+  # Size in bytes of our binary packet header (Magic + Sizes + CRC + TS).
   @header_size 21
+
+  # How often (in milliseconds) the GenServer flushes the ETS buffer to disk.
   @flush_interval 20
-  @max_segment_size 1_000_0000_0000
-  # Increased buffer to allow more batching
+
+  # CHANGE THIS FOR TESTING:
+  # The byte limit for a .log file before it closes and starts a new one.
+  # Set to 2000 to trigger rotation after ~4-5 stress test messages.
+  @max_segment_size 2000
+
+  # Backpressure limit: If the ETS buffer has more than this many items,
+  # the 'write' function returns {:error, :backpressure} to slow down the sender.
   @max_buffer_per_shard 500_000
 
+  # ETS table name for mapping {shard, segment} -> {last_offset, physical_pos}.
   @checkpoints :bimip_segment_checkpoints
+
+  # ETS table name for tracking the global incrementing offset per user.
   @user_offsets :bimip_user_offsets
+
+  # Prefix for naming shard-specific Index cache tables (e.g., :bimip_idx_14).
   @idx_cache_prefix :"bimip_idx_"
+
+  # Prefix for naming shard-specific Write buffers (e.g., :bimip_buf_14).
   @log_buffer_prefix :"bimip_buf_"
-  @user_stride 3 # determin when to write into idx
+
+  # Every Nth message is recorded in the .idx file.
+  # (Set to 3 means: message 3, 6, 9... get a physical pointer in the index).
+  @user_stride 3
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -140,74 +167,67 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
   # SINGLE-FLUSH ARCHITECTURE (LOG + IDX + BIN)
   # ------------------------------------------------------------------
-  defp perform_flush(state) do
-    buf = log_buffer(state.shard)
-    case :ets.take(buf, state.shard) do
-      [] -> state
-      items ->
-        # 1. Sort for logical order
-        sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
-        initial_pos = state.current_size
+defp perform_flush(state) do
+  buf = log_buffer(state.shard)
+  case :ets.take(buf, state.shard) do
+    [] -> state
+    items ->
+      # Check rotation ONCE before starting the batch
+      state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
 
-        {io_list, final_pos, final_state} =
-          Enum.reduce(sorted, {[], initial_pos, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_state} ->
-            # Prepare packet and write to IDX FD if stride hit
-            {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
+      sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
+      initial_pos = state.current_size
 
-            # 2. Update the Moving Anchor in ETS
-            Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
+      {io_list, final_pos, final_state} =
+        Enum.reduce(sorted, {[], initial_pos, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_state} ->
+          # We pass acc_state here, which now has stable FDs
+          {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
 
-            {[acc_io | packet], curr_phys_pos + packet_size, updated_state}
-          end)
+          Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
+          {[acc_io | packet], curr_phys_pos + packet_size, updated_state}
+        end)
 
-        # 3. Commit LOG to disk
-        :ok = :file.write(state.log_fd, io_list)
+      case :file.write(final_state.log_fd, io_list) do
+        :ok ->
+          bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
+          bin_payload = :erlang.term_to_binary(bookmark_data)
+          :file.pwrite(final_state.bin_fd, 0, bin_payload)
 
-        # 4. Commit BIN (Bookmarks) to disk
-        # We take the current state of the bookmarks for this shard and overwrite the BIN file
-        # Using :file.pwrite with 0 ensures we overwrite the file with the latest truth
-        bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
-        bin_payload = :erlang.term_to_binary(bookmark_data)
-
-        # We use pwrite at 0 to keep the file at the latest version of the bookmarks
-        :ok = :file.pwrite(state.bin_fd, 0, bin_payload)
-
-        # Optional: Ensure the OS flushes buffers to physical media
-        # :file.datasync(state.log_fd)
-        # :file.datasync(state.bin_fd)
-
-        %{final_state | current_size: final_pos}
-    end
+          %{final_state | current_size: final_pos}
+        {:error, reason} ->
+          IO.puts "❌ Write failed: #{reason}"
+          final_state
+      end
   end
+end
 
   defp build_packet_data(state, rec, offset, curr_pos) do
-    state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
+  # 🔥 REMOVED THE ROTATION CHECK FROM HERE 🔥
+  # It is now handled by perform_flush at the start of the batch.
 
-    user_bin = to_string(rec.u)
-    device_bin = to_string(rec.writer_device)
+  user_bin = to_string(rec.u)
+  device_bin = to_string(rec.writer_device)
 
-    packet = [
-      <<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>,
-      user_bin,
-      device_bin,
-      <<rec.p::32, offset::64>>,
-      rec.bin
-    ]
+  packet = [
+    <<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>,
+    user_bin,
+    device_bin,
+    <<rec.p::32, offset::64>>,
+    rec.bin
+  ]
 
-    packet_size = IO.iodata_length(packet)
+  packet_size = IO.iodata_length(packet)
 
-    # --- Synchronized Indexing ---
-    if rem(offset, @user_stride) == 0 do
-      index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, curr_pos::64>>
-      # Write directly to the assigned Index FD
-      :ok = :file.write(state.idx_fd, index_entry)
-      :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
-    end
-
-    :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, curr_pos}})
-
-    {packet, packet_size, state}
+  if rem(offset, @user_stride) == 0 do
+    index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, curr_pos::64>>
+    :ok = :file.write(state.idx_fd, index_entry)
+    :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
   end
+
+  :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, curr_pos}})
+
+  {packet, packet_size, state}
+end
 
   defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
     if count <= 0 do
@@ -272,21 +292,34 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  defp rotate_segment(state) do
+defp rotate_segment(state) do
     new_base = System.system_time(:second)
+    # Safety: Ensure the timestamp always moves forward
     new_base = if new_base <= state.active_base, do: state.active_base + 1, else: new_base
 
-    # Close the old "Write-Trinity"
+    # ------------------------------------------------------------------
+    # 1. PERSIST THE MANIFEST (The "GPS" for restarts)
+    # ------------------------------------------------------------------
+    manifest_path = Path.join(@base_dir, "shard_#{state.shard}.manifest")
+    manifest_data = :erlang.term_to_binary(%{active_base: new_base})
+    File.write!(manifest_path, manifest_data)
+
+    # 2. Close the old handles
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
     :file.close(state.bin_fd)
 
-    # Assign New "Write-Trinity"
-    {:ok, l} = :file.open(Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log"), [:append, :raw, :binary, :read, :write])
-    {:ok, i} = :file.open(Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx"), [:append, :raw, :binary, :read, :write])
-
+    # 3. Define new paths
+    new_log = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log")
+    new_idx = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx")
     bin_path = Path.join("data/device_bookmarks", "shard_#{state.shard}.bin")
+
+    # 4. Open New "Write-Trinity"
+    {:ok, l} = :file.open(new_log, [:append, :raw, :binary, :read, :write])
+    {:ok, i} = :file.open(new_idx, [:append, :raw, :binary, :read, :write])
     {:ok, b} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
+
+    IO.puts "🔄 ROTATED SHARD #{state.shard}: New base is #{new_base}"
 
     %{state | log_fd: l, idx_fd: i, bin_fd: b, active_base: new_base, current_size: 0}
   end
