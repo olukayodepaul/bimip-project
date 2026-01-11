@@ -1,4 +1,4 @@
-log_path = "data/bimip/shard_14_1768115850.log"
+log_path = "data/bimip/shard_14_1768118361.log"
 
 case File.read(log_path) do
   {:ok, binary} ->
@@ -28,7 +28,7 @@ end
 
 
 
-idx_path = "data/bimip/shard_14_1768113319.idx"
+idx_path = "data/bimip/shard_14_1768115874.idx"
 case File.read(idx_path) do
   {:ok, binary} ->
     parse_idx = fn

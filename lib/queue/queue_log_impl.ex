@@ -109,30 +109,49 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
   # GENSERVER HANDLERS
   # ------------------------------------------------------------------
-
-  @impl true
   def init(shard) do
+    # Ensure directories exist
     File.mkdir_p!(@base_dir)
+    File.mkdir_p!("data/device_bookmarks")
+
+    # 1. Load the "Source of Truth"
     manifest = load_manifest(shard)
+    base = manifest.base
 
-    # 1. Assign Log and Index FDs
-    {:ok, log_fd} = :file.open(manifest.log, [:append, :raw, :binary, :read, :write])
-    {:ok, idx_fd} = :file.open(manifest.idx, [:append, :raw, :binary, :read, :write])
-
-    # 2. Assign Bookmark Bin FD (Aligned to this shard)
+    log_path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
+    idx_path = Path.join(@base_dir, "shard_#{shard}_#{base}.idx")
     bin_path = Path.join("data/device_bookmarks", "shard_#{shard}.bin")
+
+    # 2. Open Files in :append mode.
+    # This resumes existing files OR creates them if they don't exist.
+    {:ok, log_fd} = :file.open(log_path, [:append, :raw, :binary, :read, :write])
+    {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
     {:ok, bin_fd} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
 
+    # 3. If brand new, initialize the manifest file immediately
+    if not manifest.exists do
+      manifest_path = Path.join(@base_dir, "shard_#{shard}.manifest")
+      File.write!(manifest_path, :erlang.term_to_binary(%{active_base: base}))
+      Logger.info("🆕 Created new manifest for Shard #{shard} at #{base}")
+    end
+
+    # 4. Critical: Ask the OS where we are in the file right now.
+    # If the file had 500 bytes before restart, 'pos' will be 500.
     {:ok, pos} = :file.position(log_fd, :cur)
+
+    if pos > 0 do
+      Logger.info("⚡ Shard #{shard} resumed at #{pos} bytes in segment #{base}")
+    end
+
     schedule_flush()
 
     {:ok, %{
       shard: shard,
       log_fd: log_fd,
       idx_fd: idx_fd,
-      bin_fd: bin_fd, # Persistent write handle
-      current_size: pos,
-      active_base: manifest.base
+      bin_fd: bin_fd,
+      current_size: pos, # This now correctly reflects the on-disk size
+      active_base: base
     }}
   end
 
@@ -330,10 +349,37 @@ end
 
   defp load_manifest(shard) do
     path = Path.join(@base_dir, "shard_#{shard}.manifest")
-    base = if File.exists?(path), do: :erlang.binary_to_term(File.read!(path)).active_base, else: System.system_time(:second)
-    %{base: base,
-      log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
-      idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx")}
+
+    if File.exists?(path) do
+      # Existing shard: Lock onto the saved timestamp
+      case File.read(path) do
+        {:ok, binary} ->
+          base = :erlang.binary_to_term(binary).active_base
+          %{base: base, exists: true}
+        _ ->
+          # Fallback: if manifest is corrupted, scan for highest segment
+          rebuild_from_disk(shard)
+      end
+    else
+      # Brand new shard: Start fresh
+      %{base: System.system_time(:second), exists: false}
+    end
+  end
+
+  defp rebuild_from_disk(shard) do
+    # Look for any shard_shard_*.log files
+    case Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log")) do
+      [] -> %{base: System.system_time(:second), exists: false}
+      files ->
+        latest = files
+                 |> Enum.map(&extract_id/1)
+                 |> Enum.max()
+        %{base: latest, exists: true}
+    end
+  end
+
+  defp extract_id(path) do
+    path |> Path.basename() |> String.split("_") |> List.last() |> String.replace(".log", "") |> String.to_integer()
   end
 
   defp find_next_segment(shard, current_id) do
