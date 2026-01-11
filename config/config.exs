@@ -36,3 +36,6 @@ config :bimip, :server_state,
 
 config :bimip, :queue,
   max_queue_size: 1000
+
+config :bimip,
+  num_shards: 16
