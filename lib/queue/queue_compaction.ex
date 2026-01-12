@@ -40,8 +40,11 @@ defmodule Queue.BimipCompactor do
   defp process_shard(shard) do
     manifest_path = Path.join(@base_dir, "shard_#{shard}.manifest")
 
+    # ✅ Fix: Manifest now stores a Map, not just a raw integer
     active_seg_id = case File.read(manifest_path) do
-      {:ok, bin} -> :erlang.binary_to_term(bin).active_base
+      {:ok, bin} ->
+        data = :erlang.binary_to_term(bin)
+        data.active_base
       _ -> nil
     end
 
@@ -54,21 +57,28 @@ defmodule Queue.BimipCompactor do
     end
   end
 
-  defp handle_retention_and_archival(shard, files, active_seg_id) do
+ defp handle_retention_and_archival(shard, files, active_seg_id) do
     now = System.system_time(:second)
 
     to_archive = files
       |> Enum.filter(fn f ->
-        # Check the actual last modified time of the file on disk
-        {:ok, info} = File.stat(f, time: :posix)
-        (now - info.mtime) > @retention_seconds
+        # ✅ Optimization: Use the timestamp from the filename
+        # This avoids calling File.stat on every file every 5 minutes
+        {_base, ts} = extract_full_meta(f)
+        (now - ts) > @retention_seconds
       end)
-      |> Enum.reject(fn f -> extract_id(f) == active_seg_id end)
+      |> Enum.reject(fn f ->
+        {base, _ts} = extract_full_meta(f)
+        base == active_seg_id
+      end)
 
     if to_archive != [] do
-      expired_ids = Enum.map(to_archive, &extract_id/1)
+      # Extract just the Base Offset IDs for the pointer repair logic
+      expired_ids = Enum.map(to_archive, fn f ->
+        {base, _ts} = extract_full_meta(f)
+        base
+      end)
 
-      # 2. Detailed Shard Progress Log
       Logger.info("📦 [Shard #{shard}] Archiving #{length(to_archive)} segments: #{inspect(expired_ids)}")
 
       repair_and_forward_pointers(shard, expired_ids, active_seg_id)
@@ -80,12 +90,9 @@ defmodule Queue.BimipCompactor do
         do_move(log_path)
         do_move(idx_path)
       end)
-
-      Logger.debug("🏁 [Shard #{shard}] Archival complete and anchors persisted.")
     end
   end
 
-  # ... [repair_and_forward_pointers and other helpers remain the same] ...
 
   defp repair_and_forward_pointers(shard, archived_ids, current_active_seg) do
     cache = :"device_bookmarks_cache_#{shard}"
@@ -118,8 +125,17 @@ defmodule Queue.BimipCompactor do
   end
 
   defp extract_id(path) do
-    path |> Path.basename() |> String.split("_") |> Enum.at(2)
-    |> String.replace(~r/\..*$/, "") |> String.to_integer()
+    {base, _ts} = extract_full_meta(path)
+    base
+  end
+
+  defp extract_full_meta(path) do
+    # shard_0_1000_1736700000.log
+    parts = path |> Path.basename() |> String.replace(".log", "") |> String.split("_")
+    # [shard, 0, 1000, 1736700000]
+    base = String.to_integer(Enum.at(parts, 2))
+    ts = String.to_integer(Enum.at(parts, 3))
+    {base, ts}
   end
 
   defp schedule_check, do: Process.send_after(self(), :check, @check_interval)

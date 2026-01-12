@@ -1,8 +1,7 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
   BimipLog v10 — Sharded Append-Only Log.
-  World-Class Continuity: Recovers state from Bin-Anchor and Manifest on restart.
-  Optimized FD: Maintains open handle for Anchor Bin across segment rotations.
+  Hybrid Naming: shard_{shard}_{baseOffset}_{timestamp}.log
   """
   use GenServer
   require Logger
@@ -14,33 +13,28 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 20
-  # 🚀 NUMBERS ONLY: Rotate every 10,000 messages
-  @max_messages_per_seg 10_000
+  @max_messages_per_seg 100
   @max_buffer_per_shard 500_000
+  @user_stride 10
 
   @checkpoints :bimip_segment_checkpoints
   @user_offsets :bimip_user_offsets
   @idx_cache_prefix :"bimip_idx_"
   @log_buffer_prefix :"bimip_buf_"
-  @user_stride 1000
 
   # ------------------------------------------------------------------
   # PUBLIC API
   # ------------------------------------------------------------------
 
-  def start_link(shard) do
-    GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
-  end
+  def start_link(shard), do: GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
 
   def __startup__ do
     if :ets.info(@user_offsets) == :undefined, do: :ets.new(@user_offsets, [:named_table, :public, :set, {:write_concurrency, true}])
     if :ets.info(@checkpoints) == :undefined, do: :ets.new(@checkpoints, [:named_table, :public, :set, {:read_concurrency, true}])
 
     for s <- 0..(@num_shards - 1) do
-      buf = log_buffer(s)
-      idx = idx_cache(s)
-      if :ets.info(buf) == :undefined, do: :ets.new(buf, [:named_table, :public, :duplicate_bag, {:write_concurrency, true}])
-      if :ets.info(idx) == :undefined, do: :ets.new(idx, [:named_table, :public, :set, {:read_concurrency, true}])
+      if :ets.info(log_buffer(s)) == :undefined, do: :ets.new(log_buffer(s), [:named_table, :public, :duplicate_bag, {:write_concurrency, true}])
+      if :ets.info(idx_cache(s)) == :undefined, do: :ets.new(idx_cache(s), [:named_table, :public, :set, {:read_concurrency, true}])
     end
     :ok
   end
@@ -58,18 +52,11 @@ defmodule Queue.QueueLogImpl do
       {:error, :backpressure}
     else
       offset = :ets.update_counter(@user_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
-
       data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
-      bin_data = :erlang.term_to_binary(data)
 
       record = %{
-        u: recipient_uid,
-        s: sender_uid,
-        p: partition_id,
-        off: offset,
-        mid: message_id,
-        writer_device: to_string(device_id),
-        bin: bin_data,
+        u: recipient_uid, s: sender_uid, p: partition_id, off: offset, mid: message_id,
+        writer_device: to_string(device_id), bin: :erlang.term_to_binary(data),
         ts: System.system_time(:second)
       }
 
@@ -93,75 +80,58 @@ defmodule Queue.QueueLogImpl do
     File.mkdir_p!("data/device_bookmarks")
 
     bin_path = Path.join("data/device_bookmarks", "shard_#{shard}.bin")
-
-    # 1. Recover global offsets from Bin Anchor
     recover_counters_from_anchor(shard, bin_path)
 
-    # 2. Load manifest for the active file segment
     manifest = load_manifest(shard)
     base = manifest.base
+    ts = manifest.ts
 
-    # 🚀 RECOVERY MATH: Sync msg_count with the recovered global offset
     recovered_msg_count = calculate_current_count(shard, base)
 
-    log_path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
-    idx_path = Path.join(@base_dir, "shard_#{shard}_#{base}.idx")
+    log_path = Path.join(@base_dir, "shard_#{shard}_#{base}_#{ts}.log")
+    idx_path = Path.join(@base_dir, "shard_#{shard}_#{base}_#{ts}.idx")
 
     {:ok, log_fd} = :file.open(log_path, [:append, :raw, :binary, :read, :write])
     {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
     {:ok, bin_fd} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
 
-    if not manifest.exists do
-      manifest_path = Path.join(@base_dir, "shard_#{shard}.manifest")
-      File.write!(manifest_path, :erlang.term_to_binary(%{active_base: base}))
-    end
+    if not manifest.exists, do: write_manifest(shard, base, ts)
 
     {:ok, actual_pos} = :file.position(log_fd, :cur)
-
     schedule_flush()
 
     {:ok, %{
-      shard: shard,
-      log_fd: log_fd,
-      idx_fd: idx_fd,
-      bin_fd: bin_fd,
-      current_size: actual_pos,
-      msg_count: recovered_msg_count,
-      active_base: base
+      shard: shard, log_fd: log_fd, idx_fd: idx_fd, bin_fd: bin_fd,
+      current_size: actual_pos, msg_count: recovered_msg_count,
+      active_base: base, active_ts: ts
     }}
   end
 
-  # Helper to determine how many messages are already in the current file
-  defp calculate_current_count(shard, base) do
-    # We match all user offsets currently in ETS to find the highest progression
+defp calculate_current_count(shard, base) do
     case :ets.match(@user_offsets, {{:"$1", :"$2"}, :"$3"}) do
       [] -> 0
       matches ->
-        # Find the highest offset among all users in this shard
-        max_off = Enum.reduce(matches, 0, fn [_, off], acc -> max(off, acc) end)
-        # If max_off is 1500 and base is 1001, msg_count is 500
+        # matches looks like: [["user1", 1, 600], ["user2", 1, 1200]]
+        # We need the 3rd element (the offset)
+        max_off = Enum.reduce(matches, 0, fn [_, _, off], acc -> max(off, acc) end)
+
         if max_off >= base, do: max_off - (base - 1), else: 0
     end
   end
 
-  defp recover_counters_from_anchor(shard, bin_path) do
+  defp recover_counters_from_anchor(_shard, bin_path) do
     if File.exists?(bin_path) do
       case File.read(bin_path) do
         {:ok, binary} when binary != <<>> ->
           try do
-            anchor_data = :erlang.binary_to_term(binary)
-            Enum.each(anchor_data, fn
-              {user, %{"__anchor__" => {_base, offset, _pos}}} ->
-                :ets.insert(@user_offsets, {{user, 1}, offset})
+            :erlang.binary_to_term(binary) |> Enum.each(fn
+              {user, %{"__anchor__" => {_, off, _}}} -> :ets.insert(@user_offsets, {{user, 1}, off})
               _ -> :ok
             end)
-          rescue
-            _ -> :ok
-          end
+          rescue _ -> :ok end
         _ -> :ok
       end
     end
-    :ok
   end
 
   @impl true
@@ -173,7 +143,6 @@ defmodule Queue.QueueLogImpl do
   @impl true
   def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
     {seg_id, log_off, phys_pos} = Queue.DeviceBookmark.get(device_id, user, p)
-
     gate_off = if log_off > 0, do: log_off - rem(log_off - 1, @user_stride), else: 0
 
     {actual_seg, actual_phys} = case :ets.lookup(idx_cache(state.shard), {user, p, gate_off}) do
@@ -182,9 +151,8 @@ defmodule Queue.QueueLogImpl do
     end
 
     {:ok, disk_results} = stream_messages(state.shard, user, p, actual_seg, actual_phys, batch_size, [], device_id)
-    filtered_results = Enum.filter(disk_results, fn msg -> msg.off > log_off end)
-
-    {:reply, {:ok, filtered_results}, state}
+    filtered = Enum.filter(disk_results, fn msg -> msg.off > log_off end)
+    {:reply, {:ok, filtered}, state}
   end
 
   @impl true
@@ -195,75 +163,59 @@ defmodule Queue.QueueLogImpl do
   end
 
   # ------------------------------------------------------------------
-  # FLUSH ENGINE
+  # INTERNAL LOGIC
   # ------------------------------------------------------------------
+
   defp perform_flush(state) do
     buf = log_buffer(state.shard)
     case :ets.take(buf, state.shard) do
       [] -> state
       items ->
-        # 🚀 ROTATION BY COUNT
         state = if state.msg_count >= @max_messages_per_seg, do: rotate_segment(state), else: state
-
         sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
-        initial_pos = state.current_size
 
         {io_list, final_pos, final_msg_count, final_state} =
-          Enum.reduce(sorted, {[], initial_pos, state.msg_count, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_count, acc_state} ->
-
-            if off == 1 do
-              Queue.DeviceBookmark.mark_initializer(rec.u, rec.p, {rec.s, acc_state.active_base, off, curr_phys_pos})
-            end
-
-            {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
-            Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
-
-            {[acc_io | packet], curr_phys_pos + packet_size, acc_count + 1, updated_state}
+          Enum.reduce(sorted, {[], state.current_size, state.msg_count, state}, fn {_s, off, rec}, {acc_io, curr_p, acc_c, acc_s} ->
+            if off == 1, do: Queue.DeviceBookmark.mark_initializer(rec.u, rec.p, {rec.s, acc_s.active_base, off, curr_p})
+            {packet, p_size, updated_s} = build_packet_data(acc_s, rec, off, curr_p)
+            Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_s.active_base, off, curr_p)
+            {[acc_io | packet], curr_p + p_size, acc_c + 1, updated_s}
           end)
 
-        case :file.write(final_state.log_fd, io_list) do
-          :ok ->
-            bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
-            :file.pwrite(final_state.bin_fd, 0, :erlang.term_to_binary(bookmark_data))
-            %{final_state | current_size: final_pos, msg_count: final_msg_count}
-
-          {:error, err} ->
-            Logger.error("Flush failed: #{inspect(err)}")
-            final_state
-        end
+        :file.write(final_state.log_fd, io_list)
+        bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
+        :file.pwrite(final_state.bin_fd, 0, :erlang.term_to_binary(bookmark_data))
+        %{final_state | current_size: final_pos, msg_count: final_msg_count}
     end
   end
 
   defp rotate_segment(state) do
-    # New base is the perfect next offset based on the previous count
     new_base = state.active_base + state.msg_count
+    new_ts = System.system_time(:second)
 
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
 
-    manifest_path = Path.join(@base_dir, "shard_#{state.shard}.manifest")
-    File.write!(manifest_path <> ".tmp", :erlang.term_to_binary(%{active_base: new_base}))
-    File.rename!(manifest_path <> ".tmp", manifest_path)
+    write_manifest(state.shard, new_base, new_ts)
 
-    new_log = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log")
-    new_idx = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx")
+    l_path = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}_#{new_ts}.log")
+    i_path = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}_#{new_ts}.idx")
 
-    {:ok, l} = :file.open(new_log, [:append, :raw, :binary, :read, :write])
-    {:ok, i} = :file.open(new_idx, [:append, :raw, :binary, :read, :write])
+    {:ok, l} = :file.open(l_path, [:append, :raw, :binary, :read, :write])
+    {:ok, i} = :file.open(i_path, [:append, :raw, :binary, :read, :write])
 
-    IO.puts "🔄 SHARD #{state.shard} ROTATED -> Segment #{new_base}"
-    %{state | log_fd: l, idx_fd: i, active_base: new_base, current_size: 0, msg_count: 0}
+    IO.puts "🔄 ROTATED SHARD #{state.shard} -> Base: #{new_base} | Time: #{new_ts}"
+    %{state | log_fd: l, idx_fd: i, active_base: new_base, active_ts: new_ts, current_size: 0, msg_count: 0}
   end
 
   defp build_packet_data(state, rec, offset, curr_pos) do
-    user_bin = to_string(rec.u)
-    device_bin = to_string(rec.writer_device)
-    packet = [<<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>, user_bin, device_bin, <<rec.p::32, offset::64>>, rec.bin]
+    u_bin = to_string(rec.u)
+    d_bin = to_string(rec.writer_device)
+    packet = [<<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(u_bin)::16, byte_size(d_bin)::16, rec.ts::64>>, u_bin, d_bin, <<rec.p::32, offset::64>>, rec.bin]
     packet_size = IO.iodata_length(packet)
 
-    # 🚀 STRIDE INDEXING (1, 1001, 2001...)
     if rem(offset, @user_stride) == 1 do
-      index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, state.active_base::64, curr_pos::64>>
+      index_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, offset::64, state.active_base::64, curr_pos::64>>
       :ok = :file.write(state.idx_fd, index_entry)
       :file.datasync(state.idx_fd)
       :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
@@ -273,57 +225,73 @@ defmodule Queue.QueueLogImpl do
     {packet, packet_size, state}
   end
 
-  defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
-    if count <= 0, do: {:ok, Enum.reverse(acc)}, else:
+  defp read_from_disk(shard, base, pos) do
+    case Path.wildcard(Path.join(@base_dir, "shard_#{shard}_#{base}_*.log")) do
+      [path | _] ->
+        case Queue.FDPoolShard.pread(shard, path, pos, @header_size) do
+          {:ok, <<0xEE, size::32, _crc::32, ulen::16, dlen::16, _ts::64>>} ->
+            case Queue.FDPoolShard.pread(shard, path, pos + @header_size, ulen + dlen + 12 + size) do
+              {:ok, <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary>>} ->
+                {:ok, %{u: u, writer_device: d, p: p, off: off, data: :erlang.binary_to_term(body, [:safe])}, pos + @header_size + ulen + dlen + 12 + size}
+              _ -> {:error, :body_failed}
+            end
+          :eof -> {:error, :eof}
+          _ -> {:error, :read_failed}
+        end
+      [] -> {:error, :file_not_found}
+    end
+  end
+
+defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
+    if count <= 0 do
+      {:ok, Enum.reverse(acc)}
+    else
       case read_from_disk(shard, seg_id, phys_pos) do
-        {:ok, rec, next_phys_pos} ->
+        {:ok, rec, next_pos} ->
           if rec.u == to_string(user) and rec.p == p and rec.writer_device != device_id do
-            stream_messages(shard, user, p, seg_id, next_phys_pos, count - 1, [rec.data | acc], device_id)
+            stream_messages(shard, user, p, seg_id, next_pos, count - 1, [rec.data | acc], device_id)
           else
-            stream_messages(shard, user, p, seg_id, next_phys_pos, count, acc, device_id)
+            stream_messages(shard, user, p, seg_id, next_pos, count, acc, device_id)
           end
+
         {:error, :eof} ->
           case find_next_segment(shard, seg_id) do
             {:ok, next} -> stream_messages(shard, user, p, next, 0, count, acc, device_id)
             _ -> {:ok, Enum.reverse(acc)}
           end
-        _ -> {:ok, Enum.reverse(acc)}
-      end
-  end
 
-  defp read_from_disk(shard, base, pos) do
-    path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
-    case Queue.FDPoolShard.pread(shard, path, pos, @header_size) do
-      {:ok, <<0xEE, size::32, _crc::32, ulen::16, dlen::16, _ts::64>>} ->
-        case Queue.FDPoolShard.pread(shard, path, pos + @header_size, ulen + dlen + 12 + size) do
-          {:ok, <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary>>} ->
-            {:ok, %{u: u, writer_device: d, p: p, off: off, data: :erlang.binary_to_term(body, [:safe])}, pos + @header_size + ulen + dlen + 12 + size}
-          _ -> {:error, :body_failed}
-        end
-      :eof -> {:error, :eof}
-      _ -> {:error, :read_failed}
+        _ ->
+          {:ok, Enum.reverse(acc)}
+      end
     end
   end
 
-  defp fetch_from_buffer(shard, user, p, device_id, start_off, limit) do
-    spec = [{{shard, :"$1", %{u: user, p: p, writer_device: :"$2", bin: :"$3"}}, [{:andalso, {:>, :"$1", start_off}, {:not, {:==, :"$2", device_id}}}], [:"$3"]}]
-    case :ets.select(log_buffer(shard), spec, limit) do
-      :"$end_of_table" -> []
-      {res, _} -> Enum.map(res, &:erlang.binary_to_term(&1))
-      res -> Enum.map(res, &:erlang.binary_to_term(&1))
+  defp find_next_segment(shard, current_base) do
+    files = Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log"))
+    bases = Enum.map(files, fn f ->
+      [_, _, base | _] = f |> Path.basename() |> String.replace(".log", "") |> String.split("_")
+      String.to_integer(base)
+    end) |> Enum.sort()
+    case Enum.find(bases, &(&1 > current_base)) do
+      nil -> :no_more_segments
+      next_base -> {:ok, next_base}
     end
   end
 
   defp load_manifest(shard) do
     path = Path.join(@base_dir, "shard_#{shard}.manifest")
-    if File.exists?(path), do: %{base: :erlang.binary_to_term(File.read!(path)).active_base, exists: true},
-    else: %{base: 1, exists: false}
+    if File.exists?(path) do
+      data = :erlang.binary_to_term(File.read!(path))
+      %{base: data.active_base, ts: Map.get(data, :active_ts, System.system_time(:second)), exists: true}
+    else
+      %{base: 1, ts: System.system_time(:second), exists: false}
+    end
   end
 
-  defp find_next_segment(shard, current_id) do
-    files = Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log"))
-    ids = Enum.map(files, fn f -> f |> Path.basename() |> String.split("_") |> List.last() |> String.replace(".log", "") |> String.to_integer() end) |> Enum.sort()
-    case Enum.find(ids, &(&1 > current_id)) do nil -> :no_more_segments; next -> {:ok, next} end
+  defp write_manifest(shard, base, ts) do
+    path = Path.join(@base_dir, "shard_#{shard}.manifest")
+    File.write!(path <> ".tmp", :erlang.term_to_binary(%{active_base: base, active_ts: ts}))
+    File.rename!(path <> ".tmp", path)
   end
 
   defp log_buffer(s), do: :"#{@log_buffer_prefix}#{s}"
@@ -337,7 +305,6 @@ defmodule Queue.QueueLogImpl do
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
     :file.close(state.bin_fd)
-    Logger.info("💾 Shard #{state.shard} safely closed.")
     :ok
   end
 end

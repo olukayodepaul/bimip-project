@@ -2,7 +2,7 @@
 
 shard_14_1768123478.log
 shard_14_1768123523.log
-log_path = "data/bimip/shard_14_1768150305.log"
+log_path = "data/bimip/shard_14_601_1768230570.log"
 case File.read(log_path) do
   {:ok, binary} ->
     # Recursive function to walk the binary
@@ -27,12 +27,29 @@ case File.read(log_path) do
 end
 
 
+log_path = "data/bimip/shard_14_601_1768230570.log"
 
+case File.read(log_path) do
+  {:ok, <<0xEE, size::32, _crc::32, ulen::16, dlen::16, ts::64, rest::binary>>} ->
+    <<user::binary-size(ulen), device::binary-size(dlen), p::32, off::64, body::binary-size(size), _next::binary>> = rest
+    
+    IO.puts "✅ FIRST RECORD FOUND IN FILE"
+    IO.puts "------------------------------------------------"
+    IO.puts "📜 OFFSET: #{off}"
+    IO.puts "👤 USER:   #{user}"
+    IO.puts "🕒 TIME:   #{ts}"
+    IO.inspect(:erlang.binary_to_term(body), label: "📦 Payload")
+    
+  {:ok, <<>>} -> 
+    IO.puts "📁 File is empty."
+  {:error, reason} -> 
+    IO.puts "❌ Error: #{reason}"
+end
 
 
 shard_14_1768123478.idx
 shard_14_1768123523.idx
-idx_path = "data/bimip/shard_14_1768151796.idx"
+idx_path = "data/bimip/shard_14_601_1768230570.idx"
 case File.read(idx_path) do
   {:ok, binary} ->
     parse_idx = fn
