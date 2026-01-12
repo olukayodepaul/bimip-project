@@ -2,7 +2,7 @@
 
 shard_14_1768123478.log
 shard_14_1768123523.log
-log_path = "data/bimip/shard_14_601_1768230570.log"
+log_path = "data/bimip/shard_14_454_1768230432.log"
 case File.read(log_path) do
   {:ok, binary} ->
     # Recursive function to walk the binary
@@ -27,7 +27,7 @@ case File.read(log_path) do
 end
 
 
-log_path = "data/bimip/shard_14_601_1768230570.log"
+log_path = "data/bimip/shard_14_454_1768230432.log"
 
 case File.read(log_path) do
   {:ok, <<0xEE, size::32, _crc::32, ulen::16, dlen::16, ts::64, rest::binary>>} ->
@@ -49,7 +49,7 @@ end
 
 shard_14_1768123478.idx
 shard_14_1768123523.idx
-idx_path = "data/bimip/shard_14_601_1768230570.idx"
+idx_path = "data/bimip/shard_14_454_1768230432.idx"
 case File.read(idx_path) do
   {:ok, binary} ->
     parse_idx = fn

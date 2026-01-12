@@ -12,9 +12,9 @@ defmodule Queue.QueueLogImpl do
   @base_dir "data/bimip"
   @num_shards 64
   @header_size 21
-  @flush_interval 20
+  @flush_interval 100
   @max_messages_per_seg 100
-  @max_buffer_per_shard 500_000
+  @max_buffer_per_shard 1_000_000
   @user_stride 10
 
   @checkpoints :bimip_segment_checkpoints
@@ -85,12 +85,14 @@ defmodule Queue.QueueLogImpl do
     recover_counters_from_anchor(shard, bin_path)
 
     manifest = load_manifest(shard)
-    base = manifest.base
-    ts = manifest.ts
+
+    # ✅ Fix: Use .active_base and .active_ts to match load_manifest map keys
+    base = manifest.active_base
+    ts = manifest.active_ts
 
     recovered_msg_count = calculate_current_count(shard, base)
 
-    # ✅ Updated Paths to use shard_dir
+    # ✅ Paths use shard_dir
     log_path = Path.join(shard_dir, "shard_#{shard}_#{base}_#{ts}.log")
     idx_path = Path.join(shard_dir, "shard_#{shard}_#{base}_#{ts}.idx")
 
@@ -98,7 +100,8 @@ defmodule Queue.QueueLogImpl do
     {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
     {:ok, bin_fd} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
 
-    if not manifest.exists, do: write_manifest(shard, base, ts)
+    # ✅ Fix: Pass the manifest map directly to write_manifest/2
+    if not manifest.exists, do: write_manifest(shard, manifest)
 
     {:ok, actual_pos} = :file.position(log_fd, :cur)
     schedule_flush()
@@ -195,24 +198,41 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp rotate_segment(state) do
+    # 1. Prepare the NEW active details
     new_base = state.active_base + state.msg_count
     new_ts = System.system_time(:second)
 
+    # 2. Close descriptors for the segment that is about to retire
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
 
-    write_manifest(state.shard, new_base, new_ts)
+    # 3. ATOMIC HAND-OFF: Move current details into the 'expired' map
+    manifest = load_manifest(state.shard)
+    expired_key = "#{state.active_base}_#{state.active_ts}"
 
-    # ✅ Use state.shard_dir
+    # We use the current 'new_ts' as the start of the death clock for the old file
+    updated_expired_map = Map.put(manifest.expired, expired_key, new_ts)
+
+    updated_manifest = %{
+      active_base: new_base,
+      active_ts: new_ts,
+      expired: updated_expired_map
+    }
+
+    write_manifest(state.shard, updated_manifest)
+
+    # 4. Open the new segment files
     l_path = Path.join(state.shard_dir, "shard_#{state.shard}_#{new_base}_#{new_ts}.log")
     i_path = Path.join(state.shard_dir, "shard_#{state.shard}_#{new_base}_#{new_ts}.idx")
 
     {:ok, l} = :file.open(l_path, [:append, :raw, :binary, :read, :write])
     {:ok, i} = :file.open(i_path, [:append, :raw, :binary, :read, :write])
 
-    IO.puts "🔄 ROTATED SHARD #{state.shard} -> Base: #{new_base} | Time: #{new_ts}"
+    IO.puts "🔄 ROTATED: #{expired_key} moved to expired. New active: #{new_base}_#{new_ts}"
+
     %{state | log_fd: l, idx_fd: i, active_base: new_base, active_ts: new_ts, current_size: 0, msg_count: 0}
   end
+
 
   defp build_packet_data(state, rec, offset, curr_pos) do
     u_bin = to_string(rec.u)
@@ -290,16 +310,23 @@ defmodule Queue.QueueLogImpl do
     path = Path.join(shard_dir, "shard_#{shard}.manifest")
     if File.exists?(path) do
       data = :erlang.binary_to_term(File.read!(path))
-      %{base: data.active_base, ts: Map.get(data, :active_ts, System.system_time(:second)), exists: true}
+      %{
+        active_base: data.active_base,
+        active_ts: Map.get(data, :active_ts, System.system_time(:second)),
+        expired: Map.get(data, :expired, %{}),
+        exists: true
+      }
     else
-      %{base: 1, ts: System.system_time(:second), exists: false}
+      %{active_base: 1, active_ts: System.system_time(:second), expired: %{}, exists: false}
     end
   end
 
-  defp write_manifest(shard, base, ts) do
+  defp write_manifest(shard, manifest_data) do
     shard_dir = Path.join(@base_dir, "shard_#{shard}")
     path = Path.join(shard_dir, "shard_#{shard}.manifest")
-    File.write!(path <> ".tmp", :erlang.term_to_binary(%{active_base: base, active_ts: ts}))
+    # Drop internal flags before saving to disk
+    storage_map = Map.drop(manifest_data, [:exists])
+    File.write!(path <> ".tmp", :erlang.term_to_binary(storage_map))
     File.rename!(path <> ".tmp", path)
   end
 
@@ -317,3 +344,5 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 end
+
+# 20:11
