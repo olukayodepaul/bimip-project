@@ -293,12 +293,24 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp find_next_segment(state, current_base) do
-    # ✅ Search only within the shard's own folder
+    # Get all log files in this shard's directory
     files = Path.wildcard(Path.join(state.shard_dir, "shard_#{state.shard}_*.log"))
-    bases = Enum.map(files, fn f ->
-      [_, _, base | _] = f |> Path.basename() |> String.replace(".log", "") |> String.split("_")
-      String.to_integer(base)
+
+    bases = Enum.reduce(files, [], fn f, acc ->
+      filename = Path.basename(f, ".log")
+      parts = String.split(filename, "_")
+
+      # Use Enum.at(parts, 2) which is the Base Offset in "shard_14_1_123.log"
+      case Enum.at(parts, 2) do
+        nil -> acc
+        val ->
+          case Integer.parse(val) do
+            {int, _} -> [int | acc]
+            :error -> acc
+          end
+      end
     end) |> Enum.sort()
+
     case Enum.find(bases, &(&1 > current_base)) do
       nil -> :no_more_segments
       next_base -> {:ok, next_base}
