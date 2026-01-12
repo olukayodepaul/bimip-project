@@ -1,7 +1,7 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
-  BimipLog v10 — Sharded Append-Only Log.
-  Hybrid Naming: shard_{shard}_{baseOffset}_{timestamp}.log
+  BimipLog v10.1 — Sharded Append-Only Log with Per-Shard Directories.
+  Structure: data/bimip/shard_{shard}/shard_{shard}_{baseOffset}_{timestamp}.log
   """
   use GenServer
   require Logger
@@ -76,7 +76,9 @@ defmodule Queue.QueueLogImpl do
 
   @impl true
   def init(shard) do
-    File.mkdir_p!(@base_dir)
+    # ✅ Create Shard-Specific Directory
+    shard_dir = Path.join(@base_dir, "shard_#{shard}")
+    File.mkdir_p!(shard_dir)
     File.mkdir_p!("data/device_bookmarks")
 
     bin_path = Path.join("data/device_bookmarks", "shard_#{shard}.bin")
@@ -88,8 +90,9 @@ defmodule Queue.QueueLogImpl do
 
     recovered_msg_count = calculate_current_count(shard, base)
 
-    log_path = Path.join(@base_dir, "shard_#{shard}_#{base}_#{ts}.log")
-    idx_path = Path.join(@base_dir, "shard_#{shard}_#{base}_#{ts}.idx")
+    # ✅ Updated Paths to use shard_dir
+    log_path = Path.join(shard_dir, "shard_#{shard}_#{base}_#{ts}.log")
+    idx_path = Path.join(shard_dir, "shard_#{shard}_#{base}_#{ts}.idx")
 
     {:ok, log_fd} = :file.open(log_path, [:append, :raw, :binary, :read, :write])
     {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
@@ -101,20 +104,17 @@ defmodule Queue.QueueLogImpl do
     schedule_flush()
 
     {:ok, %{
-      shard: shard, log_fd: log_fd, idx_fd: idx_fd, bin_fd: bin_fd,
+      shard: shard, shard_dir: shard_dir, log_fd: log_fd, idx_fd: idx_fd, bin_fd: bin_fd,
       current_size: actual_pos, msg_count: recovered_msg_count,
       active_base: base, active_ts: ts
     }}
   end
 
-defp calculate_current_count(shard, base) do
+  defp calculate_current_count(_shard, base) do
     case :ets.match(@user_offsets, {{:"$1", :"$2"}, :"$3"}) do
       [] -> 0
       matches ->
-        # matches looks like: [["user1", 1, 600], ["user2", 1, 1200]]
-        # We need the 3rd element (the offset)
         max_off = Enum.reduce(matches, 0, fn [_, _, off], acc -> max(off, acc) end)
-
         if max_off >= base, do: max_off - (base - 1), else: 0
     end
   end
@@ -150,7 +150,7 @@ defp calculate_current_count(shard, base) do
       _ -> {seg_id, phys_pos}
     end
 
-    {:ok, disk_results} = stream_messages(state.shard, user, p, actual_seg, actual_phys, batch_size, [], device_id)
+    {:ok, disk_results} = stream_messages(state, user, p, actual_seg, actual_phys, batch_size, [], device_id)
     filtered = Enum.filter(disk_results, fn msg -> msg.off > log_off end)
     {:reply, {:ok, filtered}, state}
   end
@@ -183,6 +183,11 @@ defp calculate_current_count(shard, base) do
           end)
 
         :file.write(final_state.log_fd, io_list)
+
+        # ✅ Maintain durability with batch sync
+        :file.datasync(final_state.log_fd)
+        :file.datasync(final_state.idx_fd)
+
         bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
         :file.pwrite(final_state.bin_fd, 0, :erlang.term_to_binary(bookmark_data))
         %{final_state | current_size: final_pos, msg_count: final_msg_count}
@@ -198,8 +203,9 @@ defp calculate_current_count(shard, base) do
 
     write_manifest(state.shard, new_base, new_ts)
 
-    l_path = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}_#{new_ts}.log")
-    i_path = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}_#{new_ts}.idx")
+    # ✅ Use state.shard_dir
+    l_path = Path.join(state.shard_dir, "shard_#{state.shard}_#{new_base}_#{new_ts}.log")
+    i_path = Path.join(state.shard_dir, "shard_#{state.shard}_#{new_base}_#{new_ts}.idx")
 
     {:ok, l} = :file.open(l_path, [:append, :raw, :binary, :read, :write])
     {:ok, i} = :file.open(i_path, [:append, :raw, :binary, :read, :write])
@@ -217,7 +223,6 @@ defp calculate_current_count(shard, base) do
     if rem(offset, @user_stride) == 1 do
       index_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, offset::64, state.active_base::64, curr_pos::64>>
       :ok = :file.write(state.idx_fd, index_entry)
-      :file.datasync(state.idx_fd)
       :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
     end
 
@@ -225,12 +230,13 @@ defp calculate_current_count(shard, base) do
     {packet, packet_size, state}
   end
 
-  defp read_from_disk(shard, base, pos) do
-    case Path.wildcard(Path.join(@base_dir, "shard_#{shard}_#{base}_*.log")) do
+  defp read_from_disk(state, base, pos) do
+    # ✅ Search only within the shard's own folder
+    case Path.wildcard(Path.join(state.shard_dir, "shard_#{state.shard}_#{base}_*.log")) do
       [path | _] ->
-        case Queue.FDPoolShard.pread(shard, path, pos, @header_size) do
+        case Queue.FDPoolShard.pread(state.shard, path, pos, @header_size) do
           {:ok, <<0xEE, size::32, _crc::32, ulen::16, dlen::16, _ts::64>>} ->
-            case Queue.FDPoolShard.pread(shard, path, pos + @header_size, ulen + dlen + 12 + size) do
+            case Queue.FDPoolShard.pread(state.shard, path, pos + @header_size, ulen + dlen + 12 + size) do
               {:ok, <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary>>} ->
                 {:ok, %{u: u, writer_device: d, p: p, off: off, data: :erlang.binary_to_term(body, [:safe])}, pos + @header_size + ulen + dlen + 12 + size}
               _ -> {:error, :body_failed}
@@ -242,21 +248,21 @@ defp calculate_current_count(shard, base) do
     end
   end
 
-defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
+  defp stream_messages(state, user, p, seg_id, phys_pos, count, acc, device_id) do
     if count <= 0 do
       {:ok, Enum.reverse(acc)}
     else
-      case read_from_disk(shard, seg_id, phys_pos) do
+      case read_from_disk(state, seg_id, phys_pos) do
         {:ok, rec, next_pos} ->
           if rec.u == to_string(user) and rec.p == p and rec.writer_device != device_id do
-            stream_messages(shard, user, p, seg_id, next_pos, count - 1, [rec.data | acc], device_id)
+            stream_messages(state, user, p, seg_id, next_pos, count - 1, [rec.data | acc], device_id)
           else
-            stream_messages(shard, user, p, seg_id, next_pos, count, acc, device_id)
+            stream_messages(state, user, p, seg_id, next_pos, count, acc, device_id)
           end
 
         {:error, :eof} ->
-          case find_next_segment(shard, seg_id) do
-            {:ok, next} -> stream_messages(shard, user, p, next, 0, count, acc, device_id)
+          case find_next_segment(state, seg_id) do
+            {:ok, next} -> stream_messages(state, user, p, next, 0, count, acc, device_id)
             _ -> {:ok, Enum.reverse(acc)}
           end
 
@@ -266,8 +272,9 @@ defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
     end
   end
 
-  defp find_next_segment(shard, current_base) do
-    files = Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log"))
+  defp find_next_segment(state, current_base) do
+    # ✅ Search only within the shard's own folder
+    files = Path.wildcard(Path.join(state.shard_dir, "shard_#{state.shard}_*.log"))
     bases = Enum.map(files, fn f ->
       [_, _, base | _] = f |> Path.basename() |> String.replace(".log", "") |> String.split("_")
       String.to_integer(base)
@@ -279,7 +286,8 @@ defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
   end
 
   defp load_manifest(shard) do
-    path = Path.join(@base_dir, "shard_#{shard}.manifest")
+    shard_dir = Path.join(@base_dir, "shard_#{shard}")
+    path = Path.join(shard_dir, "shard_#{shard}.manifest")
     if File.exists?(path) do
       data = :erlang.binary_to_term(File.read!(path))
       %{base: data.active_base, ts: Map.get(data, :active_ts, System.system_time(:second)), exists: true}
@@ -289,7 +297,8 @@ defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
   end
 
   defp write_manifest(shard, base, ts) do
-    path = Path.join(@base_dir, "shard_#{shard}.manifest")
+    shard_dir = Path.join(@base_dir, "shard_#{shard}")
+    path = Path.join(shard_dir, "shard_#{shard}.manifest")
     File.write!(path <> ".tmp", :erlang.term_to_binary(%{active_base: base, active_ts: ts}))
     File.rename!(path <> ".tmp", path)
   end
