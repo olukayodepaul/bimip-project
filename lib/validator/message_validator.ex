@@ -25,6 +25,7 @@ defmodule Bimip.Validators.MessageValidator do
   @status_internal_error   500
   @status_unavailable      503
 
+  # ---------------- Public API ----------------
   @spec validate(Message.t()) :: :ok | {:error, map()}
   def validate(%Message{} = msg) do
     with :ok <- validate_id(msg.peer_uid),
@@ -32,6 +33,7 @@ defmodule Bimip.Validators.MessageValidator do
          :ok <- validate_identity(msg.to, "to"),
          :ok <- validate_from_to_not_same(msg.from, msg.to),
          :ok <- validate_timestamp(msg.timestamp),
+         :ok <- validate_payload_context(msg.payload_context),
          :ok <- validate_payload(msg.payload),
          :ok <- validate_encryption_type(msg.encryption_type),
          :ok <- validate_binary_field(msg.encrypted, "encrypted"),
@@ -44,7 +46,8 @@ defmodule Bimip.Validators.MessageValidator do
   defp validate_id(nil),
     do: error(@status_bad_request, "Missing peer_uid", "peer_uid")
 
-  defp validate_id(id) when is_binary(id) and byte_size(id) > 0, do: :ok
+  defp validate_id(id) when is_binary(id) and byte_size(id) > 0,
+    do: :ok
 
   defp validate_id(_),
     do: error(@status_bad_request, "Invalid peer_uid — must be non-empty string", "peer_uid")
@@ -93,19 +96,41 @@ defmodule Bimip.Validators.MessageValidator do
   defp validate_from_to_not_same(_, _), do: :ok
 
   # ---------------- Timestamp ----------------
-  defp validate_timestamp(ts) when is_integer(ts) and ts > 0, do: :ok
+  defp validate_timestamp(ts) when is_integer(ts) and ts > 0,
+    do: :ok
 
   defp validate_timestamp(_),
     do: error(@status_bad_request, "Invalid timestamp", "timestamp")
 
+  # ---------------- Payload Context ----------------
+  defp validate_payload_context(nil),
+    do: error(@status_bad_request, "Missing payload_context", "payload_context")
+
+  defp validate_payload_context(ctx) when ctx in [1, 2, 3],
+    do: :ok
+
+  defp validate_payload_context(_),
+    do:
+      error(
+        @status_bad_request,
+        "Invalid payload_context — allowed values are 1, 2, or 3",
+        "payload_context"
+      )
+
   # ---------------- Payload (JSON) ----------------
   defp validate_payload(payload) when is_binary(payload) do
-    case Jason.decode(payload) do
-      {:ok, _} ->
-        :ok
+    cond do
+      byte_size(String.trim(payload)) == 0 ->
+        error(@status_bad_request, "Payload cannot be empty", "payload")
 
-      {:error, _} ->
-        error(@status_bad_request, "Payload must be valid JSON", "payload")
+      true ->
+        case Jason.decode(payload) do
+          {:ok, _} ->
+            :ok
+
+          {:error, _} ->
+            error(@status_bad_request, "Payload must be valid JSON", "payload")
+        end
     end
   end
 
@@ -113,8 +138,11 @@ defmodule Bimip.Validators.MessageValidator do
     do: error(@status_bad_request, "Payload must be binary JSON", "payload")
 
   # ---------------- Optional Binary Fields ----------------
-  defp validate_binary_field(nil, _), do: :ok
-  defp validate_binary_field(val, _field) when is_binary(val), do: :ok
+  defp validate_binary_field(nil, _),
+    do: :ok
+
+  defp validate_binary_field(val, _field) when is_binary(val),
+    do: :ok
 
   defp validate_binary_field(_, field),
     do: error(@status_bad_request, "#{field} must be binary if provided", field)
@@ -125,18 +153,6 @@ defmodule Bimip.Validators.MessageValidator do
 
   defp validate_encryption_type(_),
     do: error(@status_invalid_encrypt, "Missing or invalid encryption_type", "encryption_type")
-
-  # ---------------- Message Type ----------------
-  defp validate_type(t) when is_integer(t), do: :ok
-
-  defp validate_type(_),
-    do: error(@status_bad_request, "Invalid message type", "type")
-
-  # ---------------- Transmission Mode ----------------
-  defp validate_transmission_mode(t) when is_integer(t), do: :ok
-
-  defp validate_transmission_mode(_),
-    do: error(@status_bad_request, "Invalid transmission_mode", "transmission_mode")
 
   # ---------------- Error Helper ----------------
   defp error(code, description, field),

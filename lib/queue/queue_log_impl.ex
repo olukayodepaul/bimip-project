@@ -1,907 +1,355 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
-  BimipLog — append-only per-user/device log with per-device pending ACKs.
-
-  Features:
-    - File-backed segments with sparse index
-    - Per-device pending ACKs (MapSet) to avoid full log scans
-    - Commit offsets advanced to the highest acknowledged offset
-    - Supports millions of users/devices efficiently
+  BimipLog v10 — Sharded Append-Only Log.
+  Organized by Recipient Inbox with Device-ID filtering and FD Pool Proxy Reading.
   """
-
+  use GenServer
   require Logger
 
+  # ------------------------------------------------------------------
+  # CONFIG
+  # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+  # CONFIG
+  # ------------------------------------------------------------------
+
+  # The root directory where all log and index files are stored.
   @base_dir "data/bimip"
-  @index_granularity 1
-  @segment_size_limit 104_857_600 # 100 MB
-  @entry_header_size 8           # FIX: 32bit size + 32bit crc for log entries
-  @index_entry_size 20           # FIX: 64bit offset + 32bit seg + 64bit pos for index
-  alias Queue.Persist
 
-  # ----------------------
-  # Public API
-  # ----------------------
+  # Total number of virtual partitions. phash2 uses this to distribute users.
+  @num_shards 64
 
-  @doc "Append a message to a user's partition log"
-  def write(user, partition_id, from, to, payload, message_id, sender_offset) do
-    with :ok <- ensure_files_exist(user, partition_id),
-        {:ok, %{seg: seg, next_offset: next_offset, do_rollover: do_rollover}} <- get_atomic_write_state(user, partition_id) do
+  # Size in bytes of our binary packet header (Magic + Sizes + CRC + TS).
+  @header_size 21
 
-      qfile = queue_file(user, partition_id, seg)
+  # How often (in milliseconds) the GenServer flushes the ETS buffer to disk.
+  @flush_interval 20
 
-      case File.open(qfile, [:append, :binary]) do
-        {:ok, fd} ->
-          {:ok, pos_before} = :file.position(fd, :eof)
+  # CHANGE THIS FOR TESTING:
+  # The byte limit for a .log file before it closes and starts a new one.
+  # Set to 2000 to trigger rotation after ~4-5 stress test messages.
+  @max_segment_size 2000
 
-          timestamp = DateTime.utc_now() |> DateTime.to_unix(:millisecond)
-          offset_payload = Persist.build(%{payload: payload}, next_offset, sender_offset)
+  # Backpressure limit: If the ETS buffer has more than this many items,
+  # the 'write' function returns {:error, :backpressure} to slow down the sender.
+  @max_buffer_per_shard 500_000
 
-          record = %{
-            message_id: message_id,
-            device_id: payload.device_id,
-            offset: next_offset,
-            partition_id: partition_id,
-            from: from,
-            to: to,
-            payload: offset_payload,
-            timestamp: timestamp
-          }
+  # ETS table name for mapping {shard, segment} -> {last_offset, physical_pos}.
+  @checkpoints :bimip_segment_checkpoints
 
-          result =
-            case write_log_entry(fd, record) do
-              :ok ->
-                :ok = finalize_write_state(user, partition_id, seg, next_offset, pos_before, do_rollover)
-                {:ok, next_offset}
+  # ETS table name for tracking the global incrementing offset per user.
+  @user_offsets :bimip_user_offsets
 
-              {:error, reason} ->
-                Logger.error("Failed to write log entry: #{inspect(reason)}")
-                {:error, reason}
-            end
+  # Prefix for naming shard-specific Index cache tables (e.g., :bimip_idx_14).
+  @idx_cache_prefix :"bimip_idx_"
 
-          File.close(fd)
-          result
+  # Prefix for naming shard-specific Write buffers (e.g., :bimip_buf_14).
+  @log_buffer_prefix :"bimip_buf_"
 
-        {:error, reason} ->
-          Logger.error("Failed to open segment file #{qfile}: #{inspect(reason)}")
-          {:error, reason}
-      end
-    else
-      {:error, reason} ->
-        Logger.error("Failed to acquire atomic write state: #{inspect(reason)}")
-        {:error, reason}
-    end
+  # Every Nth message is recorded in the .idx file.
+  # (Set to 3 means: message 3, 6, 9... get a physical pointer in the index).
+  @user_stride 3
+
+  # ------------------------------------------------------------------
+  # PUBLIC API
+  # ------------------------------------------------------------------
+
+  def start_link(shard) do
+    GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
   end
 
-  def fetch(user, device_id, partition_id, limit \\ 10) when limit > 0 do
-    with :ok <- ensure_files_exist(user, partition_id),
-        :ok <- ensure_device_files_exist(user, device_id, partition_id),
-        {:ok, commit_offset} <- get_commit_offset(user, device_id, partition_id),
-        {:ok, current_seg} <- get_current_segment(user, partition_id),
-        {:ok, first_seg} <- get_first_segment(user, partition_id) do
+  def __startup__ do
+    if :ets.info(@user_offsets) == :undefined, do: :ets.new(@user_offsets, [:named_table, :public, :set, {:write_concurrency, true}])
+    if :ets.info(@checkpoints) == :undefined, do: :ets.new(@checkpoints, [:named_table, :public, :set, {:read_concurrency, true}])
 
-      target_offset = commit_offset + 1
-      {_indexed_offset, start_seg_from_idx, start_pos_from_idx} =
-        lookup_sparse_index(user, partition_id, target_offset)
-
-      start_seg = max(start_seg_from_idx, first_seg)
-
-      # Lazy stream across segments
-      payload_stream =
-        start_seg..current_seg
-        |> Stream.flat_map(fn seg ->
-          qfile = queue_file(user, partition_id, seg)
-
-          if File.exists?(qfile) do
-            case File.open(qfile, [:read, :binary]) do
-              {:ok, fd} ->
-                start_pos = if seg == start_seg, do: start_pos_from_idx, else: 0
-
-                read_segment_from_fd_lazy(fd, start_pos, target_offset, user, device_id, limit)
-                |> Stream.take(limit) # limit per fetch
-                |> tap_close_file(fd)
-
-              {:error, reason} ->
-                Logger.error("Failed to open segment file #{qfile}: #{inspect(reason)}")
-                []
-            end
-          else
-            []
-          end
-        end)
-        |> Enum.take(limit) # materialize batch
-
-      {:ok,
-        %{
-          messages: payload_stream,
-          device_offset: commit_offset,
-          target_offset: target_offset,
-          current_segment: current_seg,
-          first_segment: first_seg
-        }}
-    else
-      {:error, reason} -> {:error, reason}
+    for s <- 0..(@num_shards - 1) do
+      buf = log_buffer(s)
+      idx = idx_cache(s)
+      if :ets.info(buf) == :undefined, do: :ets.new(buf, [:named_table, :public, :duplicate_bag, {:write_concurrency, true}])
+      if :ets.info(idx) == :undefined, do: :ets.new(idx, [:named_table, :public, :set, {:read_concurrency, true}])
     end
-  end
-
-  defp read_segment_from_fd_lazy(fd, start_pos, target_offset, eid, device_id, limit) do
-    :file.position(fd, start_pos)
-
-    Stream.unfold({fd, 0}, fn
-      {fd_state, count} when count < limit ->
-        case read_log_entry(fd_state) do
-          :eof -> nil
-          {:corrupt, _} -> nil
-          {:ok, msg} ->
-            if msg.offset >= target_offset and msg.device_id != device_id do
-              {{msg.offset, msg.payload}, {fd_state, count + 1}}
-            else
-              {nil, {fd_state, count}}
-            end
-        end
-
-      _ ->
-        nil
-    end)
-    |> Stream.reject(&is_nil/1)
-    |> Stream.map(fn {_offset, msg} ->
-      intended_to = %Bimip.Identity{
-        eid: eid,
-        connection_resource_id: device_id,
-        node: nil
-      }
-
-      %Bimip.Message{
-        msg |
-        to: intended_to,
-        timestamp: Until.UniPosTime.uni_pos_time(),
-        type: if msg.from.eid == eid do 2 else 3 end
-      }
-    end)
-  end
-
-
-  # ----------------------
-  # Helper to close file after stream processing
-  # ----------------------
-  defp tap_close_file(stream, fd) do
-    Stream.resource(
-      fn -> stream end,
-      fn
-        s ->
-          case Enum.split(s, 1) do
-            {[], _} -> {:halt, s}
-            {[h], t} -> {[h], t}
-          end
-      end,
-      fn _ -> File.close(fd) end
-    )
-  end
-
-
-
-  # ----------------------
-  # Atomic write helpers
-  # ----------------------
-  def get_atomic_write_state(user, partition_id) do
-    case :mnesia.transaction(fn ->
-      current_seg =
-        case :mnesia.read(:current_segment, {user, partition_id}) do
-          [{:current_segment, {^user, ^partition_id}, seg}] -> seg
-          [] -> 1
-        end
-
-      next_offset =
-        case :mnesia.read(:next_offsets, {user, partition_id}) do
-          [{:next_offsets, {^user, ^partition_id}, offset}] -> offset
-          [] -> 1
-        end
-
-      qfile = queue_file(user, partition_id, current_seg)
-      do_rollover =
-        case File.stat(qfile) do
-          {:ok, stat} when stat.size >= @segment_size_limit -> true
-          _ -> false
-        end
-
-      :mnesia.write({:next_offsets, {user, partition_id}, next_offset + 1})
-
-      new_seg = if do_rollover, do: current_seg + 1, else: current_seg
-
-      # Return a single {:ok, map}
-      %{seg: new_seg, next_offset: next_offset, do_rollover: do_rollover}
-    end) do
-      {:atomic, map} -> {:ok, map}
-      {:aborted, reason} -> {:error, {:mnesia_aborted, reason}}
-    end
-  end
-
-  defp finalize_write_state(user, partition_id, current_seg, offset, pos_before, do_rollover) do
-    if do_rollover do
-      new_seg = current_seg + 1
-      set_current_segment(user, partition_id, new_seg)
-      File.touch(queue_file(user, partition_id, new_seg))
-    end
-
-    if rem(offset, @index_granularity) == 0 do
-      append_index_file(user, partition_id, current_seg, offset, pos_before)
-    end
-
     :ok
   end
 
-  # ----------------------
-  # Segment helpers
-  # ----------------------
-  defp get_current_segment(user, partition_id) do
-    key = {user, partition_id}
-    case :mnesia.transaction(fn -> :mnesia.read(:current_segment, key) end) do
-      {:atomic, [{:current_segment, ^key, seg}]} -> {:ok, seg}
-      {:atomic, []} -> {:ok, 1}
-      {:aborted, reason} -> {:error, reason}
-    end
-  end
+  def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id) do
+    shard = :erlang.phash2(recipient_uid, @num_shards)
+    buf = log_buffer(shard)
 
-  defp get_first_segment(user, partition_id) do
-    key = {user, partition_id}
-    case :mnesia.transaction(fn -> :mnesia.read(:first_segment, key) end) do
-      {:atomic, [{:first_segment, ^key, seg}]} -> {:ok, seg}
-      {:atomic, []} -> {:ok, 1}
-      {:aborted, reason} -> {:error, reason}
-    end
-  end
-
-  defp set_current_segment(user, partition_id, seg) do
-    key = {user, partition_id}
-    :mnesia.transaction(fn -> :mnesia.write({:current_segment, key, seg}) end)
-  end
-
-  # ----------------------
-  # Commit offsets
-  # ----------------------
-  def get_commit_offset(user, device_id, partition_id) do
-    key = {user, device_id, partition_id}
-    case :mnesia.transaction(fn -> :mnesia.read(:commit_offsets, key) end) do
-      {:atomic, [{:commit_offsets, ^key, offset}]} -> {:ok, offset}
-      {:atomic, []} -> {:ok, 0}
-      {:aborted, reason} -> {:error, reason}
-    end
-  end
-
-  # ----------------------
-  # Sparse index helpers
-  # ----------------------
-  defp queue_file(user, partition_id, seg), do: Path.join(user_dir(user), "queue_#{partition_id}_#{seg}.log")
-  defp user_dir(user), do: Path.join(@base_dir, user)
-  defp index_file(user, partition_id), do: Path.join(user_dir(user), "index_#{partition_id}.idx")
-  defp ensure_files_exist(user, _partition_id), do: File.mkdir_p(user_dir(user))
-  defp ensure_device_files_exist(_user, _device, _partition), do: :ok
-
-  defp append_index_file(user, partition_id, seg, offset, pos) do
-    idx_file = index_file(user, partition_id)
-    case File.open(idx_file, [:append, :binary]) do
-      {:ok, fd} ->
-        :ok = IO.binwrite(fd, <<offset::64, seg::32, pos::64>>)
-        File.close(fd)
-        :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp lookup_sparse_index(user, partition_id, target_offset) do
-    idx = index_file(user, partition_id)
-
-    case File.stat(idx) do
-      {:ok, %{size: size}} when size >= @index_entry_size -> # Used constant
-        entries = div(size, @index_entry_size)  # Used constant
-        case File.open(idx, [:read, :binary]) do
-          {:ok, fd} ->
-            res = binary_search_index_fd(fd, target_offset, 0, entries - 1, {0, 1, 0})
-            File.close(fd)
-            res
-          {:error, _} -> {0, 1, 0}
-        end
-
-      _ -> {0, 1, 0}  # index file doesn't exist or empty
-    end
-  end
-
-  defp binary_search_index_fd(_fd, _target, low, high, best) when low > high, do: best
-  defp binary_search_index_fd(fd, target_offset, low, high, best) do
-    mid = div(low + high, 2)
-    pos = mid * @index_entry_size # Used constant
-    case :file.position(fd, pos) do
-      {:ok, _} ->
-        case :file.read(fd, @index_entry_size) do # Used constant
-          {:ok, <<offset::64, seg::32, pos64::64>>} ->
-            cond do
-              offset == target_offset -> {offset, seg, pos64}
-              offset < target_offset -> binary_search_index_fd(fd, target_offset, mid + 1, high, {offset, seg, pos64})
-              offset > target_offset -> binary_search_index_fd(fd, target_offset, low, mid - 1, best)
-            end
-          _ -> best
-        end
-      _ -> best
-    end
-  end
-  # ----------------------
-  # Log entry serialization
-  # ----------------------
-  defp write_log_entry(fd, record) do
-    try do
-      data = :erlang.term_to_binary(record)
-      crc = :erlang.crc32(data)
-      IO.binwrite(fd, <<byte_size(data)::32, crc::32, data::binary>>)
-      :ok
-    rescue
-      e -> {:error, e}
-    end
-  end
-
-  defp read_log_entry(fd) do
-    case :file.read(fd, @entry_header_size) do # Used constant
-      {:ok, <<size::32, crc::32>>} ->
-        case :file.read(fd, size) do
-          {:ok, bin} ->
-            if :erlang.crc32(bin) == crc, do: {:ok, :erlang.binary_to_term(bin)}, else: {:corrupt, :crc_mismatch}
-          :eof -> :eof
-          {:error, reason} -> {:corrupt, reason} # Safety fix
-        end
-      :eof -> :eof
-      {:error, reason} -> {:corrupt, reason} # Safety fix
-    end
-  end
-
-  # -------------------------------------------------------------------
-  # Acknowledge (commit) message offset — moves contiguous commit forward
-  # Supports single offset or range
-  # -------------------------------------------------------------------
-  def ack_message(user, device, partition, offset_or_range) do
-    key = {user, device, partition}
-
-    offsets =
-      case offset_or_range do
-        %Range{} = r -> Enum.to_list(r)
-        offset when is_integer(offset) -> [offset]
-      end
-
-    result =
-      :mnesia.transaction(fn ->
-        # Get current commit offset
-        commit =
-          case :mnesia.read(:commit_offsets, key) do
-            [{:commit_offsets, ^key, c}] -> c
-            [] -> 0
-          end
-
-        # Get current pending set
-        pending =
-          case :mnesia.read(:pending_acks, key) do
-            [{:pending_acks, ^key, set}] -> set
-            [] -> MapSet.new()
-          end
-
-        # Merge offsets into pending in a single pass
-        new_pending = Enum.reduce(offsets, pending, fn off, acc ->
-          if off > commit, do: MapSet.put(acc, off), else: acc
-        end)
-
-        # Advance commit forward if contiguous
-        new_commit = advance_commit_to_max(new_pending, commit)
-        remaining = MapSet.filter(new_pending, fn x -> x > new_commit end)
-
-        # Persist
-        :mnesia.write({:commit_offsets, key, new_commit})
-        :mnesia.write({:pending_acks, key, remaining})
-
-        new_commit
-      end)
-
-    case result do
-      {:atomic, commit} -> {:ok, commit}
-      {:aborted, reason} -> {:error, reason}
-    end
-  end
-
-  defp advance_commit_to_max(pending, commit) do
-    next = commit + 1
-
-    if MapSet.member?(pending, next) do
-      # Move commit forward and continue
-      advance_commit_to_max(MapSet.delete(pending, next), next)
+    if :ets.info(buf, :size) > @max_buffer_per_shard do
+      {:error, :backpressure}
     else
-      # Return the highest contiguous commit
-      commit
+      offset = :ets.update_counter(@user_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
+
+      # KEEPING YOUR EXACT LOGIC
+      data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
+
+      # SPEED ADJUST: Serialize in worker process to offload GenServer CPU
+      bin_data = :erlang.term_to_binary(data)
+
+      record = %{
+        u: recipient_uid,
+        p: partition_id,
+        off: offset,
+        mid: message_id,
+        writer_device: to_string(device_id),
+        bin: bin_data, # Pass pre-serialized binary
+        ts: System.system_time(:second)
+      }
+
+      :ets.insert(buf, {shard, offset, record})
+      {:ok, offset}
     end
   end
 
-  def message_status(user, _device, partition, offset) do
-    # key = {user, device, partition}
-    key = {user,  partition}
-
-    {:ok, sent_commit} =
-      case :mnesia.transaction(fn ->
-        case :mnesia.read(:commit_sent, key) do
-          [{:commit_sent, ^key, c}] -> c
-          [] -> 0
-        end
-      end) do
-        {:atomic, c} -> {:ok, c}
-        _ -> {:ok, 0}
-      end
-
-    {:ok, delivered_commit} =
-      case :mnesia.transaction(fn ->
-        case :mnesia.read(:commit_delivered, key) do
-          [{:commit_delivered, ^key, c}] -> c
-          [] -> 0
-        end
-      end) do
-        {:atomic, c} -> {:ok, c}
-        _ -> {:ok, 0}
-      end
-
-    {:ok, read_commit} =
-      case :mnesia.transaction(fn ->
-        case :mnesia.read(:commit_read, key) do
-          [{:commit_read, ^key, c}] -> c
-          [] -> 0
-        end
-      end) do
-        {:atomic, c} -> {:ok, c}
-        _ -> {:ok, 0}
-      end
-
-    {:ok, pending_sent} =
-      case :mnesia.transaction(fn ->
-        case :mnesia.read(:pending_sent, key) do
-          [{:pending_sent, ^key, s}] -> s
-          [] -> MapSet.new()
-        end
-      end) do
-        {:atomic, s} -> {:ok, s}
-        _ -> {:ok, MapSet.new()}
-      end
-
-    {:ok, pending_delivered} =
-      case :mnesia.transaction(fn ->
-        case :mnesia.read(:pending_delivered, key) do
-          [{:pending_delivered, ^key, s}] -> s
-          [] -> MapSet.new()
-        end
-      end) do
-        {:atomic, s} -> {:ok, s}
-        _ -> {:ok, MapSet.new()}
-      end
-
-    {:ok, pending_read} =
-      case :mnesia.transaction(fn ->
-        case :mnesia.read(:pending_read, key) do
-          [{:pending_read, ^key, s}] -> s
-          [] -> MapSet.new()
-        end
-      end) do
-        {:atomic, s} -> {:ok, s}
-        _ -> {:ok, MapSet.new()}
-      end
-
-    %{
-      sent: offset <= sent_commit or MapSet.member?(pending_sent, offset),
-      delivered: offset <= delivered_commit or MapSet.member?(pending_delivered, offset),
-      read: offset <= read_commit or MapSet.member?(pending_read, offset)
-    }
-  end
-
-  def confirm_adv_offset?(user, device, partition, offset) do
-    key = {user, device, partition}
-
-    :mnesia.transaction(fn ->
-      commit =
-        case :mnesia.read(:commit_offsets, key) do
-          [{:commit_offsets, ^key, c}] -> c
-          [] -> 0
-        end
-
-      pending =
-        case :mnesia.read(:pending_acks, key) do
-          [{:pending_acks, ^key, set}] -> set
-          [] -> MapSet.new()
-        end
-
-      # True if offset is <= commit (contiguous) OR is in pending ACKs
-      offset <= commit or MapSet.member?(pending, offset)
-    end)
-    |> case do
-      {:atomic, result} -> result
-      {:aborted, _} -> false
-    end
-  end
-
-  def insert_message_id(snd_id, rec_id, partition_id, message_id, snd_offset, rec_offset) do
-    snd_key = {snd_id, partition_id, message_id}
-    rec_key = {rec_id, partition_id, message_id}
-
-    :mnesia.transaction(fn ->
-      # Check for existing sender key
-      case :mnesia.read(:message_offset, snd_key) do
-        [{:message_offset, ^snd_key, _}] ->
-          :mnesia.abort({:exists, :sender})
-        [] ->
-          :ok
-      end
-
-      # Check for existing receiver key
-      case :mnesia.read(:message_offset, rec_key) do
-        [{:message_offset, ^rec_key, _}] ->
-          :mnesia.abort({:exists, :receiver})
-        [] ->
-          :ok
-      end
-
-      # If both keys do not exist → insert both
-      :mnesia.write({:message_offset, snd_key, snd_offset})
-      :mnesia.write({:message_offset, rec_key, rec_offset})
-
-      {:ok, :inserted}
-    end)
-    |> case do
-      {:atomic, result} -> result
-      {:aborted, reason} -> {:error, reason}
-    end
-  end
-
-  def get_message_offset(user, partition_id, message_id) do
-    key = {user, partition_id, message_id}
-
-    :mnesia.transaction(fn ->
-      case :mnesia.read(:message_offset, key) do
-        [{:message_offset, ^key, offset}] ->
-          {:ok, offset}
-
-        [] ->
-          {:error, :not_found}
-      end
-    end)
-    |> case do
-      {:atomic, result} ->
-        result
-
-      {:aborted, reason} ->
-        {:error, reason}
-    end
-  end
-
-  def get_last_seen_offset(user, device, partition_id) do
-    key = {user, device, partition_id}
-
-    :mnesia.transaction(fn ->
-      case :mnesia.read(:commit_offsets, key) do
-        [{:commit_offsets, ^key, offset}] -> offset
-        [] -> 0
-      end
-    end)
-    |> case do
-      {:atomic, offset} -> {:ok, offset}
-      {:aborted, reason} -> {:error, reason}
-    end
-  end
-
-  def ack_message_batched(user, device, partition, offset_or_range, batch_size \\ 1_000) do
-    key = {user, device, partition}
-
-    offsets_stream =
-      case offset_or_range do
-        %Range{} = r -> Stream.chunk_every(Enum.to_list(r), batch_size)
-        offset when is_integer(offset) -> [[offset]]
-      end
-
-    Enum.reduce_while(offsets_stream, {:ok, 0}, fn batch, {:ok, _last_commit} ->
-      case :mnesia.transaction(fn ->
-        # Get current commit offset
-        commit =
-          case :mnesia.read(:commit_offsets, key) do
-            [{:commit_offsets, ^key, c}] -> c
-            [] -> 0
-          end
-
-        # Get current pending set
-        pending =
-          case :mnesia.read(:pending_acks, key) do
-            [{:pending_acks, ^key, set}] -> set
-            [] -> MapSet.new()
-          end
-
-        # Merge batch offsets safely
-        new_pending =
-          Enum.reduce(batch, pending, fn off, acc ->
-            if off > commit, do: MapSet.put(acc, off), else: acc
-          end)
-
-        # Advance commit
-        new_commit = advance_commit_to_max(new_pending, commit)
-        remaining = MapSet.filter(new_pending, fn x -> x > new_commit end)
-
-        # Persist
-        :mnesia.write({:commit_offsets, key, new_commit})
-        :mnesia.write({:pending_acks, key, remaining})
-
-        new_commit
-      end) do
-        {:atomic, commit} -> {:cont, {:ok, commit}}
-        {:aborted, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-
-
-
-def ack_status_multi(users_offsets_status) when is_list(users_offsets_status) do
-    :mnesia.transaction(fn ->
-      Enum.map(users_offsets_status, fn {user, partition, offset_or_range, status} ->
-        # Normalize the input into a list of {start, end} ranges immediately
-        ranges = normalize_to_ranges(offset_or_range)
-        ack_status_core(user, partition, ranges, status)
-      end)
-    end)
-    |> case do
-      {:atomic, commits} -> {:ok, commits}
-      {:aborted, reason} -> {:error, reason}
-    end
-  end
-
-  @doc """
-  Update a single user's ack status.
-  """
-  def ack_status(user, partition, offset_or_range, status) when status in [:sent, :delivered, :read] do
-    ack_status_multi([{user, partition, offset_or_range, status}])
+  def fetch_batch(user, partition_id, device_id, batch_size \\ 50) do
+    shard = :erlang.phash2(user, @num_shards)
+    GenServer.call(worker_name(shard), {:fetch, user, partition_id, to_string(device_id), batch_size}, 15_000)
   end
 
   # ------------------------------------------------------------------
-  # Core Transactional Logic
+  # GENSERVER HANDLERS
   # ------------------------------------------------------------------
 
-  # Core function: read-modify-write inside a single transaction
-  defp ack_status_core(user, partition, ranges, status) do
-    key = {user, partition}
+  @impl true
+  def init(shard) do
+    File.mkdir_p!(@base_dir)
+    manifest = load_manifest(shard)
 
-    # Read current state from Mnesia
-    state = read_current_state(key)
+    # 1. Assign Log and Index FDs
+    {:ok, log_fd} = :file.open(manifest.log, [:append, :raw, :binary, :read, :write])
+    {:ok, idx_fd} = :file.open(manifest.idx, [:append, :raw, :binary, :read, :write])
 
-    # Apply transitivity
-    state = apply_transitivity(state, ranges, status)
+    # 2. Assign Bookmark Bin FD (Aligned to this shard)
+    bin_path = Path.join("data/device_bookmarks", "shard_#{shard}.bin")
+    {:ok, bin_fd} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
 
-    # Write back
-    Enum.each([:sent, :delivered, :read], fn s ->
-      {pending_table, commit_table} = status_tables(s)
-      pending_ranges = Map.fetch!(state, pending_table)
-      commit = Map.fetch!(state, commit_table)
-      :mnesia.write({pending_table, key, pending_ranges})
-      :mnesia.write({commit_table, key, commit})
-    end)
+    {:ok, pos} = :file.position(log_fd, :cur)
+    schedule_flush()
 
-    # Return commit offset for requested status
-    {_, commit_table} = status_tables(status)
-    Map.fetch!(state, commit_table)
+    {:ok, %{
+      shard: shard,
+      log_fd: log_fd,
+      idx_fd: idx_fd,
+      bin_fd: bin_fd, # Persistent write handle
+      current_size: pos,
+      active_base: manifest.base
+    }}
   end
 
-  # ------------------------------------------------------------------
-  # Transitivity Logic
-  # ------------------------------------------------------------------
+  @impl true
+  def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
+    {seg_id, log_start, phys_start} = Queue.DeviceBookmark.get(device_id, user, p)
+    mem_results = fetch_from_buffer(state.shard, user, p, device_id, log_start, batch_size)
 
-  defp apply_transitivity(state, ranges, :read) do
-    state
-    |> update_status(ranges, :sent)
-    |> update_status(ranges, :delivered)
-    |> update_status(ranges, :read)
-  end
-
-  defp apply_transitivity(state, ranges, :delivered) do
-    state
-    |> update_status(ranges, :sent)
-    |> update_status(ranges, :delivered)
-  end
-
-  defp apply_transitivity(state, ranges, :sent) do
-    update_status(state, ranges, :sent)
-  end
-
-  # Update pending ranges and commit for a specific status
-  defp update_status(state, ranges, status) do
-    {pending_table, commit_table} = status_tables(status)
-
-    pending = Map.fetch!(state, pending_table)
-    commit = Map.fetch!(state, commit_table)
-
-    # 1. Merge new ranges into existing pending ranges, CRITICALLY passing the commit
-    # to filter out offsets that are already committed.
-    new_pending = merge_ranges(pending, ranges, commit)
-
-    # 2. Update commit
-    new_commit = advance_contiguous_to_max(new_pending, commit)
-
-    # 3. Remove contiguous offsets from pending list
-    remaining = remove_committed_range(new_pending, new_commit, commit)
-
-    state
-    |> Map.put(pending_table, remaining)
-    |> Map.put(commit_table, new_commit)
-  end
-
-  # ------------------------------------------------------------------
-  # Range Utilities
-  # ------------------------------------------------------------------
-
-  @doc false
-  # Fixed range merging logic: takes the current commit and filters new ranges against it.
-  defp merge_ranges(existing_ranges, new_ranges, commit) do
-    # 1. Filter and flatten all valid ranges (must start > commit)
-    valid_new_ranges =
-      Enum.flat_map(new_ranges, fn {s, e} ->
-        start = max(s, commit + 1)
-        if start <= e, do: [{start, e}], else: []
-      end)
-
-    all_ranges = List.flatten([existing_ranges, valid_new_ranges])
-
-    # 2. Sort by start offset
-    sorted_ranges = Enum.sort(all_ranges, fn {s1, _}, {s2, _} -> s1 <= s2 end)
-
-    # 3. Merge overlapping/contiguous ranges
-    Enum.reduce(sorted_ranges, [], fn
-      {s, e}, [] ->
-        [{s, e}] # Start of list
-      {s, e}, [{prev_s, prev_e} | rest] = acc ->
-        # If current range overlaps or is contiguous (s <= prev_e + 1)
-        if s <= prev_e + 1 do
-          # Merge: use the earliest start and the latest end
-          [{prev_s, max(prev_e, e)} | rest]
-        else
-          # Not contiguous, prepend the current range
-          [ {s, e} | acc ]
-        end
-    end)
-    |> Enum.reverse() # Reverse back to ascending order of start offset
-  end
-
-  defp advance_contiguous_to_max([], commit), do: commit
-
-  # The start offset of the first range must be exactly 'commit + 1' to advance.
-  defp advance_contiguous_to_max([{s, _e} | _], commit) when s > commit + 1, do: commit
-
-  # If the first range starts exactly at commit + 1, the new commit is that range's end (e).
-  # We don't need to recursively check the rest because advance_contiguous_to_max only
-  # cares about the first element in the sorted list. The range merging logic ensures
-  # that if the list starts with a contiguous block, it's already one merged range.
-  defp advance_contiguous_to_max([{_s, e} | _rest], _commit) do
-    # Since we passed the guard for s > commit + 1, s must equal commit + 1 here.
-    e
-  end
-
-  # Simplified and fixed logic for removing the committed range
-  defp remove_committed_range(ranges, new_commit, old_commit) do
-    if new_commit > old_commit do
-      case ranges do
-        [{_start, end_offset} | rest] ->
-          # If the new commit covers the entire first range, drop it
-          if end_offset <= new_commit do
-            rest
-          else
-            # Otherwise, the new pending starts one past the new commit point
-            [{new_commit + 1, end_offset} | rest]
-          end
-        [] ->
-          []
-      end
+    results = if length(mem_results) >= batch_size do
+      mem_results
     else
-      ranges # Nothing changed, commit did not advance
-    end
-  end
-
-  # ------------------------------------------------------------------
-  # Mnesia Helpers
-  # ------------------------------------------------------------------
-
-  defp status_tables(:sent), do: {:pending_sent, :commit_sent}
-  defp status_tables(:delivered), do: {:pending_delivered, :commit_delivered}
-  defp status_tables(:read), do: {:pending_read, :commit_read}
-
-  defp read_current_state(key) do
-    Enum.reduce([:sent, :delivered, :read], %{}, fn status, acc ->
-      {pending_table, commit_table} = status_tables(status)
-
-      pending = case :mnesia.read(pending_table, key) do
-        [{^pending_table, ^key, value}] -> value
-        [] -> [] # Default to empty list of ranges
-      end
-
-      commit = case :mnesia.read(commit_table, key) do
-        [{^commit_table, ^key, c}] -> c
-        [] -> 0
-      end
-
-      acc
-      |> Map.put(pending_table, pending)
-      |> Map.put(commit_table, commit)
-    end)
-  end
-
-  # ------------------------------------------------------------------
-  # Normalize Input to Ranges
-  # ------------------------------------------------------------------
-
-  # Robust normalization: handles single integer, single Range, or a list containing both.
-  defp normalize_to_ranges(offset_or_range) do
-    cond do
-      is_integer(offset_or_range) ->
-        [{offset_or_range, offset_or_range}]
-
-      match?(%Range{}, offset_or_range) ->
-        [{offset_or_range.first, offset_or_range.last}]
-
-      is_list(offset_or_range) ->
-        Enum.flat_map(offset_or_range, fn
-          i when is_integer(i) -> {i, i}
-          %Range{first: s, last: e} -> {s, e}
-          _ -> []
-        end)
-
-      true ->
-        # Default to an empty list of ranges if the format is unknown
+      remaining = batch_size - length(mem_results)
+      disk_results = if seg_id == 0 do
         []
+      else
+        {:ok, res} = stream_messages(state.shard, user, p, seg_id, phys_start, remaining, [], device_id)
+        res
+      end
+      disk_results ++ mem_results
     end
+
+    {:reply, {:ok, results}, state}
   end
 
-  def save_peer_offset(user, peer, partition, offset) do
-    key = {user, peer, partition}
-
-    case :mnesia.transaction(fn ->
-      # Write last offset atomically
-      :mnesia.write({:peer_offsets, user, peer, partition, offset})
-    end) do
-      {:atomic, :ok} -> {:ok, offset}
-      {:aborted, reason} -> {:error, reason}
-    end
+  @impl true
+  def handle_info(:flush, state) do
+    new_state = perform_flush(state)
+    schedule_flush()
+    {:noreply, new_state}
   end
 
-  def recover_and_repair(user, partition_id) do
-    {:ok, current_seg} = get_current_segment(user, partition_id)
-    qfile = queue_file(user, partition_id, current_seg)
+  # ------------------------------------------------------------------
+  # SINGLE-FLUSH ARCHITECTURE (LOG + IDX + BIN)
+  # ------------------------------------------------------------------
+defp perform_flush(state) do
+  buf = log_buffer(state.shard)
+  case :ets.take(buf, state.shard) do
+    [] -> state
+    items ->
+      # Check rotation ONCE before starting the batch
+      state = if state.current_size >= @max_segment_size, do: rotate_segment(state), else: state
 
-    if File.exists?(qfile) do
-      Logger.info("Recovering partition #{partition_id} for user #{user}...")
+      sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
+      initial_pos = state.current_size
 
-      # 1. Open log and walk it to find the last valid entry
-      {:ok, fd} = :file.open(qfile, [:read, :binary])
-      {last_offset, last_pos} = walk_log_and_rebuild_index(fd, user, partition_id, current_seg)
-      :file.close(fd)
+      {io_list, final_pos, final_state} =
+        Enum.reduce(sorted, {[], initial_pos, state}, fn {_shard, off, rec}, {acc_io, curr_phys_pos, acc_state} ->
+          # We pass acc_state here, which now has stable FDs
+          {packet, packet_size, updated_state} = build_packet_data(acc_state, rec, off, curr_phys_pos)
 
-      # 2. Sync Mnesia with the actual physical state
-      :mnesia.transaction(fn ->
-        :mnesia.write({:next_offsets, {user, partition_id}, last_offset + 1})
-      end)
+          Queue.DeviceBookmark.mark_anchor(rec.u, rec.p, updated_state.active_base, off, curr_phys_pos)
+          {[acc_io | packet], curr_phys_pos + packet_size, updated_state}
+        end)
 
-      {:ok, last_offset}
+      case :file.write(final_state.log_fd, io_list) do
+        :ok ->
+          bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
+          bin_payload = :erlang.term_to_binary(bookmark_data)
+          :file.pwrite(final_state.bin_fd, 0, bin_payload)
+
+          %{final_state | current_size: final_pos}
+        {:error, reason} ->
+          IO.puts "❌ Write failed: #{reason}"
+          final_state
+      end
+  end
+end
+
+  defp build_packet_data(state, rec, offset, curr_pos) do
+  # 🔥 REMOVED THE ROTATION CHECK FROM HERE 🔥
+  # It is now handled by perform_flush at the start of the batch.
+
+  user_bin = to_string(rec.u)
+  device_bin = to_string(rec.writer_device)
+
+  packet = [
+    <<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(user_bin)::16, byte_size(device_bin)::16, rec.ts::64>>,
+    user_bin,
+    device_bin,
+    <<rec.p::32, offset::64>>,
+    rec.bin
+  ]
+
+  packet_size = IO.iodata_length(packet)
+
+  if rem(offset, @user_stride) == 0 do
+    index_entry = <<byte_size(user_bin)::16, user_bin::binary, rec.p::32, offset::64, curr_pos::64>>
+    :ok = :file.write(state.idx_fd, index_entry)
+    :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
+  end
+
+  :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, curr_pos}})
+
+  {packet, packet_size, state}
+end
+
+  defp stream_messages(shard, user, p, seg_id, phys_pos, count, acc, device_id) do
+    if count <= 0 do
+      {:ok, Enum.reverse(acc)}
     else
-      {:error, :no_segment_found}
+      case read_from_disk(shard, seg_id, phys_pos) do
+        {:ok, rec, next_phys_pos} ->
+          is_target = rec.u == to_string(user) and rec.p == p
+          is_from_self = rec.writer_device == device_id
+
+          {new_acc, new_count} = if is_target and not is_from_self do
+            {[rec.data | acc], count - 1}
+          else
+            {acc, count}
+          end
+          stream_messages(shard, user, p, seg_id, next_phys_pos, new_count, new_acc, device_id)
+
+        {:error, :eof} ->
+          case find_next_segment(shard, seg_id) do
+            {:ok, next_seg_id} -> stream_messages(shard, user, p, next_seg_id, 0, count, acc, device_id)
+            :no_more_segments -> {:ok, Enum.reverse(acc)}
+          end
+        _ -> {:ok, Enum.reverse(acc)}
+      end
     end
   end
 
-  defp walk_log_and_rebuild_index(fd, user, pid, seg, last_off \\ 0, last_pos \\ 0) do
-    case read_log_entry(fd) do
-      {:ok, msg} ->
-        # Re-index if necessary during the walk
-        if rem(msg.offset, @index_granularity) == 0 do
-          append_index_file(user, pid, seg, msg.offset, last_pos)
+  defp read_from_disk(shard, base, pos) do
+    path = Path.join(@base_dir, "shard_#{shard}_#{base}.log")
+    case Queue.FDPoolShard.pread(shard, path, pos, @header_size) do
+      {:ok, <<0xEE, size::32, _crc::32, ulen::16, dlen::16, _ts::64>>} ->
+        total_meta_size = ulen + dlen + 12 + size
+        case Queue.FDPoolShard.pread(shard, path, pos + @header_size, total_meta_size) do
+          {:ok, payload} ->
+            <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary>> = payload
+            {:ok, %{
+              u: u,
+              writer_device: d,
+              p: p,
+              off: off,
+              data: :erlang.binary_to_term(body, [:safe])
+            }, pos + @header_size + total_meta_size}
+          _ -> {:error, :body_failed}
         end
-
-        {:ok, current_pos} = :file.position(fd, :cur)
-        walk_log_and_rebuild_index(fd, user, pid, seg, msg.offset, current_pos)
-
-      _ -> # :eof or :corrupt
-        {last_off, last_pos}
+      :eof -> {:error, :eof}
+      other -> other
     end
   end
 
+  defp fetch_from_buffer(shard, user, p, device_id, start_off, limit) do
+    buffer = log_buffer(shard)
+    # Changed :data to :bin to match your write/8 record
+    spec = [{{shard, :"$1", %{u: user, p: p, writer_device: :"$2", bin: :"$3"}},
+            [{:andalso, {:>, :"$1", start_off}, {:not, {:==, :"$2", device_id}}}],
+            [:"$3"]}]
 
+    case :ets.select(buffer, spec, limit) do
+      :"$end_of_table" -> []
+      {results, _} -> Enum.map(results, & :erlang.binary_to_term(&1))
+      results ->
+        Enum.map(results, & :erlang.binary_to_term(&1))
+    end
+  end
 
+  defp rotate_segment(state) do
+    new_base = System.system_time(:second)
+    new_base = if new_base <= state.active_base, do: state.active_base + 1, else: new_base
+
+    # ------------------------------------------------------------------
+    # ATOMIC MANIFEST UPDATE
+    # ------------------------------------------------------------------
+    manifest_path = Path.join(@base_dir, "shard_#{state.shard}.manifest")
+    tmp_path = manifest_path <> ".tmp"
+
+    manifest_data = :erlang.term_to_binary(%{active_base: new_base})
+
+    # Write to temp file first
+    File.write!(tmp_path, manifest_data)
+    # Atomic rename ensures the file is either OLD or NEW, never broken
+    File.rename!(tmp_path, manifest_path)
+
+    # 2. Close the old "Write-Trinity"
+    :file.close(state.log_fd)
+    :file.close(state.idx_fd)
+    :file.close(state.bin_fd)
+
+    # 3. Open New Files
+    new_log = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.log")
+    new_idx = Path.join(@base_dir, "shard_#{state.shard}_#{new_base}.idx")
+    bin_path = Path.join("data/device_bookmarks", "shard_#{state.shard}.bin")
+
+    {:ok, l} = :file.open(new_log, [:append, :raw, :binary, :read, :write])
+    {:ok, i} = :file.open(new_idx, [:append, :raw, :binary, :read, :write])
+    {:ok, b} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
+
+    IO.puts "🔄 ROTATED SHARD #{state.shard}: New base is #{new_base}"
+
+    %{state | log_fd: l, idx_fd: i, bin_fd: b, active_base: new_base, current_size: 0}
+  end
+
+  defp load_manifest(shard) do
+    path = Path.join(@base_dir, "shard_#{shard}.manifest")
+    base = if File.exists?(path), do: :erlang.binary_to_term(File.read!(path)).active_base, else: System.system_time(:second)
+    %{base: base,
+      log: Path.join(@base_dir, "shard_#{shard}_#{base}.log"),
+      idx: Path.join(@base_dir, "shard_#{shard}_#{base}.idx")}
+  end
+
+  defp find_next_segment(shard, current_id) do
+    files = Path.wildcard(Path.join(@base_dir, "shard_#{shard}_*.log"))
+    ids = Enum.map(files, fn f ->
+      f |> Path.basename() |> String.split("_") |> List.last() |> String.replace(".log", "") |> String.to_integer()
+    end) |> Enum.sort()
+
+    case Enum.find(ids, &(&1 > current_id)) do
+      nil -> :no_more_segments
+      next -> {:ok, next}
+    end
+  end
+
+  defp log_buffer(s), do: :"#{@log_buffer_prefix}#{s}"
+  defp idx_cache(s), do: :"#{@idx_cache_prefix}#{s}"
+  defp worker_name(s), do: :"bimip_shard_#{s}"
+  defp schedule_flush, do: Process.send_after(self(), :flush, @flush_interval)
 end
