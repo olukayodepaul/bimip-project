@@ -95,17 +95,6 @@ defmodule Bimip.Application do
     create(:device_index, [:eid, :device_id], :bag)
     create(:subscribers, [:id, :owner_id, :subscriber_id, :status, :blocked, :inserted_at, :last_seen], :set)
     create(:subscriber_index, [:owner_id, :subscriber_id], :bag)
-
-    # Log / Queue metadata
-    create(:current_segment, [:key, :segment], :set)
-    create(:first_segment, [:key, :segment], :set)
-    create(:next_offsets, [:key, :offset], :set)
-    create(:commit_offsets, [:key, :offset], :set)
-    create(:pending_acks, [:key, :offsets], :set)
-
-    # State helpers
-    create(:resume_grace, [:key, :timestamp], :set)
-    create(:message_offset, [:key, :offset], :set)
   end
 
   # -----------------------

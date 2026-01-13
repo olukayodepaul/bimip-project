@@ -356,5 +356,3 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 end
-
-# 20:11
