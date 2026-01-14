@@ -7,10 +7,12 @@ defmodule Chat.MessageStruct do
     :peer_uid,
     :timestamp,
     :payload,
+    :payload_context,
     :encryption_type,
     :encrypted,
     :signature,
     :device_id,
+    :uupid,
     :eid,
     from: [],
     to: []
