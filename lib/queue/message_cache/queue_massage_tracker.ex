@@ -100,47 +100,47 @@ defmodule Queue.MessageTracker do
   defp table_name(shard, gen, p), do: :"msg_shard_#{shard}_g#{gen}_p#{p}"
 end
 
-# 1. Setup variables
+# # 1. Setup variables
 shard = 14
 u = "test_user"
 d = "test_device"
 m = "msg_123"
 key = {u, d, m}
 
-# 2. INSERT: Initial check and insert
-# This will go into whichever generation is currently active (likely Gen 0)
-IO.puts "--- STEP 1: Initial Insert ---"
-Queue.MessageTracker.check_and_insert(shard, u, d, m)
+# # 2. INSERT: Initial check and insert
+# # This will go into whichever generation is currently active (likely Gen 0)
+# IO.puts "--- STEP 1: Initial Insert ---"
+# Queue.MessageTracker.check_and_insert(shard, u, d, m)
 
-# 3. VERIFY: See where it landed
-active_gen = :ets.lookup_element(:message_tracker_metadata, shard, 2)
-IO.puts "Active Gen is: #{active_gen}"
-IO.inspect(:ets.lookup(:"msg_shard_#{shard}_g#{active_gen}_p0", key), label: "Record in Active Table")
+# # 3. VERIFY: See where it landed
+# active_gen = :ets.lookup_element(:message_tracker_metadata, shard, 2)
+# IO.puts "Active Gen is: #{active_gen}"
+# IO.inspect(:ets.lookup(:"msg_shard_#{shard}_g#{active_gen}_p0", key), label: "Record in Active Table")
 
-# 4. ROTATE: Manually flip the generations
-# This makes the table containing your data the "OLD" table
-IO.puts "\n--- STEP 2: Manually Rotating Shard ---"
-Queue.MessageTracker.rotate(shard)
+# # 4. ROTATE: Manually flip the generations
+# # This makes the table containing your data the "OLD" table
+# IO.puts "\n--- STEP 2: Manually Rotating Shard ---"
+# Queue.MessageTracker.rotate(shard)
 
-new_active_gen = :ets.lookup_element(:message_tracker_metadata, shard, 2)
-old_gen = if new_active_gen == 0, do: 1, else: 0
-IO.puts "New Active Gen is: #{new_active_gen} (Old Gen is #{old_gen})"
+# new_active_gen = :ets.lookup_element(:message_tracker_metadata, shard, 2)
+# old_gen = if new_active_gen == 0, do: 1, else: 0
+# IO.puts "New Active Gen is: #{new_active_gen} (Old Gen is #{old_gen})"
 
-# 5. CHECK & PROMOTE: Run the check again
-# This triggers the 'Move Forward' logic
-IO.puts "\n--- STEP 3: Second Check (Triggers Promotion) ---"
-Queue.MessageTracker.check_and_insert(shard, u, d, m)
+# # 5. CHECK & PROMOTE: Run the check again
+# # This triggers the 'Move Forward' logic
+# IO.puts "\n--- STEP 3: Second Check (Triggers Promotion) ---"
+# Queue.MessageTracker.check_and_insert(shard, u, d, m)
 
-# 6. FINAL STATE: Show that it moved
-IO.puts "\n--- FINAL RESULTS ---"
-g0_final = :ets.lookup(:"msg_shard_#{shard}_g0_p0", key)
-g1_final = :ets.lookup(:"msg_shard_#{shard}_g1_p0", key)
+# # 6. FINAL STATE: Show that it moved
+# IO.puts "\n--- FINAL RESULTS ---"
+# g0_final = :ets.lookup(:"msg_shard_#{shard}_g0_p0", key)
+# g1_final = :ets.lookup(:"msg_shard_#{shard}_g1_p0", key)
 
-IO.inspect(g0_final, label: "Table Gen 0")
-IO.inspect(g1_final, label: "Table Gen 1")
+# IO.inspect(g0_final, label: "Table Gen 0")
+# IO.inspect(g1_final, label: "Table Gen 1")
 
-if active_gen == 0 do
-  IO.puts "\nResult: Data moved from Gen 0 -> Gen 1 ✅"
-else
-  IO.puts "\nResult: Data moved from Gen 1 -> Gen 0 ✅"
-end
+# if active_gen == 0 do
+#   IO.puts "\nResult: Data moved from Gen 0 -> Gen 1 ✅"
+# else
+#   IO.puts "\nResult: Data moved from Gen 1 -> Gen 0 ✅"
+# end
