@@ -1,7 +1,6 @@
 defmodule Queue.FDPoolShard do
   use GenServer
 
-  # We use 7 as the limit for historical reads
   @max_read_fds 11
 
   def start_link(shard_id), do: GenServer.start_link(__MODULE__, shard_id, name: via(shard_id))
@@ -20,6 +19,12 @@ defmodule Queue.FDPoolShard do
 
   def init(shard_id) do
     table = :"fd_pool_#{shard_id}"
+
+    # Match the BimipSupervisor configuration (:ordered_set)
+    if :ets.whereis(table) == :undefined do
+      :ets.new(table, [:ordered_set, :public, :named_table, read_concurrency: true])
+    end
+
     {:ok, %{shard: shard_id, table: table}}
   end
 
@@ -27,7 +32,6 @@ defmodule Queue.FDPoolShard do
   def handle_call({:pread, path, pos, length}, _from, state) do
     case get_internal_fd(path, state) do
       {:ok, fd} ->
-        # The Pool owns this FD, so pread here is safe and fast
         {:reply, :file.pread(fd, pos, length), state}
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -48,26 +52,20 @@ defmodule Queue.FDPoolShard do
     end
   end
 
-  @impl true
-  def handle_cast({:touch, path, fd, old_ts}, state) do
-    table = state.table
-    now = :erlang.monotonic_time(:millisecond)
-    :ets.delete(table, {:evict, old_ts, path})
-    :ets.insert(table, [{{:lookup, path}, fd, now}, {{:evict, now, path}, true}])
-    {:noreply, state}
-  end
-
   # --- Private Helpers ---
 
   defp get_internal_fd(path, state) do
     table = state.table
     case :ets.lookup(table, {:lookup, path}) do
       [{_, fd, old_ts}] ->
-        # Refresh LRU status so it isn't evicted
-        GenServer.cast(self(), {:touch, path, fd, old_ts})
+        # Synchronous Update: We do it here so evict_if_needed
+        # always has the latest data. No more handle_cast.
+        now = :erlang.monotonic_time(:millisecond)
+        :ets.delete(table, {:evict, old_ts, path})
+        :ets.insert(table, [{{:lookup, path}, fd, now}, {{:evict, now, path}, true}])
         {:ok, fd}
+
       [] ->
-        # Limit check before opening new one
         evict_if_needed(table)
         case :file.open(path, [:read, :raw, :binary]) do
           {:ok, fd} ->
@@ -80,7 +78,7 @@ defmodule Queue.FDPoolShard do
   end
 
   defp evict_if_needed(table) do
-    # 2 keys per file (lookup + evict). If size/2 >= 7, we evict.
+    # 2 keys per file. If total keys / 2 >= 11, we evict.
     if div(:ets.info(table, :size), 2) >= @max_read_fds do
       case :ets.first(table) do
         {:evict, ts, path} ->
@@ -89,10 +87,9 @@ defmodule Queue.FDPoolShard do
               :file.close(fd)
               :ets.delete(table, {:lookup, path})
               :ets.delete(table, {:evict, ts, path})
-              # Recursive check in case size is still high
               evict_if_needed(table)
             _ ->
-              # Stale key, just clean and retry
+              # Clean up stale eviction keys
               :ets.delete(table, {:evict, ts, path})
               evict_if_needed(table)
           end

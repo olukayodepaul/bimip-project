@@ -12,7 +12,7 @@ defmodule Queue.FDPoolSupervisor do
   @impl true
   def init(_) do
     # 🚀 Fetch the source of truth from your config file
-    num_shards = Queue.Config.num_shards()
+    num_shards = 64
 
     # 1️⃣ Registry for all shards
     registry = %{
