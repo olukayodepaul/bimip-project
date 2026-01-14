@@ -1,4 +1,7 @@
 defmodule Queue.MessageTracker do
+  @moduledoc """
+  Sharded, generational message tracker with automatic promotion of active keys.
+  """
   require Logger
 
   @shard_count 64
@@ -11,7 +14,7 @@ defmodule Queue.MessageTracker do
 
   def init do
     if :ets.info(@meta_table) == :undefined do
-      :ets.new(@meta_table, [:set, :public, :named_table])
+      :ets.new(@meta_table, [:set, :public, :named_table, read_concurrency: true])
     end
 
     for shard <- 0..(@shard_count - 1) do
@@ -48,7 +51,7 @@ defmodule Queue.MessageTracker do
           # PROMOTE: Insert into current, then delete from old
           :ets.insert(current_tab, {key, now, ttl_val})
           :ets.delete(old_tab, key)
-          Logger.debug("[Tracker Shard #{shard}] Record Promoted Forward (Age: #{now - ts}s)")
+          Logger.debug(fn -> "[Tracker Shard #{shard}] Record Promoted Forward (Age: #{now - ts}s)" end)
         end
         {:error, :already_exists}
 
@@ -57,13 +60,18 @@ defmodule Queue.MessageTracker do
         case :ets.insert_new(current_tab, {key, now, ttl}) do
           true -> {:ok, :inserted}
           false ->
-            # Existing record check for expiry
-            [{^key, ts, ttl_val}] = :ets.lookup(current_tab, key)
-            if ts + ttl_val < now do
-              :ets.insert(current_tab, {key, now, ttl})
-              {:ok, :inserted}
-            else
-              {:error, :already_exists}
+            # Safe lookup to avoid MatchError if record was swept between insert and lookup
+            case :ets.lookup(current_tab, key) do
+              [{^key, ts, ttl_val}] ->
+                if ts + ttl_val < now do
+                  :ets.insert(current_tab, {key, now, ttl})
+                  {:ok, :inserted}
+                else
+                  {:error, :already_exists}
+                end
+              [] ->
+                # Record was deleted by sweep exactly now; retry the whole logic
+                check_and_insert(shard, user, device_id, message_id, ttl)
             end
         end
     end
@@ -76,11 +84,14 @@ defmodule Queue.MessageTracker do
     # Flip the active generation pointer
     :ets.insert(@meta_table, {shard, new_gen})
 
-    # We clear the NEW active table to make room for the new hour's data
-    # (The table that WAS 'old' and is now 'active' again)
+    # Clear the NEW active table (which was the old one)
     table_to_clear = table_name(shard, new_gen, 0)
 
-    count = :ets.info(table_to_clear, :size) || 0
+    count = case :ets.info(table_to_clear, :size) do
+      :undefined -> 0
+      val -> val
+    end
+
     :ets.delete_all_objects(table_to_clear)
 
     Logger.info("[MessageTracker] SHARD #{shard} Rotated. Gen #{new_gen} is now active. Wiped #{count} old records.")
@@ -91,6 +102,7 @@ defmodule Queue.MessageTracker do
     now = :erlang.monotonic_time(:second)
     table = table_name(shard, active_gen, 0)
 
+    # Use a non-blocking select_delete
     :ets.select_delete(table, [
       {{:"$1", :"$2", :"$3"}, [{:<, {:+, :"$2", :"$3"}, now}], [true]}
     ])
@@ -99,48 +111,3 @@ defmodule Queue.MessageTracker do
   defp get_active_gen(shard), do: :ets.lookup_element(@meta_table, shard, 2)
   defp table_name(shard, gen, p), do: :"msg_shard_#{shard}_g#{gen}_p#{p}"
 end
-
-# # 1. Setup variables
-shard = 14
-u = "test_user"
-d = "test_device"
-m = "msg_123"
-key = {u, d, m}
-
-# # 2. INSERT: Initial check and insert
-# # This will go into whichever generation is currently active (likely Gen 0)
-# IO.puts "--- STEP 1: Initial Insert ---"
-# Queue.MessageTracker.check_and_insert(shard, u, d, m)
-
-# # 3. VERIFY: See where it landed
-# active_gen = :ets.lookup_element(:message_tracker_metadata, shard, 2)
-# IO.puts "Active Gen is: #{active_gen}"
-# IO.inspect(:ets.lookup(:"msg_shard_#{shard}_g#{active_gen}_p0", key), label: "Record in Active Table")
-
-# # 4. ROTATE: Manually flip the generations
-# # This makes the table containing your data the "OLD" table
-# IO.puts "\n--- STEP 2: Manually Rotating Shard ---"
-# Queue.MessageTracker.rotate(shard)
-
-# new_active_gen = :ets.lookup_element(:message_tracker_metadata, shard, 2)
-# old_gen = if new_active_gen == 0, do: 1, else: 0
-# IO.puts "New Active Gen is: #{new_active_gen} (Old Gen is #{old_gen})"
-
-# # 5. CHECK & PROMOTE: Run the check again
-# # This triggers the 'Move Forward' logic
-# IO.puts "\n--- STEP 3: Second Check (Triggers Promotion) ---"
-# Queue.MessageTracker.check_and_insert(shard, u, d, m)
-
-# # 6. FINAL STATE: Show that it moved
-# IO.puts "\n--- FINAL RESULTS ---"
-# g0_final = :ets.lookup(:"msg_shard_#{shard}_g0_p0", key)
-# g1_final = :ets.lookup(:"msg_shard_#{shard}_g1_p0", key)
-
-# IO.inspect(g0_final, label: "Table Gen 0")
-# IO.inspect(g1_final, label: "Table Gen 1")
-
-# if active_gen == 0 do
-#   IO.puts "\nResult: Data moved from Gen 0 -> Gen 1 ✅"
-# else
-#   IO.puts "\nResult: Data moved from Gen 1 -> Gen 0 ✅"
-# end

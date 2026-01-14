@@ -2,17 +2,17 @@ defmodule Queue.MessageTracker.Sweeper do
   use GenServer
   require Logger
 
-  @sweep_interval :timer.hours(1)
+  @sweep_interval :timer.hours(3)
   @rotate_interval :timer.hours(5)
 
-  def start_link(shard) do
+  def start_link(shard) when is_integer(shard) do
     name = :"message_tracker_sweeper_#{shard}"
     GenServer.start_link(__MODULE__, shard, name: name)
   end
 
   @impl true
   def init(shard) do
-    # Stagger starts so 64 shards don't hit the CPU at the exact same millisecond
+    # Jitter: Stagger starts over 128 seconds (64 shards * 2s) to flatten CPU spikes
     jitter = shard * 2000
 
     Process.send_after(self(), :sweep, @sweep_interval + jitter)
