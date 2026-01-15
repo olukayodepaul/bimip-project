@@ -155,11 +155,12 @@ defmodule Queue.QueueLogImpl do
 
       items ->
         # 1️⃣ Handle segment rotation
-        {state, rotated?} = if state.msg_count >= @max_messages_per_seg do
-          {rotate_segment(state), true}
-        else
-          {state, false}
-        end
+        {state, rotated?} =
+          if state.msg_count >= @max_messages_per_seg do
+            {rotate_segment(state), true}
+          else
+            {state, false}
+          end
 
         # 2️⃣ Prepare File ID
         file_id = "#{state.active_base}_#{state.active_ts}"
@@ -179,14 +180,22 @@ defmodule Queue.QueueLogImpl do
         :file.datasync(final_state.log_fd)
         :file.datasync(final_state.idx_fd)
 
-        # 6️⃣ Update anchors (one per user, latest offset)
-        sorted
-        |> Enum.into(%{}, fn {_s, off, rec} -> {rec.u, off} end)
-        |> Enum.each(fn {user, max_off} ->
-          Queue.DeviceBookmark.mark_anchor(user, file_id, max_off)
+        # 6️⃣ Update anchors and segment positions
+        user_map =
+          Enum.reduce(sorted, %{}, fn {_s, off, rec}, acc ->
+            Map.update(acc, rec.u, %{"__anchor__" => {file_id, off}, "positions" => [{file_id, off}]}, fn old ->
+              updated_positions = old["positions"] ++ [{file_id, off}]
+              old
+              |> Map.put("__anchor__", {file_id, off})
+              |> Map.put("positions", updated_positions)
+            end)
+          end)
+
+        Enum.each(user_map, fn {user, map} ->
+          :ets.insert(:"device_bookmarks_cache_#{state.shard}", {user, map})
         end)
 
-        # 7️⃣ Snapshot .bin only if segment rotated
+        # 7️⃣ Snapshot .bin asynchronously only if rotated
         if rotated? do
           spawn(fn -> snapshot_bin(final_state) end)
         end
@@ -194,6 +203,7 @@ defmodule Queue.QueueLogImpl do
         %{final_state | current_size: final_pos, msg_count: final_msg_count}
     end
   end
+
 
   defp snapshot_bin(state) do
     cache = :"device_bookmarks_cache_#{state.shard}"
