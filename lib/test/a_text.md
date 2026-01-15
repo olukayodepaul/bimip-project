@@ -57,7 +57,7 @@ case File.read(manifest_path) do
       IO.puts "🎯 ACTIVE SEGMENT:"
       IO.puts "   Base Offset: #{base}"
       IO.puts "   Timestamp:   #{ts}"
-      IO.puts data
+      IO.puts "   File:        #{base}"
       
       IO.puts "------------------------------------------------"
       
@@ -79,24 +79,8 @@ end
 
 
 
-shard = 14
-base = 1
-# Matches your preferred 14_1_*.idx format
-[idx_path | _] = Path.wildcard("data/bimip/#{shard}/#{shard}_#{base}_*.idx")
 
-case File.read(idx_path) do
-  {:ok, binary} ->
-    IO.puts "📂 Reading Index: #{idx_path}\n"
-    parse_idx = fn
-      recursive, <<ulen::16, user_bin::binary-size(ulen), _p::32, off::64, seg::64, phys::64, rest::binary>> ->
-        IO.puts "📍 [#{user_bin}] Offset: #{off} | Seg: #{seg} | Pos: #{phys} bytes"
-        recursive.(recursive, rest)
-      _, <<>> -> IO.puts "\n🏁 End of Index."
-      _, rest -> IO.puts "⚠️ Index contains partial entry. Remaining bytes: #{byte_size(rest)}"
-    end
-    parse_idx.(parse_idx, binary)
-  {:error, reason} -> IO.puts "❌ Could not open index: #{reason}"
-end
+
 
 
 
@@ -127,44 +111,74 @@ end)
 
 
 
-shard = 14
-# ✅ Matches the new naming: data/device_bookmarks/14.bin
+==================================================
+📂 RAW BINARY DUMP: SHARD 14
+==================================================
+
+👤 User: b@domain.com
+📦 Raw Map Data:
+   Content: %{
+  "__anchor__" => {"501_1768437995", 1000},
+  "positions" => %{
+    "1_1768437950" => {"1_1768437950", 1},
+    "501_1768437995" => {"501_1768437995", 501}
+  }
+}
+
+
+👤 User: c@domain.com
+📦 Raw Map Data:
+   Content: %{
+  "__anchor__" => {"1501_1768437968", 2000},
+  "positions" => %{
+    "1001_1768437965" => {"1001_1768437965", 1001},
+    "1501_1768437968" => {"1501_1768437968", 1501},
+    "1_1768437950" => {"1_1768437950", 1},
+    "501_1768437963" => {"501_1768437963", 501}
+  }
+}
+
+
+------------------------------------------------
+
+✅ Total Raw Entries: 1
+
+
+
+shard = 23
 bookmark_path = "data/device_bookmarks/#{shard}.bin"
 
 case File.read(bookmark_path) do
   {:ok, binary} when binary != <<>> ->
     try do
-      # Decodes the list of {user, map} tuples from ETS
-      entries = :erlang.binary_to_term(binary)
+      # This decodes the exact Erlang Term list stored in the file
+      raw_entries = :erlang.binary_to_term(binary)
       
-      IO.puts "================================================"
-      IO.puts "📱 DEVICE BOOKMARKS: SHARD #{shard}"
-      IO.puts "================================================"
+      IO.puts "\n" <> String.duplicate("=", 50)
+      IO.puts "📂 RAW BINARY DUMP: SHARD #{shard}"
+      IO.puts String.duplicate("=", 50)
 
-      Enum.each(entries, fn {user, data} ->
-        # Data is the map containing the "__anchor__" key
-        case Map.get(data, "__anchor__") do
-          {seg, off} ->
-            IO.puts "👤 User: #{user}"
-            IO.puts "   📍 Last Segment: #{seg}"
-            IO.puts "   🏁 Last Offset:  #{off}"
-            IO.puts "------------------------------------------------"
-          _ -> 
-            IO.puts "👤 User: #{user} | No Anchor Found"
-        end
+      Enum.each(raw_entries, fn {user, data_map} ->
+        IO.puts "\n👤 User: #{user}"
+        IO.puts "📦 Raw Map Data:"
+        
+        # This will print the full Elixir map structure exactly as it exists
+        IO.inspect(data_map, label: "   Content", structs: false)
+        
+        IO.puts "------------------------------------------------"
       end)
       
-      IO.puts "✅ Total Bookmarked Users: #{Enum.count(entries)}"
+      IO.puts "\n✅ Total Raw Entries: #{Enum.count(raw_entries)}"
 
     rescue
-      e -> IO.puts "❌ Error: Invalid binary term in bookmark file. #{inspect(e)}"
+      e -> IO.puts "❌ Error: Failed to decode binary term. #{inspect(e)}"
     end
 
   {:ok, <<>>} ->
-    IO.puts "📁 Bookmark file is empty."
+    IO.puts "📁 The .bin file exists but is completely empty (0 bytes)."
 
   {:error, reason} -> 
-    IO.puts "❌ Could not open bookmark file: #{reason} (Path: #{bookmark_path})"
+    IO.puts "❌ Could not find or read file: #{bookmark_path} (#{reason})"
 end
 
 
@@ -191,15 +205,40 @@ end
 📍 [b@domain.com] Offset: 1001 | Seg: 601 | Pos: 247276 bytes
 
 
+================================================
+📜 SHARD 14 MANIFEST SUMMARY
+================================================
+🎯 ACTIVE SEGMENT:
+   Base Offset: 601
+   Timestamp:   1768424145
+   File:        601
+------------------------------------------------
+📂 EXPIRED SEGMENTS:
+   • Segment: 14_1_1768423872 | Rotated At: 1768424145
+================================================
+
+
+================================================
+📱 DEVICE BOOKMARKS: SHARD 14
+================================================
+👤 User: b@domain.com
+   📍 Last Segment: 601
+   🏁 Last Offset:  1100
+------------------------------------------------
 
 
 
 
-
-
-
-
-
+================================================
+📱 DEVICE BOOKMARKS: SHARD 14
+================================================
+👤 User: b@domain.com
+   📍 Last Segment: 1101
+   🏁 Last Offset:  1600
+------------------------------------------------
+✅ Total Bookmarked Users: 1
+:ok
+iex(147)> 
 
 
 
