@@ -149,41 +149,68 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
   defp perform_flush(state) do
     buf = log_buffer(state.shard)
+
     case :ets.take(buf, state.shard) do
       [] -> state
-      items ->
-        # 1. Handle segment rotation logic
-        state = if state.msg_count >= @max_messages_per_seg, do: rotate_segment(state), else: state
 
-        # 2. Prepare the File ID (the string key for our positions map)
+      items ->
+        # 1️⃣ Handle segment rotation
+        {state, rotated?} = if state.msg_count >= @max_messages_per_seg do
+          {rotate_segment(state), true}
+        else
+          {state, false}
+        end
+
+        # 2️⃣ Prepare File ID
         file_id = "#{state.active_base}_#{state.active_ts}"
 
-        sorted = Enum.sort_by(items, fn {_shard, off, _rec} -> off end)
+        # 3️⃣ Sort items by offset
+        sorted = Enum.sort_by(items, fn {_s, off, _rec} -> off end)
 
-        # 3. Process records and update bookmarks
+        # 4️⃣ Build IO packets (no anchor updates yet)
         {io_list, final_pos, final_msg_count, final_state} =
           Enum.reduce(sorted, {[], state.current_size, state.msg_count, state}, fn {_s, off, rec}, {acc_io, curr_p, acc_c, acc_s} ->
             {packet, p_size, updated_s} = build_packet_data(acc_s, rec, off, curr_p)
-
-            # This now uses the file_id string.
-            # DeviceBookmark.mark_anchor handles the "is_map_key" check internally.
-            Queue.DeviceBookmark.mark_anchor(rec.u, file_id, off)
-
             {[acc_io | packet], curr_p + p_size, acc_c + 1, updated_s}
           end)
 
-        # 4. Write data to the Log and Index
+        # 5️⃣ Write to log and index
         :file.write(final_state.log_fd, io_list)
         :file.datasync(final_state.log_fd)
         :file.datasync(final_state.idx_fd)
 
-        # 5. Snapshot the updated ETS cache (including the new "positions" map) to the .bin file
-        # REMOVED FOR SPEED: Moved to rotation and termination to prevent O(N) write amplification.
-        # bookmark_data = :ets.tab2list(:"device_bookmarks_cache_#{state.shard}")
-        # :file.pwrite(final_state.bin_fd, 0, :erlang.term_to_binary(bookmark_data))
+        # 6️⃣ Update anchors (one per user, latest offset)
+        sorted
+        |> Enum.into(%{}, fn {_s, off, rec} -> {rec.u, off} end)
+        |> Enum.each(fn {user, max_off} ->
+          Queue.DeviceBookmark.mark_anchor(user, file_id, max_off)
+        end)
+
+        # 7️⃣ Snapshot .bin only if segment rotated
+        if rotated? do
+          spawn(fn -> snapshot_bin(final_state) end)
+        end
 
         %{final_state | current_size: final_pos, msg_count: final_msg_count}
     end
+  end
+
+  defp snapshot_bin(state) do
+    cache = :"device_bookmarks_cache_#{state.shard}"
+
+    # 1️⃣ Take a snapshot of ETS
+    bookmark_data = :ets.tab2list(cache)
+
+    # 2️⃣ Serialize (compressed)
+    bin = :erlang.term_to_binary(bookmark_data, [:compressed])
+
+    # 3️⃣ Write atomically via tmp + rename
+    bin_path = Path.join("data/device_bookmarks", "#{state.shard}.bin")
+    tmp_path = bin_path <> ".tmp"
+    File.write!(tmp_path, bin)
+    File.rename!(tmp_path, bin_path)
+
+    :ok
   end
 
   defp rotate_segment(state) do
@@ -328,12 +355,14 @@ defmodule Queue.QueueLogImpl do
       case File.read(bin_path) do
         {:ok, binary} when binary != <<>> ->
           try do
-            :erlang.binary_to_term(binary) |> Enum.each(fn
+            :erlang.binary_to_term(binary)
+            |> Enum.each(fn
               {user, %{"__anchor__" => {_, off}}} ->
                 :ets.insert(@user_offsets, {{user, 1}, off})
               _ -> :ok
             end)
-          rescue _ -> :ok end
+          rescue _ -> :ok
+          end
         _ -> :ok
       end
     end
