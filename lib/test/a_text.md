@@ -97,13 +97,20 @@ case File.read(bookmark_path) do
     IO.puts "❌ Could not find or read file: #{bookmark_path} (#{reason})"
 end
 
+{
+"__anchor__" => {"2001_1768572411", 1500},
+ "positions" => %{
+    "1_1768572326" => 1,
+    "1001_1768572328" => 501, 
+    "2001_1768572411" => 1001
+  }
+}
 
 
 
 defmodule Queue.QueueLogImpl do
   @moduledoc """
-  BimipLog v10.7 — Full Implementation with Segment Rotation, Sparse Indexing,
-  and Safe Recursive Flush + Bin Snapshotting.
+  BimipLog v10.8 — Fixed Stride logic by persisting user_counts in State.
   """
   use GenServer
   require Logger
@@ -115,8 +122,8 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 100
-  @max_messages_per_seg 100
-  @user_stride 50
+  @max_messages_per_seg 1000
+  @user_stride 100
   @max_buffer_per_shard 1_000_000
 
   @checkpoints :bimip_segment_checkpoints
@@ -170,7 +177,6 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
   # GENSERVER HANDLERS
   # ------------------------------------------------------------------
-
   @impl true
   def init(shard) do
     shard_dir = Path.join(@base_dir, "#{shard}")
@@ -178,11 +184,16 @@ defmodule Queue.QueueLogImpl do
     File.mkdir_p!("data/device_bookmarks")
 
     bin_path = Path.join("data/device_bookmarks", "#{shard}.bin")
+
+    # 1. First, restore global offsets into ETS
     recover_counters_from_anchor(shard, bin_path)
 
     manifest = load_manifest(shard)
     base = manifest.active_base
     ts = manifest.active_ts
+
+    # 2. NEW: Derive the stride counts using the recovered ETS and manifest base
+    recovered_user_counts = recover_user_stride_counts(shard, base)
 
     recovered_msg_count = calculate_current_count(shard, base)
 
@@ -201,8 +212,21 @@ defmodule Queue.QueueLogImpl do
     {:ok, %{
       shard: shard, shard_dir: shard_dir, log_fd: log_fd, idx_fd: idx_fd, bin_fd: bin_fd,
       current_size: actual_pos, msg_count: recovered_msg_count,
-      active_base: base, active_ts: ts
+      active_base: base, active_ts: ts,
+      user_counts: recovered_user_counts # 3. NOW RESTORED
     }}
+  end
+
+  defp recover_user_stride_counts(shard, active_base) do
+    :ets.tab2list(@user_offsets)
+    |> Enum.filter(fn {{user, _p}, _off} ->
+      :erlang.phash2(user, @num_shards) == shard
+    end)
+    |> Enum.reduce(%{}, fn {{user, _partition}, off}, acc ->
+      count_in_seg = off - (active_base - 1)
+      final_count = if count_in_seg < 0, do: 0, else: count_in_seg
+      Map.put(acc, user, final_count)
+    end)
   end
 
   @impl true
@@ -214,10 +238,12 @@ defmodule Queue.QueueLogImpl do
   @impl true
   def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
     log_off = Queue.DeviceBookmark.get(device_id, user)
-
     cache = :"device_bookmarks_cache_#{state.shard}"
+
     seg_id = case :ets.lookup(cache, user) do
-      [{^user, %{"__anchor__" => {seg, _}}}] -> seg
+      [{^user, %{"__anchor__" => {seg, _}}}] ->
+         [base_str | _] = String.split(seg, "_")
+         String.to_integer(base_str)
       _ -> state.active_base
     end
 
@@ -240,10 +266,6 @@ defmodule Queue.QueueLogImpl do
     {:noreply, new_state}
   end
 
-  # ------------------------------------------------------------------
-  # INTERNAL LOGIC
-  # ------------------------------------------------------------------
-
   # -------------------- RECURSIVE FLUSH --------------------
   defp perform_flush(state) do
     buf = log_buffer(state.shard)
@@ -257,74 +279,74 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-defp process_batch(state, items, depth \\ 0)
+  defp process_batch(state, items, depth \\ 0)
   defp process_batch(state, [], _depth), do: state
 
-  # Increased limit: 500 depth * 50 msgs = 25,000 messages per flush
   defp process_batch(state, items, depth) when depth > 500 do
     Logger.error("Max recursion depth reached. Re-inserting #{length(items)} leftovers.")
-    # DATA SAFETY: Put leftovers back so they aren't lost!
     buf = log_buffer(state.shard)
     :ets.insert(buf, items)
     state
   end
 
-defp process_batch(state, items, depth) do
-  space_left = @max_messages_per_seg - state.msg_count
-  {to_write, leftovers} = Enum.split(items, space_left)
+  defp process_batch(state, items, depth) do
+    space_left = @max_messages_per_seg - state.msg_count
+    {to_write, leftovers} = Enum.split(items, space_left)
 
-  # 1️⃣ We need to track how many messages each user has in THIS specific file segment
-  # Use a Map to keep track of counts per user during the reduction
-  {bin_io, idx_io, final_count, final_bytes, updates, _user_counts} =
-    Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}},
-      fn {_s, off, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, u_counts} ->
+    # Use state.user_counts instead of an empty map %{}
+    {bin_io, idx_io, final_count, final_bytes, updates, latest_map, next_user_counts} =
+      Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}, state.user_counts},
+        fn {_s, off, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map, u_counts} ->
 
-        {bin_packet, p_size} = encode_packet(rec, off, state)
+          {bin_packet, p_size} = encode_packet(rec, off, state)
 
-        # 2️⃣ Increment the count for THIS specific user
-        u_count = Map.get(u_counts, rec.u, 0)
+          # Get current user's count in this segment
+          u_count = Map.get(u_counts, rec.u, 0)
 
-        # 3️⃣ STRIDE LOGIC: Index if it's the 1st, 11th, 21st... message FOR THIS USER
-        {new_i_acc, new_upd} =
-          if rem(u_count, @user_stride) == 0 do
-            u_bin = to_string(rec.u)
-            # Physical entry: User, Partition, GlobalOffset, SegmentBase, PhysicalBytePos
-            idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, off::64, state.active_base::64, curr_phys::64>>
+          {new_i_acc, new_upd} =
+            if rem(u_count, @user_stride) == 0 do
+              u_bin = to_string(rec.u)
 
-            # Update ETS so fetch_batch finds the physical byte position
-            :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, off}, {state.active_base, curr_phys}})
+              idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, off::64, state.active_base::64, curr_phys::64>>
+              :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, off}, {state.active_base, curr_phys}})
 
-            {[i_acc | idx_entry], [{rec.u, curr_idx} | upd]}
-          else
-            {i_acc, upd}
-          end
+              # PASS LOGICAL OFFSET (off)
+              {[i_acc | idx_entry], [{rec.u, off} | upd]}
+            else
+              {i_acc, upd}
+            end
 
-        # Update the per-user count map for the next iteration
-        new_u_counts = Map.put(u_counts, rec.u, u_count + 1)
+          # Track the absolute last offset for every user in this batch
+          updated_l_map = Map.put(l_map, rec.u, off)
 
-        {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, new_u_counts}
-      end)
+          updated_u_counts = Map.put(u_counts, rec.u, u_count + 1)
+          {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, updated_l_map, updated_u_counts}
+        end)
 
-      :file.write(state.log_fd, bin_io)
-      :file.write(state.idx_fd, idx_io)
-      :file.datasync(state.log_fd)
-      :file.datasync(state.idx_fd)
+    :file.write(state.log_fd, bin_io)
+    :file.write(state.idx_fd, idx_io)
+    :file.datasync(state.log_fd)
+    :file.datasync(state.idx_fd)
 
-      IO.inspect(updates)
-
-    Enum.each(updates, fn {user, pos} ->
-      Queue.DeviceBookmark.mark_anchor(user, "#{state.active_base}_#{state.active_ts}", pos)
+    # Global anchor: highest offset
+    global_max_offset = latest_map |> Map.values() |> Enum.max()
+    Enum.each(Map.keys(latest_map), fn user ->
+      Queue.DeviceBookmark.mark_anchor(user, "#{state.active_base}_#{state.active_ts}", global_max_offset)
     end)
 
-    new_state = %{state | msg_count: final_count, current_size: final_bytes}
+    # Sparse positions per user
+    Enum.each(updates, fn {user, pos} ->
+      Queue.DeviceBookmark.mark_position(user, "#{state.active_base}_#{state.active_ts}", pos)
+    end)
+
+    # Update state with the new user_counts
+    new_state = %{state | msg_count: final_count, current_size: final_bytes, user_counts: next_user_counts}
 
     if new_state.msg_count >= @max_messages_per_seg do
-      # Async snapshot to .bin when segment rotates
       spawn(fn -> snapshot_bin(new_state) end)
       rotated_state = rotate_segment(new_state)
       process_batch(rotated_state, leftovers, depth + 1)
     else
-      # If segment isn't full, process remaining items in the same segment
       process_batch(new_state, leftovers, depth + 1)
     end
   end
@@ -382,25 +404,12 @@ defp process_batch(state, items, depth) do
     {:ok, l} = :file.open(l_path, [:append, :raw, :binary, :read, :write])
     {:ok, i} = :file.open(i_path, [:append, :raw, :binary, :read, :write])
 
-    %{state | log_fd: l, idx_fd: i, active_base: new_base, active_ts: new_ts, current_size: 0, msg_count: 0}
+    # RESET user_counts for the new file
+    %{state | log_fd: l, idx_fd: i, active_base: new_base, active_ts: new_ts,
+      current_size: 0, msg_count: 0, user_counts: %{}}
   end
 
-
-  defp build_packet_data(state, rec, offset, curr_pos) do
-    u_bin = to_string(rec.u)
-    d_bin = to_string(rec.writer_device)
-    packet = [<<0xEE, byte_size(rec.bin)::32, :erlang.crc32(rec.bin)::32, byte_size(u_bin)::16, byte_size(d_bin)::16, rec.ts::64>>, u_bin, d_bin, <<rec.p::32, offset::64>>, rec.bin]
-    packet_size = IO.iodata_length(packet)
-
-    if rem(offset, @user_stride) == 1 do
-      index_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, offset::64, state.active_base::64, curr_pos::64>>
-      :ok = :file.write(state.idx_fd, index_entry)
-      :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, offset}, {state.active_base, curr_pos}})
-    end
-
-    :ets.insert(@checkpoints, {{state.shard, state.active_base}, {offset, curr_pos}})
-    {packet, packet_size, state}
-  end
+  # ... (Remaining stream_messages, read_from_disk etc. remain unchanged)
 
   defp read_from_disk(state, base, pos) do
     case Path.wildcard(Path.join(state.shard_dir, "#{state.shard}_#{base}_*.log")) do
@@ -442,11 +451,9 @@ defp process_batch(state, items, depth) do
 
   defp find_next_segment(state, current_base) do
     files = Path.wildcard(Path.join(state.shard_dir, "#{state.shard}_*.log"))
-
     bases = Enum.reduce(files, [], fn f, acc ->
       filename = Path.basename(f, ".log")
       parts = String.split(filename, "_")
-
       case Enum.at(parts, 1) do
         nil -> acc
         val ->

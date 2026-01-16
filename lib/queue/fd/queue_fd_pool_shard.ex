@@ -16,10 +16,21 @@ defmodule Queue.FDPoolShard do
     GenServer.call(via(shard_id), {:close_force, path})
   end
 
+  @doc """
+  Triggers an atomic write-rename snapshot for the shard state.
+  """
+  def atomic_snapshot(shard_id, path, data) do
+    GenServer.cast(via(shard_id), {:atomic_snapshot, path, data})
+  end
+
   # --- Server Callbacks ---
 
   def init(shard_id) do
     table = :"fd_pool_#{shard_id}"
+    # Ensure ETS table exists for this shard
+    if :ets.info(table) == :undefined do
+      :ets.new(table, [:named_table, :public, :ordered_set, {:read_concurrency, true}])
+    end
     {:ok, %{shard: shard_id, table: table}}
   end
 
@@ -27,7 +38,6 @@ defmodule Queue.FDPoolShard do
   def handle_call({:pread, path, pos, length}, _from, state) do
     case get_internal_fd(path, state) do
       {:ok, fd} ->
-        # The Pool owns this FD, so pread here is safe and fast
         {:reply, :file.pread(fd, pos, length), state}
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -49,6 +59,23 @@ defmodule Queue.FDPoolShard do
   end
 
   @impl true
+  def handle_cast({:atomic_snapshot, final_path, data}, state) do
+    tmp_path = "#{final_path}.tmp"
+
+    # Write-Rename Pattern
+    case :file.open(tmp_path, [:write, :raw, :binary]) do
+      {:ok, fd} ->
+        :file.write(fd, data)
+        :file.datasync(fd)
+        :file.close(fd)
+        :file.rename(tmp_path, final_path)
+      {:error, _reason} ->
+        :ok # Fail silently or Log
+    end
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_cast({:touch, path, fd, old_ts}, state) do
     table = state.table
     now = :erlang.monotonic_time(:millisecond)
@@ -63,11 +90,9 @@ defmodule Queue.FDPoolShard do
     table = state.table
     case :ets.lookup(table, {:lookup, path}) do
       [{_, fd, old_ts}] ->
-        # Refresh LRU status so it isn't evicted
         GenServer.cast(self(), {:touch, path, fd, old_ts})
         {:ok, fd}
       [] ->
-        # Limit check before opening new one
         evict_if_needed(table)
         case :file.open(path, [:read, :raw, :binary]) do
           {:ok, fd} ->
@@ -80,7 +105,6 @@ defmodule Queue.FDPoolShard do
   end
 
   defp evict_if_needed(table) do
-    # 2 keys per file (lookup + evict). If size/2 >= 7, we evict.
     if div(:ets.info(table, :size), 2) >= @max_read_fds do
       case :ets.first(table) do
         {:evict, ts, path} ->
@@ -89,10 +113,8 @@ defmodule Queue.FDPoolShard do
               :file.close(fd)
               :ets.delete(table, {:lookup, path})
               :ets.delete(table, {:evict, ts, path})
-              # Recursive check in case size is still high
               evict_if_needed(table)
             _ ->
-              # Stale key, just clean and retry
               :ets.delete(table, {:evict, ts, path})
               evict_if_needed(table)
           end

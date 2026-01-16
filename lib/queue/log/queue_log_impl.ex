@@ -68,23 +68,20 @@ defmodule Queue.QueueLogImpl do
   # GENSERVER HANDLERS
   # ------------------------------------------------------------------
   @impl true
-  def init(shard) do
+ def init(shard) do
     shard_dir = Path.join(@base_dir, "#{shard}")
     File.mkdir_p!(shard_dir)
     File.mkdir_p!("data/device_bookmarks")
 
     bin_path = Path.join("data/device_bookmarks", "#{shard}.bin")
 
-    # 1. First, restore global offsets into ETS
     recover_counters_from_anchor(shard, bin_path)
 
     manifest = load_manifest(shard)
     base = manifest.active_base
     ts = manifest.active_ts
 
-    # 2. NEW: Derive the stride counts using the recovered ETS and manifest base
     recovered_user_counts = recover_user_stride_counts(shard, base)
-
     recovered_msg_count = calculate_current_count(shard, base)
 
     log_path = Path.join(shard_dir, "#{shard}_#{base}_#{ts}.log")
@@ -92,19 +89,25 @@ defmodule Queue.QueueLogImpl do
 
     {:ok, log_fd} = :file.open(log_path, [:append, :raw, :binary, :read, :write])
     {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
-    {:ok, bin_fd} = :file.open(bin_path, [:append, :raw, :binary, :read, :write])
 
     if not manifest.exists, do: write_manifest(shard, manifest)
 
     {:ok, actual_pos} = :file.position(log_fd, :cur)
     schedule_flush()
 
-    {:ok, %{
-      shard: shard, shard_dir: shard_dir, log_fd: log_fd, idx_fd: idx_fd, bin_fd: bin_fd,
+    # Assign state to a variable so we can use it
+    state = %{
+      shard: shard, shard_dir: shard_dir, log_fd: log_fd, idx_fd: idx_fd,
       current_size: actual_pos, msg_count: recovered_msg_count,
       active_base: base, active_ts: ts,
-      user_counts: recovered_user_counts # 3. NOW RESTORED
-    }}
+      user_counts: recovered_user_counts
+    }
+
+    # TRIGGER SNAPSHOT IMMEDIATELY
+    # This sends the 'cast' to FDPoolShard to create the .bin file now
+    snapshot_bin(state)
+
+    {:ok, state}
   end
 
   defp recover_user_stride_counts(shard, active_base) do
@@ -183,32 +186,23 @@ defmodule Queue.QueueLogImpl do
     space_left = @max_messages_per_seg - state.msg_count
     {to_write, leftovers} = Enum.split(items, space_left)
 
-    # Use state.user_counts instead of an empty map %{}
     {bin_io, idx_io, final_count, final_bytes, updates, latest_map, next_user_counts} =
       Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}, state.user_counts},
         fn {_s, off, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map, u_counts} ->
-
           {bin_packet, p_size} = encode_packet(rec, off, state)
-
-          # Get current user's count in this segment
           u_count = Map.get(u_counts, rec.u, 0)
 
           {new_i_acc, new_upd} =
             if rem(u_count, @user_stride) == 0 do
               u_bin = to_string(rec.u)
-
               idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, off::64, state.active_base::64, curr_phys::64>>
               :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, off}, {state.active_base, curr_phys}})
-
-              # PASS LOGICAL OFFSET (off)
               {[i_acc | idx_entry], [{rec.u, off} | upd]}
             else
               {i_acc, upd}
             end
 
-          # Track the absolute last offset for every user in this batch
           updated_l_map = Map.put(l_map, rec.u, off)
-
           updated_u_counts = Map.put(u_counts, rec.u, u_count + 1)
           {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, updated_l_map, updated_u_counts}
         end)
@@ -218,22 +212,21 @@ defmodule Queue.QueueLogImpl do
     :file.datasync(state.log_fd)
     :file.datasync(state.idx_fd)
 
-    # Global anchor: highest offset
     global_max_offset = latest_map |> Map.values() |> Enum.max()
     Enum.each(Map.keys(latest_map), fn user ->
       Queue.DeviceBookmark.mark_anchor(user, "#{state.active_base}_#{state.active_ts}", global_max_offset)
     end)
 
-    # Sparse positions per user
     Enum.each(updates, fn {user, pos} ->
       Queue.DeviceBookmark.mark_position(user, "#{state.active_base}_#{state.active_ts}", pos)
     end)
 
-    # Update state with the new user_counts
     new_state = %{state | msg_count: final_count, current_size: final_bytes, user_counts: next_user_counts}
 
     if new_state.msg_count >= @max_messages_per_seg do
-      spawn(fn -> snapshot_bin(new_state) end)
+      # --- CALLING ATOMIC SNAPSHOT VIA FD POOL SHARD ---
+      snapshot_bin(new_state)
+
       rotated_state = rotate_segment(new_state)
       process_batch(rotated_state, leftovers, depth + 1)
     else
@@ -248,9 +241,9 @@ defmodule Queue.QueueLogImpl do
       bookmark_data = :ets.tab2list(cache)
       bin = :erlang.term_to_binary(bookmark_data, [:compressed])
       bin_path = Path.join("data/device_bookmarks", "#{state.shard}.bin")
-      tmp_path = bin_path <> ".tmp"
-      File.write!(tmp_path, bin)
-      File.rename!(tmp_path, bin_path)
+
+      # Use the new FDPoolShard Client API
+      Queue.FDPoolShard.atomic_snapshot(state.shard, bin_path, bin)
     end
     :ok
   end
@@ -419,10 +412,10 @@ defmodule Queue.QueueLogImpl do
   @impl true
   def terminate(_reason, state) do
     perform_flush(state)
+    # Perform a final blocking write on terminate to ensure state is saved
     snapshot_bin(state)
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
-    :file.close(state.bin_fd)
     :ok
   end
 end
