@@ -449,5 +449,4 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
-
 end
