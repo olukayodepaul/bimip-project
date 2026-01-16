@@ -75,8 +75,6 @@ defmodule Queue.QueueLogImpl do
 
     bin_path = Path.join("data/device_bookmarks", "#{shard}.bin")
 
-    # recover_counters_from_anchor(shard, bin_path)
-
     manifest = load_manifest(shard)
     base = manifest.active_base
     ts = manifest.active_ts
@@ -95,6 +93,7 @@ defmodule Queue.QueueLogImpl do
     {:ok, actual_pos} = :file.position(log_fd, :cur)
     schedule_flush()
 
+
     # Assign state to a variable so we can use it
     state = %{
       shard: shard, shard_dir: shard_dir, log_fd: log_fd, idx_fd: idx_fd,
@@ -102,6 +101,10 @@ defmodule Queue.QueueLogImpl do
       active_base: base, active_ts: ts,
       user_counts: recovered_user_counts
     }
+
+    if !File.exists?(bin_path) do
+      snapshot_bin(state)
+    end
 
     {:ok, state}
   end
@@ -230,17 +233,39 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  # -------------------- BIN SNAPSHOT --------------------
-  defp snapshot_bin(state) do
+defp snapshot_bin(state) do
     cache = :"device_bookmarks_cache_#{state.shard}"
-    if :ets.info(cache) != :undefined do
-      bookmark_data = :ets.tab2list(cache)
-      bin = :erlang.term_to_binary(bookmark_data, [:compressed])
-      bin_path = Path.join("data/device_bookmarks", "#{state.shard}.bin")
+    bin_path = Path.join("data/device_bookmarks", "#{state.shard}.bin")
 
-      # Use the new FDPoolShard Client API
-      Queue.FDPoolShard.atomic_snapshot(state.shard, bin_path, bin)
+    # 1. READ existing (Always ensure we treat it as a Map)
+    existing_map = if File.exists?(bin_path) do
+      case File.read(bin_path) do
+        {:ok, b} when b != <<>> ->
+          try do
+            term = :erlang.binary_to_term(b)
+            if is_list(term), do: Map.new(term), else: term
+          rescue _ -> %{} end
+        _ -> %{}
+      end
+    else
+      %{}
     end
+
+    # 2. GET current active users
+    hot_map = if :ets.info(cache) != :undefined do
+      :ets.tab2list(cache) |> Map.new()
+    else
+      %{}
+    end
+
+    # 3. MERGE (STAY AS A MAP)
+    # We removed the |> Map.to_list() here
+    merged_data = Map.merge(existing_map, hot_map)
+
+    # 4. Save the Map directly
+    bin = :erlang.term_to_binary(merged_data, [:compressed])
+    Queue.FDPoolShard.atomic_snapshot(state.shard, bin_path, bin)
+
     :ok
   end
 
@@ -287,8 +312,6 @@ defmodule Queue.QueueLogImpl do
     %{state | log_fd: l, idx_fd: i, active_base: new_base, active_ts: new_ts,
       current_size: 0, msg_count: 0, user_counts: %{}}
   end
-
-  # ... (Remaining stream_messages, read_from_disk etc. remain unchanged)
 
   defp read_from_disk(state, base, pos) do
     case Path.wildcard(Path.join(state.shard_dir, "#{state.shard}_#{base}_*.log")) do
@@ -382,56 +405,57 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
-  defp recover_counters_from_anchor(_shard, bin_path) do
-    if File.exists?(bin_path) do
-      case File.read(bin_path) do
-        {:ok, binary} when binary != <<>> ->
-          try do
-            :erlang.binary_to_term(binary)
-            |> Enum.each(fn
-              {user, %{"__anchor__" => {_, off}}} ->
-                :ets.insert(@user_offsets, {{user, 1}, off})
-              _ -> :ok
-            end)
-          rescue _ -> :ok
-          end
-        _ -> :ok
-      end
-    end
-  end
-
   def system_recovery(user) do
     shard = :erlang.phash2(user, @num_shards)
     cache = :"device_bookmarks_cache_#{shard}"
 
     if :ets.lookup(cache, user) == [] do
       bin_path = Path.join("data/device_bookmarks", "#{shard}.bin")
+      bak_path = Path.join("data/device_bookmarks", "#{shard}.bin.bak")
 
-      case Queue.FDPoolShard.read_bin(shard, bin_path) do
-        {:ok, binary} when binary != <<>> ->
-          try do
-            all_data = :erlang.binary_to_term(binary)
-            case Enum.find(all_data, fn {u, _map} -> u == user end) do
-              {^user, data} ->
-                # Restore Bookmark ETS (Anchor + Positions)
-                :ets.insert(cache, {user, data})
-
-                # Restore Global Offset Counter for this user
-                if anchor = data["__anchor__"] do
-                  {_seg_key, off} = anchor
-                  :ets.insert(@user_offsets, {{user, 1}, off})
-                end
-                :ok
-              nil -> :not_found
-            end
-          rescue
-            _ -> :error
+      # Try primary, then try backup if primary fails
+      case try_load_user(shard, bin_path, user) do
+        {:ok, data} -> perform_recovery(user, cache, data)
+        _error ->
+          case try_load_user(shard, bak_path, user) do
+            {:ok, data} -> perform_recovery(user, cache, data)
+            error -> error
           end
-        _ -> :no_file
       end
     else
       :already_loaded
     end
+  end
+
+  # --- Helper to isolate the file reading logic ---
+defp try_load_user(shard, path, user) do
+    case Queue.FDPoolShard.read_bin(shard, path) do
+      {:ok, binary} when binary != <<>> ->
+        try do
+          all_data = :erlang.binary_to_term(binary)
+          # Now all_data is a Map, we can look up the user directly
+          case Map.get(all_data, user) do
+            nil -> {:error, :not_found}
+            data -> {:ok, data}
+          end
+        rescue
+          _ -> {:error, :corrupted}
+        end
+      _ -> {:error, :no_file}
+    end
+  end
+
+  # --- Helper to apply the data to ETS ---
+  defp perform_recovery(user, cache, data) do
+    # Restore Bookmark ETS (Anchor + Positions)
+    :ets.insert(cache, {user, data})
+
+    # Restore Global Offset Counter for this user
+    if anchor = data["__anchor__"] do
+      {_seg_key, off} = anchor
+      :ets.insert(@user_offsets, {{user, 1}, off})
+    end
+    :ok
   end
 
   defp log_buffer(s), do: :"#{@log_buffer_prefix}#{s}"
@@ -441,12 +465,18 @@ defmodule Queue.QueueLogImpl do
 
   @impl true
   def terminate(_reason, state) do
+    # 1. Flush pending messages to disk
     perform_flush(state)
-    # Perform a final blocking write on terminate to ensure state is saved
+
+    # 2. Synchronous Snapshot (We don't want to exit before this finishes)
+    # Note: If your system is under heavy load, you might want to
+    # make atomic_snapshot a 'call' instead of 'cast' just for termination.
     snapshot_bin(state)
+
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
     :ok
   end
+
 
 end
