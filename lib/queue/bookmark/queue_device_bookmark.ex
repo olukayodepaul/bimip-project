@@ -40,29 +40,30 @@ defmodule Queue.DeviceBookmark do
   def mark_anchor(user, file_id, off) do
     cache = cache_name(shard_for(user))
 
-    user_map = case :ets.lookup(cache, user) do
-      [{^user, m}] -> m
-      [] -> %{}
-    end
+    # Fetch existing map for the user from ETS, or start fresh
+    user_map =
+      case :ets.lookup(cache, user) do
+        [{^user, m}] -> m
+        [] -> %{}
+      end
 
-    # 1. Update the legacy anchor (current position)
+    # 1️⃣ Update the anchor with the latest offset (last message in this flush)
     user_map = Map.put(user_map, "__anchor__", {file_id, off})
 
-    # 2. Update the Sparse Positions Index
-    # Format: "base_ts" => {"base_ts", first_offset_in_this_file}
+    # 2️⃣ Update positions (user-level sparse index)
     positions = Map.get(user_map, "positions", %{})
 
-    updated_map = if Map.has_key?(positions, file_id) do
-      # Already registered this file, just return the map with the updated anchor
-      user_map
-    else
-      # First time writing to this file! Record the entry point.
-      new_positions = Map.put(positions, file_id, {file_id, off})
-      Map.put(user_map, "positions", new_positions)
-    end
+    updated_positions =
+      Map.update(positions, file_id, off, fn existing_off ->
+        # Keep the smaller offset
+        min(existing_off, off)
+      end)
 
+    # 3️⃣ Save back to ETS
+    updated_map = Map.put(user_map, "positions", updated_positions)
     :ets.insert(cache, {user, updated_map})
   end
+
 
   @doc """
   Retrieves the logical offset for a specific device.
