@@ -68,14 +68,14 @@ defmodule Queue.QueueLogImpl do
   # GENSERVER HANDLERS
   # ------------------------------------------------------------------
   @impl true
- def init(shard) do
+  def init(shard) do
     shard_dir = Path.join(@base_dir, "#{shard}")
     File.mkdir_p!(shard_dir)
     File.mkdir_p!("data/device_bookmarks")
 
     bin_path = Path.join("data/device_bookmarks", "#{shard}.bin")
 
-    recover_counters_from_anchor(shard, bin_path)
+    # recover_counters_from_anchor(shard, bin_path)
 
     manifest = load_manifest(shard)
     base = manifest.active_base
@@ -102,10 +102,6 @@ defmodule Queue.QueueLogImpl do
       active_base: base, active_ts: ts,
       user_counts: recovered_user_counts
     }
-
-    # TRIGGER SNAPSHOT IMMEDIATELY
-    # This sends the 'cast' to FDPoolShard to create the .bin file now
-    snapshot_bin(state)
 
     {:ok, state}
   end
@@ -404,6 +400,40 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
+  def system_recovery(user) do
+    shard = :erlang.phash2(user, @num_shards)
+    cache = :"device_bookmarks_cache_#{shard}"
+
+    if :ets.lookup(cache, user) == [] do
+      bin_path = Path.join("data/device_bookmarks", "#{shard}.bin")
+
+      case Queue.FDPoolShard.read_bin(shard, bin_path) do
+        {:ok, binary} when binary != <<>> ->
+          try do
+            all_data = :erlang.binary_to_term(binary)
+            case Enum.find(all_data, fn {u, _map} -> u == user end) do
+              {^user, data} ->
+                # Restore Bookmark ETS (Anchor + Positions)
+                :ets.insert(cache, {user, data})
+
+                # Restore Global Offset Counter for this user
+                if anchor = data["__anchor__"] do
+                  {_seg_key, off} = anchor
+                  :ets.insert(@user_offsets, {{user, 1}, off})
+                end
+                :ok
+              nil -> :not_found
+            end
+          rescue
+            _ -> :error
+          end
+        _ -> :no_file
+      end
+    else
+      :already_loaded
+    end
+  end
+
   defp log_buffer(s), do: :"#{@log_buffer_prefix}#{s}"
   defp idx_cache(s), do: :"#{@idx_cache_prefix}#{s}"
   defp worker_name(s), do: :"bimip_shard_#{s}"
@@ -418,4 +448,6 @@ defmodule Queue.QueueLogImpl do
     :file.close(state.idx_fd)
     :ok
   end
+
+
 end

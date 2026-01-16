@@ -61,6 +61,11 @@ Enum.each(idx_files, fn path ->
 end)
 
 
+
+Queue.QueueLogImpl.system_recovery("user57@domain.com")
+Queue.QueueLogImpl.system_recovery("user1@domain.com")
+:ets.tab2list(:device_bookmarks_cache_37)
+
 shard = 37
 bookmark_path = "data/device_bookmarks/#{shard}.bin"
 
@@ -96,6 +101,9 @@ case File.read(bookmark_path) do
   {:error, reason} -> 
     IO.puts "❌ Could not find or read file: #{bookmark_path} (#{reason})"
 end
+
+
+
 
 {
 "__anchor__" => {"2001_1768572411", 1500},

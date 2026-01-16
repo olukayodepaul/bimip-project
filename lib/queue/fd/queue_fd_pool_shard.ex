@@ -23,6 +23,14 @@ defmodule Queue.FDPoolShard do
     GenServer.cast(via(shard_id), {:atomic_snapshot, path, data})
   end
 
+  # Add to Client API
+  def read_bin(shard_id, path) do
+    GenServer.call(via(shard_id), {:read_bin, path})
+  end
+
+# Add to Server Callbacks
+
+
   # --- Server Callbacks ---
 
   def init(shard_id) do
@@ -82,6 +90,23 @@ defmodule Queue.FDPoolShard do
     :ets.delete(table, {:evict, old_ts, path})
     :ets.insert(table, [{{:lookup, path}, fd, now}, {{:evict, now, path}, true}])
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_call({:read_bin, path}, _from, state) do
+    case get_internal_fd(path, state) do
+      {:ok, fd} ->
+        # 1. Seek to the end to find the file size
+        case :file.position(fd, :eof) do
+          {:ok, size} ->
+            # 2. Read the full size from the beginning (offset 0)
+            {:reply, :file.pread(fd, 0, size), state}
+          error ->
+            {:reply, error, state}
+        end
+      error ->
+        {:reply, error, state}
+    end
   end
 
   # --- Private Helpers ---
