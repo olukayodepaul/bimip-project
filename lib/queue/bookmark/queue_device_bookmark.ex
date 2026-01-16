@@ -5,10 +5,11 @@ defmodule Queue.DeviceBookmark do
   Structure per user:
   %{
     "__anchor__" => {segment_name, logical_offset},
-    "positions"  => %{ "base_ts" => {"base_ts", logical_offset} },
+    "positions"  => %{ "base_ts" => logical_offset },
     "device_id"  => {logical_offset, timestamp}
   }
   """
+
   use GenServer
   @num_shards 64
 
@@ -34,8 +35,8 @@ defmodule Queue.DeviceBookmark do
   # -------------------------------------------------------------------
 
   @doc """
-  Stores the physical anchor for the user and maintains a sparse index of
-  segment entry points in the "positions" map.
+  Updates the global anchor (__anchor__) for a user.
+  The anchor typically reflects the last seen message offset.
   """
   def mark_anchor(user, file_id, off) do
     cache = cache_name(shard_for(user))
@@ -47,23 +48,31 @@ defmodule Queue.DeviceBookmark do
         [] -> %{}
       end
 
-    # 1️⃣ Update the anchor with the latest offset (last message in this flush)
-    user_map = Map.put(user_map, "__anchor__", {file_id, off})
-
-    # 2️⃣ Update positions (user-level sparse index)
-    positions = Map.get(user_map, "positions", %{})
-
-    updated_positions =
-      Map.update(positions, file_id, off, fn existing_off ->
-        # Keep the smaller offset
-        min(existing_off, off)
-      end)
-
-    # 3️⃣ Save back to ETS
-    updated_map = Map.put(user_map, "positions", updated_positions)
+    updated_map = Map.put(user_map, "__anchor__", {file_id, off})
     :ets.insert(cache, {user, updated_map})
   end
 
+  @doc """
+  Updates the sparse positions map for a user.
+  Keeps the minimal offset per segment (sparse indexing).
+  """
+  def mark_position(user, file_id, off) do
+    cache = cache_name(shard_for(user))
+
+    user_map =
+      case :ets.lookup(cache, user) do
+        [{^user, m}] -> m
+        [] -> %{}
+      end
+
+    positions = Map.get(user_map, "positions", %{})
+
+    updated_positions =
+      Map.update(positions, file_id, off, fn existing -> min(existing, off) end)
+
+    updated_map = Map.put(user_map, "positions", updated_positions)
+    :ets.insert(cache, {user, updated_map})
+  end
 
   @doc """
   Retrieves the logical offset for a specific device.
@@ -71,6 +80,7 @@ defmodule Queue.DeviceBookmark do
   """
   def get(device_id, user) do
     cache = cache_name(shard_for(user))
+
     case :ets.lookup(cache, user) do
       [{^user, map}] ->
         case Map.get(map, device_id) do
@@ -81,6 +91,7 @@ defmodule Queue.DeviceBookmark do
               _ -> 0
             end
         end
+
       [] -> 0
     end
   end
@@ -92,14 +103,18 @@ defmodule Queue.DeviceBookmark do
     cache = cache_name(shard_for(user))
     now = System.system_time(:second)
 
-    map = case :ets.lookup(cache, user) do
-      [{^user, m}] -> m
-      [] -> %{}
-    end
+    map =
+      case :ets.lookup(cache, user) do
+        [{^user, m}] -> m
+        [] -> %{}
+      end
 
     :ets.insert(cache, {user, Map.put(map, device_id, {off, now})})
   end
 
+  @doc """
+  Advances a device position only if the new offset is higher than the current.
+  """
   def advance(device_id, user, new_off) do
     old_off = get(device_id, user)
     if new_off > old_off do
