@@ -122,7 +122,7 @@ defmodule Queue.QueueLogImpl do
       active_ts: ts
     }
 
-    {:noreply, final_state} = handle_info(:flush, state)
+    schedule_flush()
 
     if !File.exists?(bin_path) do
       snapshot_bin(state)
@@ -496,7 +496,7 @@ defmodule Queue.QueueLogImpl do
         {:noreply, state}
 
       is_empty ->
-        # No log here usually, to keep the console quiet when idle
+        Logger.info("Shard #{shard} flush timer fired — buffer empty, no messages to process. Next flush scheduled in #{@flush_interval} ms.")
         schedule_flush()
         {:noreply, state}
 
