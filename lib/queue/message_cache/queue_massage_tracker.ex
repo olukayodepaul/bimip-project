@@ -4,7 +4,7 @@ defmodule Queue.MessageTracker do
   """
   require Logger
 
-  @shard_count 64
+  @shard_count 4
   @partitions_per_shard 2
   @default_ttl 43_200 # 12 hours
   @meta_table :message_tracker_metadata

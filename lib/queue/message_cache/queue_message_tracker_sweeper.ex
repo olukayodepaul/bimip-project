@@ -2,8 +2,8 @@ defmodule Queue.MessageTracker.Sweeper do
   use GenServer
   require Logger
 
-  @sweep_interval :timer.minutes(2)
-  @rotate_interval :timer.minutes(5)
+  @sweep_interval :timer.hours(2)
+  @rotate_interval :timer.hours(5)
 
   def start_link(shard) when is_integer(shard) do
     name = :"message_tracker_sweeper_#{shard}"

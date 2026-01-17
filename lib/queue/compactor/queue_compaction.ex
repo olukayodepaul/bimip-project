@@ -10,8 +10,8 @@ defmodule Queue.BimipCompactor do
   @archive_dir "data/archive"
   @num_shards 64
 
-  @check_interval :timer.minutes(5)      # Run every 5 minutes
-  @retention_seconds 60 * 2              # 2 Minutes retention for testing
+  @check_interval :timer.hours(4)      # Run every 5 minutes
+  @retention_seconds 20060 * 2              # 2 Minutes retention for testing
 
   # ------------------------------------------------------------------
   # GENSERVER

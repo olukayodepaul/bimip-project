@@ -1,6 +1,8 @@
 defmodule Queue.BimipSupervisor do
   use Supervisor
 
+  @num_shards 64
+
   def start_link(_init_arg \\ []) do
     Supervisor.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -11,7 +13,7 @@ defmodule Queue.BimipSupervisor do
     Queue.QueueLogImpl.__startup__()
     Queue.MessageTracker.init()
 
-    for s <- 0..63 do
+    for s <- 0..(@num_shards - 1) do
       table = :"fd_pool_#{s}"
       if :ets.info(table) == :undefined do
         :ets.new(table, [:ordered_set, :public, :named_table, read_concurrency: true])
@@ -28,7 +30,7 @@ defmodule Queue.BimipSupervisor do
 
     # 3. Define the 64 Shards AND 64 Sweepers
     # We pair each Log Worker with its dedicated Sweeper
-    shard_children = for s <- 0..63 do
+    shard_children = for s <- 0..(@num_shards - 1) do
       [
         Supervisor.child_spec({Queue.QueueLogImpl, s}, id: :"shard_#{s}"),
         Supervisor.child_spec({Queue.MessageTracker.Sweeper, s}, id: :"sweeper_#{s}")
