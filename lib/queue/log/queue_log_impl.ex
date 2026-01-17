@@ -1,6 +1,7 @@
 defmodule Queue.QueueLogImpl do
   @moduledoc """
   BimipLog v10.8 — Fixed Stride logic by persisting user_counts in ETS.
+  Sharding applied to Checkpoints, User Offsets, and Segment Counts.
   """
   use GenServer
   require Logger
@@ -16,10 +17,9 @@ defmodule Queue.QueueLogImpl do
   @user_stride 100
   @max_buffer_per_shard 20_000
 
-  @checkpoints :bimip_segment_checkpoints
-  @user_offsets :bimip_user_offsets
-  # Global table for tracking user message counts within the current segment
-  @user_segment_counts :bimip_user_segment_counts
+  @checkpoints_prefix :bimip_segment_checkpoints_
+  @user_offsets_prefix :bimip_user_offsets_
+  @user_segment_counts_prefix :bimip_user_segment_counts_
   @idx_cache_prefix :"bimip_idx_"
   @log_buffer_prefix :"bimip_buf_"
 
@@ -30,13 +30,14 @@ defmodule Queue.QueueLogImpl do
   def start_link(shard), do: GenServer.start_link(__MODULE__, shard, name: worker_name(shard))
 
   def __startup__ do
-    if :ets.info(@user_offsets) == :undefined, do: :ets.new(@user_offsets, [:named_table, :public, :set, {:write_concurrency, true}])
-    if :ets.info(@checkpoints) == :undefined, do: :ets.new(@checkpoints, [:named_table, :public, :set, {:read_concurrency, true}])
-    if :ets.info(@user_segment_counts) == :undefined, do: :ets.new(@user_segment_counts, [:named_table, :public, :set, {:write_concurrency, true}])
-
     for s <- 0..(@num_shards - 1) do
       if :ets.info(log_buffer(s)) == :undefined, do: :ets.new(log_buffer(s), [:named_table, :public, :duplicate_bag, {:write_concurrency, true}])
       if :ets.info(idx_cache(s)) == :undefined, do: :ets.new(idx_cache(s), [:named_table, :public, :set, {:read_concurrency, true}])
+
+      # SHARDED LOGIC TABLES
+      if :ets.info(user_offsets_tab(s)) == :undefined, do: :ets.new(user_offsets_tab(s), [:named_table, :public, :set, {:write_concurrency, true}])
+      if :ets.info(checkpoints_tab(s)) == :undefined, do: :ets.new(checkpoints_tab(s), [:named_table, :public, :set, {:read_concurrency, true}])
+      if :ets.info(user_segment_counts_tab(s)) == :undefined, do: :ets.new(user_segment_counts_tab(s), [:named_table, :public, :set, {:write_concurrency, true}])
     end
     :ok
   end
@@ -44,18 +45,25 @@ defmodule Queue.QueueLogImpl do
   def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id) do
     shard = :erlang.phash2(recipient_uid, @num_shards)
     buf = log_buffer(shard)
+    u_offsets = user_offsets_tab(shard)
 
     if :ets.info(buf, :size) > @max_buffer_per_shard do
       {:error, :backpressure}
     else
-      offset = :ets.update_counter(@user_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
+      offset = :ets.update_counter(u_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
       data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
 
       record = %{
-        u: recipient_uid, s: sender_uid, p: partition_id, off: offset, mid: message_id,
-        writer_device: to_string(device_id), bin: :erlang.term_to_binary(data),
+        u: recipient_uid,
+        s: sender_uid,
+        p: partition_id,
+        off: offset,
+        mid: message_id,
+        writer_device: to_string(device_id),
+        bin: :erlang.term_to_binary(data),
         ts: System.system_time(:second)
       }
+
       :ets.insert(buf, {shard, offset, record})
       {:ok, offset}
     end
@@ -111,12 +119,14 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp recover_user_stride_counts_to_ets(shard, active_base) do
-    :ets.tab2list(@user_offsets)
-    |> Enum.filter(fn {{user, _p}, _off} -> :erlang.phash2(user, @num_shards) == shard end)
+    u_offsets = user_offsets_tab(shard)
+    u_counts = user_segment_counts_tab(shard)
+
+    :ets.tab2list(u_offsets)
     |> Enum.each(fn {{user, _partition}, off} ->
       count_in_seg = off - (active_base - 1)
       final_count = if count_in_seg < 0, do: 0, else: count_in_seg
-      :ets.insert(@user_segment_counts, {{shard, user}, final_count})
+      :ets.insert(u_counts, {user, final_count})
     end)
   end
 
@@ -182,13 +192,15 @@ defmodule Queue.QueueLogImpl do
   defp process_batch(state, items, depth) do
     space_left = @max_messages_per_seg - state.msg_count
     {to_write, leftovers} = Enum.split(items, space_left)
+    u_counts = user_segment_counts_tab(state.shard)
 
     {bin_io, idx_io, final_count, final_bytes, updates, latest_map} =
       Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}},
         fn {_s, off, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map} ->
           {bin_packet, p_size} = encode_packet(rec, off, state)
 
-          u_count = :ets.update_counter(@user_segment_counts, {state.shard, rec.u}, {2, 1}, {{state.shard, rec.u}, 0})
+          # ATOMIC INCREMENT IN SHARDED ETS
+          u_count = :ets.update_counter(u_counts, rec.u, {2, 1}, {rec.u, 0})
           current_stride_check = u_count - 1
 
           {new_i_acc, new_upd} =
@@ -289,7 +301,8 @@ defmodule Queue.QueueLogImpl do
     {:ok, l} = :file.open(l_path, [:append, :raw, :binary, :read, :write])
     {:ok, i} = :file.open(i_path, [:append, :raw, :binary, :read, :write])
 
-    :ets.match_delete(@user_segment_counts, {{state.shard, :_}, :_})
+    # Clear only the sharded counts for this shard
+    :ets.delete_all_objects(user_segment_counts_tab(state.shard))
 
     %{state | log_fd: l, idx_fd: i, active_base: new_base, active_ts: new_ts, current_size: 0, msg_count: 0}
   end
@@ -377,8 +390,9 @@ defmodule Queue.QueueLogImpl do
     File.rename!(path <> ".tmp", path)
   end
 
-  defp calculate_current_count(_shard, base) do
-    case :ets.match(@user_offsets, {{:"$1", :"$2"}, :"$3"}) do
+  defp calculate_current_count(shard, base) do
+    u_offsets = user_offsets_tab(shard)
+    case :ets.match(u_offsets, {{:"$1", :"$2"}, :"$3"}) do
       [] -> 0
       matches ->
         max_off = Enum.reduce(matches, 0, fn [_, _, off], acc -> max(off, acc) end)
@@ -424,14 +438,20 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp perform_recovery(user, cache, data) do
+    shard = :erlang.phash2(user, @num_shards)
+    u_offsets = user_offsets_tab(shard)
     :ets.insert(cache, {user, data})
     if anchor = data["__anchor__"] do
       {_seg_key, off} = anchor
-      :ets.insert(@user_offsets, {{user, 1}, off})
+      :ets.insert(u_offsets, {{user, 1}, off})
     end
     :ok
   end
 
+  # HELPERS
+  defp user_offsets_tab(s), do: :"#{@user_offsets_prefix}#{s}"
+  defp checkpoints_tab(s), do: :"#{@checkpoints_prefix}#{s}"
+  defp user_segment_counts_tab(s), do: :"#{@user_segment_counts_prefix}#{s}"
   defp log_buffer(s), do: :"#{@log_buffer_prefix}#{s}"
   defp idx_cache(s), do: :"#{@idx_cache_prefix}#{s}"
   defp worker_name(s), do: :"bimip_shard_#{s}"
