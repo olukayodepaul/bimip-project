@@ -103,3 +103,70 @@ end
 
 
 
+
+
+
+
+
+  defp process_batch(state, items, depth \\ 0)
+  defp process_batch(state, [], _depth), do: state
+
+  defp process_batch(state, items, depth) when depth > 500 do
+    Logger.error("Max recursion depth reached. Re-inserting #{length(items)} leftovers.")
+    buf = log_buffer(state.shard)
+    :ets.insert(buf, items)
+    state
+  end
+
+  defp process_batch(state, items, depth) do
+    space_left = @max_messages_per_seg - state.msg_count
+    {to_write, leftovers} = Enum.split(items, space_left)
+    u_counts = user_segment_counts_tab(state.shard)
+
+    {bin_io, idx_io, final_count, final_bytes, updates, latest_map} =
+      Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}},
+        fn {_s, off, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map} ->
+          {bin_packet, p_size} = encode_packet(rec, off, state)
+
+          # ATOMIC INCREMENT IN SHARDED ETS
+          u_count = :ets.update_counter(u_counts, rec.u, {2, 1}, {rec.u, 0})
+          current_stride_check = u_count - 1
+
+          {new_i_acc, new_upd} =
+            if rem(current_stride_check, @user_stride) == 0 do
+              u_bin = to_string(rec.u)
+              idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, off::64, state.active_base::64, curr_phys::64>>
+              :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, off}, {state.active_base, curr_phys}})
+              {[i_acc | idx_entry], [{rec.u, off} | upd]}
+            else
+              {i_acc, upd}
+            end
+
+          updated_l_map = Map.put(l_map, rec.u, off)
+          {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, updated_l_map}
+        end)
+
+    :file.write(state.log_fd, bin_io)
+    :file.write(state.idx_fd, idx_io)
+    :file.datasync(state.log_fd)
+    :file.datasync(state.idx_fd)
+
+    global_max_offset = if Map.size(latest_map) > 0, do: latest_map |> Map.values() |> Enum.max(), else: 0
+    Enum.each(Map.keys(latest_map), fn user ->
+      Queue.DeviceBookmark.mark_anchor(user, "#{state.active_base}_#{state.active_ts}", global_max_offset)
+    end)
+
+    Enum.each(updates, fn {user, pos} ->
+      Queue.DeviceBookmark.mark_position(user, "#{state.active_base}_#{state.active_ts}", pos)
+    end)
+
+    new_state = %{state | msg_count: final_count, current_size: final_bytes}
+
+    if new_state.msg_count >= @max_messages_per_seg do
+      snapshot_bin(new_state)
+      rotated_state = rotate_segment(new_state)
+      process_batch(rotated_state, leftovers, depth + 1)
+    else
+      process_batch(new_state, leftovers, depth + 1)
+    end
+  end
