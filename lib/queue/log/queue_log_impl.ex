@@ -217,8 +217,7 @@ defmodule Queue.QueueLogImpl do
     # Commit to Disk
     :file.write(state.log_fd, bin_io)
     :file.write(state.idx_fd, idx_io)
-    :file.datasync(state.log_fd)
-    :file.datasync(state.idx_fd)
+
 
     # Update bookmarks (simplified for brevity, keeps your existing logic)
     global_max_offset = latest_map |> Map.values() |> Enum.max()
@@ -471,6 +470,8 @@ defp drain_buf(buf, state, continuation \\ :start) do
           drain_buf(buf, new_state, next_cont)
         else
           Logger.info("Shard #{state.shard} flush completed after draining remaining messages.")
+          :file.datasync(state.log_fd)
+          :file.datasync(state.idx_fd)
           finish_flush(new_state)
         end
     end
