@@ -221,7 +221,8 @@ defmodule Queue.QueueLogImpl do
     :file.datasync(state.idx_fd)
 
     # Update bookmarks (simplified for brevity, keeps your existing logic)
-    Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", off) end)
+    global_max_offset = if Map.size(latest_map) > 0, do: latest_map |> Map.values() |> Enum.max(), else: 0
+    Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", global_max_offset) end)
     Enum.each(updates, fn {u, off} -> Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off) end)
 
     new_state = %{state | msg_count: final_count, current_size: final_bytes}
