@@ -13,16 +13,16 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 60_000
-  @max_messages_per_seg 1000
-  @user_stride 100
-  @max_buffer_per_shard 20_000
+  @max_messages_per_seg 1_000_000
+  @user_stride 1_000
+  @max_buffer_per_shard 1_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
   @user_offsets_prefix :bimip_user_offsets_
   @user_segment_counts_prefix :bimip_user_segment_counts_
   @idx_cache_prefix :"bimip_idx_"
   @log_buffer_prefix :"bimip_buf_"
-  @stable_limit 5_000
+  @stable_limit 6_000
   @flush_state :flush_state
 
   # ------------------------------------------------------------------
@@ -221,7 +221,7 @@ defmodule Queue.QueueLogImpl do
     :file.datasync(state.idx_fd)
 
     # Update bookmarks (simplified for brevity, keeps your existing logic)
-    global_max_offset = if Map.size(latest_map) > 0, do: latest_map |> Map.values() |> Enum.max(), else: 0
+    global_max_offset = latest_map |> Map.values() |> Enum.max()
     Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", global_max_offset) end)
     Enum.each(updates, fn {u, off} -> Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off) end)
 

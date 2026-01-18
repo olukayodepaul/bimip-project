@@ -1,4 +1,4 @@
-shard = 37
+shard = 0
 manifest_path = "data/bimip/#{shard}/#{shard}.manifest"
 
 case File.read(manifest_path) do
@@ -36,7 +36,7 @@ end
 
 
 
-shard = 37
+shard = 0
 folder_path = "data/bimip/#{shard}"
 idx_files = Path.wildcard("#{folder_path}/#{shard}_*.idx") |> Enum.sort()
 
@@ -65,7 +65,7 @@ Queue.QueueLogImpl.system_recovery("user1@domain.com")
 Queue.QueueLogImpl.system_recovery("user1@domain.com")
 :ets.tab2list(:device_bookmarks_cache_37)
 
-shard = 3
+shard = 0
 bookmark_path = "data/device_bookmarks/#{shard}.bin"
 
 case File.read(bookmark_path) do
