@@ -1,6 +1,6 @@
 defmodule QueueLogTest do
   @user_count 64
-  @total_messages 1000
+  @total_messages 5_000
   @num_shards 64
 
   def run_test do
@@ -55,12 +55,15 @@ defmodule QueueLogTest do
     end)
   end
 end
-
+# 09:09
 
 
 # shard_to_check = 0
 # table_name = :"bimip_buf_#{shard_to_check}"
 # :ets.tab2list(table_name)
+
+# ps aux | grep beam
+# top -l 1 -s 0 | grep PhysMem
 
 # QueueLogTest.run_test()
 

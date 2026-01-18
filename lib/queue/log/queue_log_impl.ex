@@ -13,7 +13,7 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 60_000
-  @max_messages_per_seg 1_000
+  @max_messages_per_seg 1000
   @user_stride 100
   @max_buffer_per_shard 20_000
 
@@ -442,32 +442,45 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
-  defp drain_buf(buf, state, continuation \\ :start) do
-    result = case continuation do
+defp drain_buf(buf, state, continuation \\ :start) do
+  result =
+    case continuation do
       :start -> :ets.select(buf, match_spec(state.shard), @stable_limit)
       cont   -> :ets.select(cont)
     end
 
     case result do
-      :"$end_of_table" -> state
+      :"$end_of_table" ->
+        Logger.info("Shard #{state.shard} flush completed: no more data.")
+        finish_flush(state)
 
       {items, next_cont} ->
-        # Delete from RAM immediately
+        Logger.debug("Shard #{state.shard} processing batch of #{length(items)} messages.")
+
+        # Delete batch from RAM immediately
         Enum.each(items, fn {key, _} -> :ets.delete(buf, key) end)
 
-        # Write to Disk
+        # Write batch to disk
         new_state = process_batch(state, items)
 
         # Check if more data arrived during the disk write
-        if :ets.info(buf, :size) > 0 do
+        if :ets.first(buf) != :"$end_of_table" do
+          #
+          Logger.info("Shard #{state.shard} Recursive restart immediately")
           drain_buf(buf, new_state, next_cont)
         else
-          new_state
+          Logger.info("Shard #{state.shard} flush completed after draining remaining messages.")
+          finish_flush(new_state)
         end
     end
   end
 
-
+  defp finish_flush(state) do
+    :ets.insert(@flush_state, {state.shard, :idle})
+    Logger.debug("Shard #{state.shard} marked idle. Next flush scheduled.")
+    schedule_flush()
+    state
+  end
 
   defp match_spec(shard_id) do
     [
@@ -484,39 +497,19 @@ defmodule Queue.QueueLogImpl do
     shard = state.shard
     buf = log_buffer(shard)
 
-    # STEP 2: Check if this shard is currently busy
+    # Check busy status only
     is_busy = :ets.lookup(@flush_state, shard) == [{shard, :busy}]
-    buf_size = :ets.info(buf, :size)
-    is_empty = buf_size == 0
 
-    cond do
-      is_busy ->
-        Logger.debug("Shard #{shard} skip: already busy.")
-        schedule_flush()
-        {:noreply, state}
+    if is_busy do
+      Logger.debug("Shard #{shard} flush skipped: already busy.")
+      {:noreply, state}
+    else
+      Logger.info("Shard #{shard} flush starting.")
+      :ets.insert(@flush_state, {shard, :busy})
 
-      is_empty ->
-        Logger.info("Shard #{shard} flush timer fired — buffer empty, no messages to process. Next flush scheduled in #{@flush_interval} ms.")
-        schedule_flush()
-        {:noreply, state}
-
-      true ->
-        # STEP 4: Resume Flushing
-        Logger.info("Shard #{shard} flushing resume: processing #{buf_size} messages.")
-
-        # Set state to BUSY
-        :ets.insert(@flush_state, {shard, :busy})
-
-        # Start recursive drain
-        new_state = perform_flush(state)
-
-        # STEP 5: Completed
-        Logger.info("Shard #{shard} flushing completed. Next cycle scheduled.")
-
-        :ets.insert(@flush_state, {shard, :idle})
-        schedule_flush()
-
-        {:noreply, new_state}
+      # Start the drain process
+      new_state = drain_buf(buf, state)
+      {:noreply, new_state}
     end
   end
 
