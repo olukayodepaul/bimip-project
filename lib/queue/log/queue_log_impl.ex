@@ -279,13 +279,36 @@ defmodule Queue.QueueLogImpl do
     {packet, IO.iodata_length(packet)}
   end
 
-  defp rotate_segment(state) do
+defp rotate_segment(state) do
+    # 1. Calculate new coordinates
     new_base = state.active_base + state.msg_count
     new_ts = System.system_time(:second)
 
+    # 2. Close and Flush old files
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
 
+    # 3. Step 2 & 3: Pre-create and Sync NEW Segment Files
+    l_path = Path.join(state.shard_dir, "#{state.shard}_#{new_base}_#{new_ts}.log")
+    i_path = Path.join(state.shard_dir, "#{state.shard}_#{new_base}_#{new_ts}.idx")
+
+    {:ok, tmp_l} = :file.open(l_path, [:write, :raw, :binary])
+    :file.datasync(tmp_l) # Ensure file entry exists on disk
+    :file.close(tmp_l)
+
+    {:ok, tmp_i} = :file.open(i_path, [:write, :raw, :binary])
+    :file.datasync(tmp_i)
+    :file.close(tmp_i)
+
+    # Sync the directory itself (POSIX requirement for file creation persistence)
+    case :file.open(state.shard_dir, [:read, :raw]) do
+      {:ok, dir_fd} ->
+        :file.datasync(dir_fd)
+        :file.close(dir_fd)
+      _ -> :ok
+    end
+
+    # 4. Step 4: Atomic Manifest Flip
     manifest = load_manifest(state.shard)
     expired_key = "#{state.active_base}_#{state.active_ts}"
 
@@ -297,16 +320,30 @@ defmodule Queue.QueueLogImpl do
 
     write_manifest(state.shard, updated_manifest)
 
-    l_path = Path.join(state.shard_dir, "#{state.shard}_#{new_base}_#{new_ts}.log")
-    i_path = Path.join(state.shard_dir, "#{state.shard}_#{new_base}_#{new_ts}.idx")
-
-    {:ok, l} = :file.open(l_path, [:append, :raw, :binary, :read, :write])
+    # 5. Step 5: Open handles for the new state
+    {:ok, l} = :file.open(l_path, [:append, :raw, :binary, :read, :delayed_write])
     {:ok, i} = :file.open(i_path, [:append, :raw, :binary, :read, :write])
 
-    # Clear only the sharded counts for this shard
     :ets.delete_all_objects(user_segment_counts_tab(state.shard))
 
     %{state | log_fd: l, idx_fd: i, active_base: new_base, active_ts: new_ts, current_size: 0, msg_count: 0}
+  end
+
+  defp write_manifest(shard, manifest_data) do
+    shard_dir = Path.join(@base_dir, "#{shard}")
+    path = Path.join(shard_dir, "#{shard}.manifest")
+    tmp_path = path <> ".tmp"
+
+    storage_map = Map.drop(manifest_data, [:exists])
+    binary = :erlang.term_to_binary(storage_map)
+
+    # Open, Write, Sync, Close
+    {:ok, fd} = :file.open(tmp_path, [:write, :raw, :binary])
+    :file.write(fd, binary)
+    :file.datasync(fd) # <--- The Hardware Commit
+    :file.close(fd)
+
+    File.rename!(tmp_path, path)
   end
 
   defp read_from_disk(state, base, pos) do
@@ -382,14 +419,6 @@ defmodule Queue.QueueLogImpl do
     else
       %{active_base: 1, active_ts: System.system_time(:second), expired: %{}, exists: false}
     end
-  end
-
-  defp write_manifest(shard, manifest_data) do
-    shard_dir = Path.join(@base_dir, "#{shard}")
-    path = Path.join(shard_dir, "#{shard}.manifest")
-    storage_map = Map.drop(manifest_data, [:exists])
-    File.write!(path <> ".tmp", :erlang.term_to_binary(storage_map))
-    File.rename!(path <> ".tmp", path)
   end
 
   defp calculate_current_count(shard, base) do
