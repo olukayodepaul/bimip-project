@@ -13,16 +13,16 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 60_000
-  @max_messages_per_seg 1_000_000
-  @user_stride 1_000
-  @max_buffer_per_shard 1_000_000
+  @max_messages_per_seg 20
+  @user_stride 10
+  @max_buffer_per_shard 10_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
   @user_offsets_prefix :bimip_user_offsets_
   @user_segment_counts_prefix :bimip_user_segment_counts_
   @idx_cache_prefix :"bimip_idx_"
   @log_buffer_prefix :"bimip_buf_"
-  @stable_limit 6_000
+  @stable_limit 5_000
   @flush_state :flush_state
 
   # ------------------------------------------------------------------
@@ -44,16 +44,23 @@ defmodule Queue.QueueLogImpl do
     end
 
     for s <- 0..(@num_shards - 1) do
-      if :ets.info(log_buffer(s)) == :undefined, do: :ets.new(log_buffer(s), [:named_table, :public, :ordered_set, {:write_concurrency, true}, {:read_concurrency, true}])
+      if :ets.info(log_buffer(s)) == :undefined, do: :ets.new(log_buffer(s), [:named_table, :public, :set, {:write_concurrency, true}, {:read_concurrency, true}])
       if :ets.info(idx_cache(s)) == :undefined, do: :ets.new(idx_cache(s), [:named_table, :public, :set, {:read_concurrency, true}])
-      if :ets.info(user_offsets_tab(s)) == :undefined, do: :ets.new(user_offsets_tab(s), [:named_table, :public, :set, {:write_concurrency, true}])
+
+      if :ets.info(user_offsets_tab(s)) == :undefined do
+        :ets.new(user_offsets_tab(s), [:named_table, :public, :set, {:write_concurrency, true}])
+        # Initialize shard_offset and last_shard_offset
+        :ets.insert(user_offsets_tab(s), {{:shard_offset, s}, 0})
+        :ets.insert(user_offsets_tab(s), {{:last_shard_offset, s}, 0})
+      end
+
       if :ets.info(checkpoints_tab(s)) == :undefined, do: :ets.new(checkpoints_tab(s), [:named_table, :public, :set, {:read_concurrency, true}])
       if :ets.info(user_segment_counts_tab(s)) == :undefined, do: :ets.new(user_segment_counts_tab(s), [:named_table, :public, :set, {:write_concurrency, true}])
     end
     :ok
   end
 
-  def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id) do
+  def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id, ts) do
     shard = :erlang.phash2(recipient_uid, @num_shards)
     buf = log_buffer(shard)
     u_offsets = user_offsets_tab(shard)
@@ -61,8 +68,10 @@ defmodule Queue.QueueLogImpl do
     if :ets.info(buf, :size) > @max_buffer_per_shard do
       {:error, :backpressure}
     else
+
       offset = :ets.update_counter(u_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
       data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
+      shard_offset = :ets.update_counter(u_offsets,{:shard_offset, shard},  {2, 1}, {{:shard_offset, shard}, 0})
 
       record = %{
         u: recipient_uid,
@@ -72,11 +81,10 @@ defmodule Queue.QueueLogImpl do
         mid: message_id,
         writer_device: to_string(device_id),
         bin: :erlang.term_to_binary(data),
-        ts: System.system_time(:second)
+        ts: ts
       }
 
-      seq = System.unique_integer([:monotonic, :positive])
-      :ets.insert(buf, {{shard, offset, seq}, record})
+      :ets.insert(buf, {shard_offset, {shard, offset, record}})
       {:ok, offset}
     end
   end
@@ -442,38 +450,55 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
-defp drain_buf(buf, state, continuation \\ :start) do
-  result =
-    case continuation do
-      :start -> :ets.select(buf, match_spec(state.shard), @stable_limit)
-      cont   -> :ets.select(cont)
-    end
+  defp drain_buf(buf, state, _continuation \\ nil) do
+    u_offsets = user_offsets_tab(state.shard)
 
-    case result do
-      :"$end_of_table" ->
-        Logger.info("Shard #{state.shard} flush completed: no more data.")
+    # 1. Get current boundaries
+    last_ptr = :ets.lookup_element(u_offsets, {:last_shard_offset, state.shard}, 2)
+    current_head = :ets.lookup_element(u_offsets, {:shard_offset, state.shard}, 2)
+
+    start_idx = last_ptr + 1
+    end_idx = min(start_idx + @stable_limit - 1, current_head)
+
+    if start_idx > current_head do
+      # Only log if you want to see the "idle" shards finishing
+      # Logger.debug("Shard #{state.shard} idle.")
+      finish_flush(state)
+    else
+      # 2. Fetch the nested tuple
+      {items, last_processed_idx} =
+        Enum.reduce_while(start_idx..end_idx, {[], last_ptr}, fn i, {acc, _prev} ->
+          case :ets.lookup(buf, i) do
+            [{^i, {shard, offset, record}}] ->
+              :ets.delete(buf, i)
+              old_shape = {{shard, offset, i}, record}
+              {:cont, {[old_shape | acc], i}}
+
+            [] ->
+              {:halt, {acc, i - 1}}
+          end
+        end)
+
+      if items == [] do
         finish_flush(state)
+      else
+        :ets.insert(u_offsets, {{:last_shard_offset, state.shard}, last_processed_idx})
 
-      {items, next_cont} ->
-        Logger.debug("Shard #{state.shard} processing batch of #{length(items)} messages.")
+        # Process the batch
+        new_state = process_batch(state, Enum.reverse(items))
 
-        # Delete batch from RAM immediately
-        Enum.each(items, fn {key, _} -> :ets.delete(buf, key) end)
-
-        # Write batch to disk
-        new_state = process_batch(state, items)
-
-        # Check if more data arrived during the disk write
+        # 3. Check for recursion
         if :ets.first(buf) != :"$end_of_table" do
-          #
-          Logger.info("Shard #{state.shard} Recursive restart immediately")
-          drain_buf(buf, new_state, next_cont)
+          # ADD THIS LOG
+          Logger.info("Shard #{state.shard} RECURSING: More data found in buffer. Ptr: #{last_processed_idx}")
+          drain_buf(buf, new_state)
         else
-          Logger.info("Shard #{state.shard} flush completed after draining remaining messages.")
+          Logger.info("Shard #{state.shard} DRAIN FINISHED: Buffer empty at Ptr: #{last_processed_idx}")
           :file.datasync(state.log_fd)
           :file.datasync(state.idx_fd)
           finish_flush(new_state)
         end
+      end
     end
   end
 

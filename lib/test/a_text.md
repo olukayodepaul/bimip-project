@@ -61,6 +61,53 @@ Enum.each(idx_files, fn path ->
 end)
 
 
+shard = 0
+folder_path = "data/bimip/#{shard}"
+log_files = Path.wildcard("#{folder_path}/#{shard}_*.log") |> Enum.sort()
+
+IO.puts "📜 Found #{Enum.count(log_files)} log files in #{folder_path}\n"
+
+Enum.each(log_files, fn path ->
+  IO.puts "================================================"
+  IO.puts "📄 LOG FILE: #{Path.basename(path)}"
+  
+  case File.read(path) do
+    {:ok, binary} ->
+      parse_log = fn
+        recursive, <<0xEE, body_size::32, crc::32, ulen::16, dlen::16, ts::64, rest::binary>>, count ->
+          # Extract dynamic length strings and data
+          <<user::binary-size(ulen), device::binary-size(dlen), p::32, off::64, body::binary-size(body_size), next::binary>> = rest
+          
+          # Attempt to decode the Erlang term
+          payload = try do
+            :erlang.binary_to_term(body)
+          rescue
+            _ -> "⚠️ [Could not decode Erlang term]"
+          end
+
+          IO.puts "📝 Entry ##{count}"
+          IO.puts "   👤 User: #{user} | 📱 Device: #{device}"
+          IO.puts "   🔢 Partition: #{p} | 🆔 Offset: #{off}"
+          IO.puts "   🕒 TS: #{ts} | 📦 CRC: #{crc}"
+          IO.puts "   📦 Payload: #{inspect(payload)}"
+          IO.puts "   --------------------------------------------"
+          
+          recursive.(recursive, next, count + 1)
+
+        _, <<>>, count -> 
+          IO.puts "🏁 End of log reached. Total records: #{count}"
+
+        _, rest, count -> 
+          IO.puts "⚠️ Trailing/Corrupt data: #{byte_size(rest)} bytes remaining. Total valid: #{count}"
+      end
+
+      parse_log.(parse_log, binary, 1)
+
+    {:error, reason} -> 
+      IO.puts "❌ Could not read log: #{reason}"
+  end
+end)
+
 Queue.QueueLogImpl.system_recovery("user1@domain.com")
 Queue.QueueLogImpl.system_recovery("user1@domain.com")
 :ets.tab2list(:device_bookmarks_cache_37)
