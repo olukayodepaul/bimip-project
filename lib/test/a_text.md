@@ -10,6 +10,7 @@ case File.read(manifest_path) do
       IO.puts "================================================"
       
       base = data.active_base
+      file = data.active_ts
       # This is the Global Offset from your record
       global_offset = Map.get(data, :msg_count, 0) 
       
@@ -21,7 +22,7 @@ case File.read(manifest_path) do
       IO.puts "🎯 ACTIVE SEGMENT:"
       IO.puts "   Base Offset:     #{base}"
       IO.puts "   Global Offset:   #{global_offset}"
-      IO.puts "   Segment Count:   #{current_count} / 20" # This shows 5 / 20
+      IO.puts "   File:   #{file}"
       
       IO.puts "------------------------------------------------"
       
@@ -96,7 +97,6 @@ Enum.each(log_files, fn path ->
           IO.puts "   👤 User: #{user} | 📱 Device: #{device}"
           IO.puts "   🔢 Partition: #{p} | 🆔 Offset: #{off}"
           IO.puts "   🕒 TS: #{ts} | 📦 CRC: #{crc}"
-          IO.puts "   📦 Payload: #{inspect(payload)}"
           IO.puts "   --------------------------------------------"
           
           recursive.(recursive, next, count + 1)
@@ -115,8 +115,8 @@ Enum.each(log_files, fn path ->
   end
 end)
 
-Queue.QueueLogImpl.system_recovery("user57@domain.com")
-Queue.QueueLogImpl.system_recovery("user1@domain.com")
+Queue.QueueLogImpl.system_recovery("user57@domain.com", 1)
+Queue.QueueLogImpl.system_recovery("user1@domain.com", 1)
 :ets.tab2list(:device_bookmarks_cache_37)
 :ets.tab2list(:bimip_user_offsets_37)
 
