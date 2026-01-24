@@ -1,4 +1,4 @@
-shard = 0
+shard = 37
 manifest_path = "data/bimip/#{shard}/#{shard}.manifest"
 
 case File.read(manifest_path) do
@@ -10,11 +10,18 @@ case File.read(manifest_path) do
       IO.puts "================================================"
       
       base = data.active_base
-      ts = data.active_ts
+      # This is the Global Offset from your record
+      global_offset = Map.get(data, :msg_count, 0) 
+      
+      # Calculate the count relative to the current file
+      # If global is 0 (new file), count is 0. 
+      # Otherwise, it's (Global - Base) + 1
+      current_count = if global_offset > 0, do: (global_offset - base) + 1, else: 0
+      
       IO.puts "🎯 ACTIVE SEGMENT:"
-      IO.puts "   Base Offset: #{base}"
-      IO.puts "   Timestamp:   #{ts}"
-      IO.puts "   File:        #{base}"
+      IO.puts "   Base Offset:     #{base}"
+      IO.puts "   Global Offset:   #{global_offset}"
+      IO.puts "   Segment Count:   #{current_count} / 20" # This shows 5 / 20
       
       IO.puts "------------------------------------------------"
       
@@ -22,8 +29,9 @@ case File.read(manifest_path) do
         IO.puts "📂 EXPIRED SEGMENTS: None"
       else
         IO.puts "📂 EXPIRED SEGMENTS:"
-        Enum.each(data.expired, fn {name_parts, death_ts} ->
-          # name_parts is "base_timestamp", filename needs shard prefix
+        # Sort by rotation timestamp to see history in order
+        Enum.sort_by(data.expired, fn {_, death_ts} -> death_ts end)
+        |> Enum.each(fn {name_parts, death_ts} ->
           IO.puts "   • Segment: #{shard}_#{name_parts} | Rotated At: #{death_ts}"
         end)
       end
@@ -35,8 +43,7 @@ case File.read(manifest_path) do
 end
 
 
-
-shard = 0
+shard = 37
 folder_path = "data/bimip/#{shard}"
 idx_files = Path.wildcard("#{folder_path}/#{shard}_*.idx") |> Enum.sort()
 
@@ -61,7 +68,7 @@ Enum.each(idx_files, fn path ->
 end)
 
 
-shard = 0
+shard = 37
 folder_path = "data/bimip/#{shard}"
 log_files = Path.wildcard("#{folder_path}/#{shard}_*.log") |> Enum.sort()
 
@@ -108,13 +115,16 @@ Enum.each(log_files, fn path ->
   end
 end)
 
-Queue.QueueLogImpl.system_recovery("user1@domain.com")
+Queue.QueueLogImpl.system_recovery("user57@domain.com")
 Queue.QueueLogImpl.system_recovery("user1@domain.com")
 :ets.tab2list(:device_bookmarks_cache_37)
+:ets.tab2list(:bimip_user_offsets_37)
 
-shard = 0
+  {{"user1@domain.com", 0}, 40},
+  {{"user57@domain.com", 0}, 40}
+
+shard = 37
 bookmark_path = "data/device_bookmarks/#{shard}.bin"
-
 case File.read(bookmark_path) do
   {:ok, binary} when binary != <<>> ->
     try do
@@ -154,66 +164,3 @@ end
 
 
 
-
-  defp process_batch(state, items, depth \\ 0)
-  defp process_batch(state, [], _depth), do: state
-
-  defp process_batch(state, items, depth) when depth > 500 do
-    Logger.error("Max recursion depth reached. Re-inserting #{length(items)} leftovers.")
-    buf = log_buffer(state.shard)
-    :ets.insert(buf, items)
-    state
-  end
-
-  defp process_batch(state, items, depth) do
-    space_left = @max_messages_per_seg - state.msg_count
-    {to_write, leftovers} = Enum.split(items, space_left)
-    u_counts = user_segment_counts_tab(state.shard)
-
-    {bin_io, idx_io, final_count, final_bytes, updates, latest_map} =
-      Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}},
-        fn {_s, off, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map} ->
-          {bin_packet, p_size} = encode_packet(rec, off, state)
-
-          # ATOMIC INCREMENT IN SHARDED ETS
-          u_count = :ets.update_counter(u_counts, rec.u, {2, 1}, {rec.u, 0})
-          current_stride_check = u_count - 1
-
-          {new_i_acc, new_upd} =
-            if rem(current_stride_check, @user_stride) == 0 do
-              u_bin = to_string(rec.u)
-              idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, off::64, state.active_base::64, curr_phys::64>>
-              :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, off}, {state.active_base, curr_phys}})
-              {[i_acc | idx_entry], [{rec.u, off} | upd]}
-            else
-              {i_acc, upd}
-            end
-
-          updated_l_map = Map.put(l_map, rec.u, off)
-          {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, updated_l_map}
-        end)
-
-    :file.write(state.log_fd, bin_io)
-    :file.write(state.idx_fd, idx_io)
-    :file.datasync(state.log_fd)
-    :file.datasync(state.idx_fd)
-
-    global_max_offset = if Map.size(latest_map) > 0, do: latest_map |> Map.values() |> Enum.max(), else: 0
-    Enum.each(Map.keys(latest_map), fn user ->
-      Queue.DeviceBookmark.mark_anchor(user, "#{state.active_base}_#{state.active_ts}", global_max_offset)
-    end)
-
-    Enum.each(updates, fn {user, pos} ->
-      Queue.DeviceBookmark.mark_position(user, "#{state.active_base}_#{state.active_ts}", pos)
-    end)
-
-    new_state = %{state | msg_count: final_count, current_size: final_bytes}
-
-    if new_state.msg_count >= @max_messages_per_seg do
-      snapshot_bin(new_state)
-      rotated_state = rotate_segment(new_state)
-      process_batch(rotated_state, leftovers, depth + 1)
-    else
-      process_batch(new_state, leftovers, depth + 1)
-    end
-  end

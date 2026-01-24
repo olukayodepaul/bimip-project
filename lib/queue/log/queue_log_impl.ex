@@ -79,6 +79,7 @@ defmodule Queue.QueueLogImpl do
         p: partition_id,
         off: offset,
         mid: message_id,
+        msg_count: shard_offset,
         writer_device: to_string(device_id),
         bin: :erlang.term_to_binary(data),
         ts: ts
@@ -108,9 +109,16 @@ defmodule Queue.QueueLogImpl do
     manifest = load_manifest(shard)
     base = manifest.active_base
     ts = manifest.active_ts
+    global_offset = manifest.msg_count
+
+    u_offsets = user_offsets_tab(shard)
+    :ets.insert(u_offsets, {{:shard_offset, shard}, global_offset})
+    :ets.insert(u_offsets, {{:last_shard_offset, shard}, global_offset})
+
+    # derive relative segment count (0-20) from global offset
+    recovered_msg_count = if global_offset >= base, do: (global_offset - base) + 1, else: 0
 
     recover_user_stride_counts_to_ets(shard, base)
-    recovered_msg_count = calculate_current_count(shard, base)
 
     log_path = Path.join(shard_dir, "#{shard}_#{base}_#{ts}.log")
     idx_path = Path.join(shard_dir, "#{shard}_#{base}_#{ts}.idx")
@@ -118,23 +126,23 @@ defmodule Queue.QueueLogImpl do
     {:ok, log_fd} = :file.open(log_path, [:append, :raw, :binary, :read, :delayed_write])
     {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
 
+    # 🚀 Seed ETS manifest snapshot so other processes/rotation can see it
+    :ets.insert(user_offsets_tab(shard), {:manifest_snapshot, manifest})
+
     if not manifest.exists, do: write_manifest(shard, manifest)
 
     {:ok, actual_pos} = :file.position(log_fd, :cur)
 
     state = %{
-      shard: shard, shard_dir: shard_dir, log_fd: log_fd, idx_fd: idx_fd,
+      shard: shard, shard_dir: shard_dir,
+      log_fd: log_fd, idx_fd: idx_fd,
       current_size: actual_pos,
-      msg_count: recovered_msg_count,
-      active_base: base,
-      active_ts: ts
+      msg_count: recovered_msg_count, # Local file counter
+      active_base: base, active_ts: ts
     }
 
     schedule_flush()
-
-    if !File.exists?(bin_path) do
-      snapshot_bin(state)
-    end
+    if !File.exists?(bin_path), do: snapshot_bin(state)
 
     {:ok, state}
   end
@@ -195,52 +203,63 @@ defmodule Queue.QueueLogImpl do
     state
   end
 
-  defp process_batch(state, items, depth) do
+defp process_batch(state, items, depth) do
     space_left = @max_messages_per_seg - state.msg_count
     {to_write, leftovers} = Enum.split(items, space_left)
     u_counts = user_segment_counts_tab(state.shard)
 
-    # Process the current chunk for disk write
-    {bin_io, idx_io, final_count, final_bytes, updates, latest_map} =
-      Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}},
-        fn {{_s, off, _seq}, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map} ->
-          {bin_packet, p_size} = encode_packet(rec, off, state)
+    if to_write != [] do
+      {bin_io, idx_io, final_count, final_bytes, updates, latest_map} =
+        Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}},
+          fn {{_s, _off, _seq}, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map} ->
+            {bin_packet, p_size} = encode_packet(rec, rec.off, state)
+            u_count = :ets.update_counter(u_counts, rec.u, {2, 1}, {rec.u, 0})
 
-          # Stride/Index logic
-          u_count = :ets.update_counter(u_counts, rec.u, {2, 1}, {rec.u, 0})
+            {new_i_acc, new_upd} =
+              if rem(u_count - 1, @user_stride) == 0 do
+                u_bin = to_string(rec.u)
+                idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, rec.off::64, state.active_base::64, curr_phys::64>>
+                :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, rec.off}, {state.active_base, curr_phys}})
+                {[i_acc | idx_entry], [{rec.u, rec.off} | upd]}
+              else
+                {i_acc, upd}
+              end
 
-          {new_i_acc, new_upd} =
-            if rem(u_count - 1, @user_stride) == 0 do
-              u_bin = to_string(rec.u)
-              idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, off::64, state.active_base::64, curr_phys::64>>
-              :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, off}, {state.active_base, curr_phys}})
-              {[i_acc | idx_entry], [{rec.u, off} | upd]}
-            else
-              {i_acc, upd}
-            end
+            {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, Map.put(l_map, rec.u, rec.off)}
+          end)
 
-          {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, Map.put(l_map, rec.u, off)}
-        end)
+      {_last_tag, last_record} = List.last(to_write)
+      last_batch_shard_offset = last_record.msg_count
 
-    # Commit to Disk
-    :file.write(state.log_fd, bin_io)
-    :file.write(state.idx_fd, idx_io)
+      # 🚀 Sync Manifest with the actual Global Offset
+      u_offsets = user_offsets_tab(state.shard)
+      manifest = case :ets.lookup(u_offsets, :manifest_snapshot) do
+        [{:manifest_snapshot, m}] -> m
+        [] -> load_manifest(state.shard)
+      end
 
+      updated_manifest = %{manifest | msg_count: last_batch_shard_offset}
+      write_manifest(state.shard, updated_manifest)
+      :ets.insert(u_offsets, {:manifest_snapshot, updated_manifest})
 
-    # Update bookmarks (simplified for brevity, keeps your existing logic)
-    global_max_offset = latest_map |> Map.values() |> Enum.max()
-    Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", global_max_offset) end)
-    Enum.each(updates, fn {u, off} -> Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off) end)
+      :file.write(state.log_fd, bin_io)
+      :file.write(state.idx_fd, idx_io)
 
-    new_state = %{state | msg_count: final_count, current_size: final_bytes}
+      global_max_offset = latest_map |> Map.values() |> Enum.max()
+      Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", global_max_offset) end)
+      Enum.each(updates, fn {u, off} -> Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off) end)
 
-    # Handle Segment Rotation
-    if new_state.msg_count >= @max_messages_per_seg do
-      snapshot_bin(new_state)
-      rotated_state = rotate_segment(new_state)
-      process_batch(rotated_state, leftovers, depth + 1)
+      new_state = %{state | msg_count: final_count, current_size: final_bytes}
+
+      if new_state.msg_count >= @max_messages_per_seg do
+        snapshot_bin(new_state)
+        rotated_state = rotate_segment(new_state)
+        process_batch(rotated_state, leftovers, depth + 1)
+      else
+        process_batch(new_state, leftovers, depth + 1)
+      end
     else
-      process_batch(new_state, leftovers, depth + 1)
+      state
     end
   end
 
@@ -284,23 +303,23 @@ defp rotate_segment(state) do
     new_base = state.active_base + state.msg_count
     new_ts = System.system_time(:second)
 
-    # 2. Close and Flush old files
+    # 2. Close old files
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
 
-    # 3. Step 2 & 3: Pre-create and Sync NEW Segment Files
+    # 3. Pre-create and Sync NEW Segment Files
     l_path = Path.join(state.shard_dir, "#{state.shard}_#{new_base}_#{new_ts}.log")
     i_path = Path.join(state.shard_dir, "#{state.shard}_#{new_base}_#{new_ts}.idx")
 
     {:ok, tmp_l} = :file.open(l_path, [:write, :raw, :binary])
-    :file.datasync(tmp_l) # Ensure file entry exists on disk
+    :file.datasync(tmp_l)
     :file.close(tmp_l)
 
     {:ok, tmp_i} = :file.open(i_path, [:write, :raw, :binary])
     :file.datasync(tmp_i)
     :file.close(tmp_i)
 
-    # Sync the directory itself (POSIX requirement for file creation persistence)
+    # POSIX directory sync
     case :file.open(state.shard_dir, [:read, :raw]) do
       {:ok, dir_fd} ->
         :file.datasync(dir_fd)
@@ -308,24 +327,39 @@ defp rotate_segment(state) do
       _ -> :ok
     end
 
-    # 4. Step 4: Atomic Manifest Flip
-    manifest = load_manifest(state.shard)
+    # 4. Atomic Manifest Flip
+    u_offsets = user_offsets_tab(state.shard)
+
+    # Get the latest global offset from ETS
+    current_global_offset = :ets.lookup_element(u_offsets, {:shard_offset, state.shard}, 2)
+
+    # 🚀 FIX: Get manifest from ETS if available, otherwise disk
+    manifest = case :ets.lookup(u_offsets, :manifest_snapshot) do
+      [{:manifest_snapshot, m}] -> m
+      [] -> load_manifest(state.shard)
+    end
+
     expired_key = "#{state.active_base}_#{state.active_ts}"
 
     updated_manifest = %{
       active_base: new_base,
       active_ts: new_ts,
+      msg_count: current_global_offset, # Preserve the global truth
       expired: Map.put(manifest.expired, expired_key, new_ts)
     }
 
+    # 🚀 FIX: Write to Disk AND Update the ETS Snapshot
     write_manifest(state.shard, updated_manifest)
+    :ets.insert(u_offsets, {:manifest_snapshot, updated_manifest})
 
-    # 5. Step 5: Open handles for the new state
+    # 5. Open handles for the new state
     {:ok, l} = :file.open(l_path, [:append, :raw, :binary, :read, :delayed_write])
     {:ok, i} = :file.open(i_path, [:append, :raw, :binary, :read, :write])
 
+    # Clear segment-specific user counts for the new file
     :ets.delete_all_objects(user_segment_counts_tab(state.shard))
 
+    # Reset msg_count to 0 because this is a NEW file
     %{state | log_fd: l, idx_fd: i, active_base: new_base, active_ts: new_ts, current_size: 0, msg_count: 0}
   end
 
@@ -408,16 +442,21 @@ defp rotate_segment(state) do
   defp load_manifest(shard) do
     shard_dir = Path.join(@base_dir, "#{shard}")
     path = Path.join(shard_dir, "#{shard}.manifest")
+
     if File.exists?(path) do
+      # Read and ensure it's a map
       data = :erlang.binary_to_term(File.read!(path))
+
+      # Normalize: Ensure we have the keys we expect as Atoms
       %{
-        active_base: data.active_base,
-        active_ts: Map.get(data, :active_ts, System.system_time(:second)),
-        expired: Map.get(data, :expired, %{}),
+        active_base: Map.get(data, :active_base) || Map.get(data, "active_base", 1),
+        active_ts: Map.get(data, :active_ts) || Map.get(data, "active_ts", System.system_time(:second)),
+        msg_count: Map.get(data, :msg_count) || Map.get(data, "msg_count", 0),
+        expired: Map.get(data, :expired) || Map.get(data, "expired", %{}),
         exists: true
       }
     else
-      %{active_base: 1, active_ts: System.system_time(:second), expired: %{}, exists: false}
+      %{active_base: 1, active_ts: System.system_time(:second), msg_count: 0, expired: %{}, exists: false}
     end
   end
 
@@ -471,10 +510,18 @@ defp rotate_segment(state) do
   defp perform_recovery(user, cache, data) do
     shard = :erlang.phash2(user, @num_shards)
     u_offsets = user_offsets_tab(shard)
+
+    # 1. Seat the metadata cache
     :ets.insert(cache, {user, data})
+
+    # 2. 🚀 THE CRITICAL SEED
     if anchor = data["__anchor__"] do
       {_seg_key, off} = anchor
-      :ets.insert(u_offsets, {{user, 1}, off})
+
+      # FIX: This must match the {user, partition_id} used in write/9
+      # If your write uses partition 0, change the 1 below to 0.
+      # If you use multiple partitions, you should store the ID in the anchor.
+      :ets.insert(u_offsets, {{user, 0}, off})
     end
     :ok
   end
@@ -536,16 +583,6 @@ defp rotate_segment(state) do
     Logger.debug("Shard #{state.shard} marked idle. Next flush scheduled.")
     schedule_flush()
     state
-  end
-
-  defp match_spec(shard_id) do
-    [
-      {
-        {{shard_id, :"$1", :"$2"}, :"$3"},
-        [],
-        [:"$_"]
-      }
-    ]
   end
 
   @impl true
