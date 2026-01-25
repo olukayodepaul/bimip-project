@@ -1,6 +1,6 @@
 defmodule QueueLogTest do
   @user_count 64
-  @total_messages 2
+  @total_messages 200
   @num_shards 64
 
   # Shared Agent to track per-shard timing
@@ -80,22 +80,22 @@ defmodule QueueLogTest do
 end
 
 
-# 09:09
+# # 09:09
 
 
-# shard_to_check = 0
+# shard_to_check = 37
 # table_name = :"bimip_buf_#{shard_to_check}"
 # :ets.tab2list(table_name)
 
-# shard_to_check = 0
-# table_name = :"device_bookmarks_cache_#{shard_to_check}"
+# shard_to_check = 37
+# table_name = :"bimip_user_offsets_#{shard_to_check}"
 # :ets.tab2list(table_name)
 
 
-# ps aux | grep beam
-# top -l 1 -s 0 | grep PhysMem
+# # ps aux | grep beam
+# # top -l 1 -s 0 | grep PhysMem
 
-# QueueLogTest.run_test()
+# # QueueLogTest.run_test()
 
 
 

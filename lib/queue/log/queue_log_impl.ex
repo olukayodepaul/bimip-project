@@ -14,7 +14,7 @@ defmodule Queue.QueueLogImpl do
   @header_size 21
   @flush_interval 60_000
   @max_messages_per_seg 10
-  @user_stride 2
+  @user_stride 50
   @max_buffer_per_shard 10_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
@@ -63,15 +63,14 @@ defmodule Queue.QueueLogImpl do
   def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id, ts) do
     shard = :erlang.phash2(recipient_uid, @num_shards)
     buf = log_buffer(shard)
-    u_offsets = user_offsets_tab(shard)
 
     if :ets.info(buf, :size) > @max_buffer_per_shard do
       {:error, :backpressure}
     else
+      # 🚀 FIX: Get both offsets atomically from the ShardServer
+      {offset, shard_offset} = Queue.ShardServer.get_next_offsets(shard, recipient_uid)
 
-      offset = :ets.update_counter(u_offsets, {recipient_uid, partition_id}, {2, 1}, {{recipient_uid, partition_id}, 0})
       data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
-      shard_offset = :ets.update_counter(u_offsets,{:shard_offset, shard},  {2, 1}, {{:shard_offset, shard}, 0})
 
       record = %{
         u: recipient_uid,
@@ -79,7 +78,7 @@ defmodule Queue.QueueLogImpl do
         p: partition_id,
         off: offset,
         mid: message_id,
-        msg_count: shard_offset,
+        msg_count: shard_offset, # This is now perfectly synced with 'off'
         writer_device: to_string(device_id),
         bin: :erlang.term_to_binary(data),
         ts: ts
@@ -115,7 +114,6 @@ defmodule Queue.QueueLogImpl do
     # Keep the global shard offset
     :ets.insert(u_offsets, {{:shard_offset, shard}, global_offset})
 
-    # ✅ Change here: do NOT add +1
     :ets.insert(u_offsets, {{:last_shard_offset, shard}, global_offset})
 
     # derive relative segment count (0-20) from global offset
@@ -264,8 +262,9 @@ end
     write_manifest(state.shard, updated_manifest)
     :ets.insert(u_offsets, {:manifest_snapshot, updated_manifest})
 
-    global_max_offset = latest_map |> Map.values() |> Enum.max()
-    Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", global_max_offset) end)
+    # global_max_offset = latest_map |> Map.values() |> Enum.max()
+    # Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", global_max_offset) end)
+    Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", off) end)
     Enum.each(updates, fn {u, off} -> Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off) end)
 
     new_state = %{state | msg_count: final_count, current_size: final_phys}

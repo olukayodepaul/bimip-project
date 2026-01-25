@@ -120,8 +120,6 @@ Queue.QueueLogImpl.system_recovery("user1@domain.com", 1)
 :ets.tab2list(:device_bookmarks_cache_37)
 :ets.tab2list(:bimip_user_offsets_37)
 
-  {{"user1@domain.com", 0}, 40},
-  {{"user57@domain.com", 0}, 40}
 
 shard = 37
 bookmark_path = "data/device_bookmarks/#{shard}.bin"

@@ -32,6 +32,7 @@ defmodule Queue.BimipSupervisor do
     # We pair each Log Worker with its dedicated Sweeper
     shard_children = for s <- 0..(@num_shards - 1) do
       [
+        Supervisor.child_spec({Queue.ShardServer, s}, id: :"shard_sequencer_#{s}"),
         Supervisor.child_spec({Queue.QueueLogImpl, s}, id: :"shard_#{s}"),
         Supervisor.child_spec({Queue.MessageTracker.Sweeper, s}, id: :"sweeper_#{s}")
       ]
