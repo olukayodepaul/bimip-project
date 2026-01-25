@@ -14,7 +14,7 @@ defmodule Queue.QueueLogImpl do
   @header_size 21
   @flush_interval 60_000
   @max_messages_per_seg 10
-  @user_stride 50
+  @user_stride 5
   @max_buffer_per_shard 10_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
@@ -85,6 +85,7 @@ defmodule Queue.QueueLogImpl do
       }
 
       :ets.insert(buf, {shard_offset, {shard, offset, record}})
+      IO.inspect({shard_offset, offset})
       {:ok, offset}
     end
   end
@@ -147,32 +148,46 @@ defmodule Queue.QueueLogImpl do
     {:ok, state}
   end
 
+  defp recover_user_stride_counts_to_ets(shard, active_base) do
+    u_counts = user_segment_counts_tab(shard)
+    u_offsets = user_offsets_tab(shard)
+    bin_path = Path.join("data/device_bookmarks", "#{shard}.bin")
 
-defp recover_user_stride_counts_to_ets(shard, active_base) do
-  u_counts = user_segment_counts_tab(shard)
-  u_offsets = user_offsets_tab(shard)
-
-  user_positions =
-    case :ets.lookup(u_offsets, :manifest_snapshot) do
-      [{:manifest_snapshot, _manifest}] ->
-        Queue.FDPoolShard.load_bin_users(shard)
-      [] -> %{}
+    # 🚀 BOOT-TIME READ: Direct file access to avoid GenServer timeouts/crashes
+    user_data_map = if File.exists?(bin_path) do
+      case File.read(bin_path) do
+        {:ok, <<>>} -> %{}
+        {:ok, binary} ->
+          try do
+            :erlang.binary_to_term(binary)
+          rescue
+            _ -> %{}
+          end
+        {:error, _} -> %{}
+      end
+    else
+      %{}
     end
 
-  Enum.each(user_positions, fn {user, data} ->
-    # data is a map from your bin file: %{"__anchor__" => {seg, offset}, "positions" => ...}
-    if anchor = Map.get(data, "__anchor__") do
-      {_seg_str, last_off} = anchor
+    Enum.each(user_data_map, fn {user, data} ->
+      if anchor = Map.get(data, "__anchor__") do
+        {_seg_key, last_off} = anchor
 
-      # Calculate how many messages were already written to the CURRENT segment
-      # Example: If active_base is 11 and last_off is 10, count is 0.
-      # If active_base is 11 and last_off is 12, count is 2.
-      count_in_seg = max(0, last_off - (active_base - 1))
+        # 1. Restore the User Offset (This makes it start at 21)
+        :ets.insert(u_offsets, {{user, 1}, last_off})
 
-      :ets.insert(u_counts, {user, count_in_seg})
-    end
-  end)
-end
+        # 2. Restore the Stride Count
+        count_in_seg = max(0, last_off - (active_base - 1))
+        :ets.insert(u_counts, {user, count_in_seg})
+
+        # 3. Seed the Bookmark Cache so the next write has a base to work from
+        cache_tab = :"device_bookmarks_cache_#{shard}"
+        if :ets.info(cache_tab) != :undefined do
+          :ets.insert(cache_tab, {user, data})
+        end
+      end
+    end)
+  end
 
   @impl true
   def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
@@ -282,30 +297,41 @@ end
   end
 end
 
-  defp snapshot_bin(state) do
-    cache = :"device_bookmarks_cache_#{state.shard}"
-    bin_path = Path.join("data/device_bookmarks", "#{state.shard}.bin")
+defp snapshot_bin(state) do
+  cache = :"device_bookmarks_cache_#{state.shard}"
+  u_offsets = user_offsets_tab(state.shard)
+  bin_path = Path.join("data/device_bookmarks", "#{state.shard}.bin")
 
-    existing_map = if File.exists?(bin_path) do
-      case File.read(bin_path) do
-        {:ok, b} when b != <<>> ->
-          try do
-            term = :erlang.binary_to_term(b)
-            if is_list(term), do: Map.new(term), else: term
-          rescue _ -> %{} end
-        _ -> %{}
-      end
-    else
-      %{}
+  # 1. Load the "Stale" data from disk (The 20)
+  existing_map = if File.exists?(bin_path) do
+    case File.read(bin_path) do
+      {:ok, b} when b != <<>> -> :erlang.binary_to_term(b)
+      _ -> %{}
     end
-
-    hot_map = if :ets.info(cache) != :undefined, do: :ets.tab2list(cache) |> Map.new(), else: %{}
-
-    merged_data = Map.merge(existing_map, hot_map)
-    bin = :erlang.term_to_binary(merged_data, [:compressed])
-    Queue.FDPoolShard.atomic_snapshot(state.shard, bin_path, bin)
-    :ok
+  else
+    %{}
   end
+
+  # 2. Get the "Recovered" metadata from ETS
+  hot_map = if :ets.info(cache) != :undefined, do: :ets.tab2list(cache) |> Map.new(), else: %{}
+
+  # 3. 🚀 THE SYNC: Pull the TRUE current offset (29) from the offsets table
+  # This ensures that even if recovery loaded '20', we save '29'.
+  final_map = Enum.reduce(:ets.tab2list(u_offsets), hot_map, fn
+    {{user, 1}, current_off}, acc ->
+      user_entry = Map.get(acc, user, %{"positions" => %{}})
+      # Force the anchor to match the ShardServer's truth
+      Map.put(acc, user, Map.put(user_entry, "__anchor__", {"#{state.active_base}_#{state.active_ts}", current_off}))
+    _, acc -> acc
+  end)
+
+  # 4. Merge: Final Map (RAM) must overwrite existing_map (Disk)
+  merged_data = Map.merge(existing_map, final_map, fn _k, _disk, ram -> ram end)
+
+  bin = :erlang.term_to_binary(merged_data, [:compressed])
+  Queue.FDPoolShard.atomic_snapshot(state.shard, bin_path, bin)
+  :ok
+end
 
   defp encode_packet(rec, offset, state) do
     u_bin = to_string(rec.u)
@@ -458,7 +484,7 @@ defp rotate_segment(state) do
     end
   end
 
-  defp load_manifest(shard) do
+  def load_manifest(shard) do
     shard_dir = Path.join(@base_dir, "#{shard}")
     path = Path.join(shard_dir, "#{shard}.manifest")
 
@@ -526,40 +552,41 @@ defp rotate_segment(state) do
     end
   end
 
-  defp perform_recovery(user, partition_id, cache, data) do
-    shard = :erlang.phash2(user, @num_shards)
-    u_offsets = user_offsets_tab(shard)
-    u_counts = user_segment_counts_tab(shard) # Added this table
+defp perform_recovery(user, partition_id, cache, data) do
+  shard = :erlang.phash2(user, @num_shards)
+  u_offsets = user_offsets_tab(shard)
+  u_counts = user_segment_counts_tab(shard)
+  idx_tab = idx_cache(shard)
 
-    # 1. Seat the metadata cache
-    :ets.insert(cache, {user, data})
+  # 1. Seat the metadata cache
+  :ets.insert(cache, {user, data})
 
-    if anchor = data["__anchor__"] do
-      {_seg_key, off} = anchor
-      key = {user, partition_id}
-
-      # --- PART 1: Recover Global Offset ---
-      # Ensure counter exists
-      current = :ets.update_counter(u_offsets, key, {2, 0}, {key, 0})
-
-      # Adjust counter to match anchor exactly
-      delta = off - current
-      if delta != 0, do: :ets.update_counter(u_offsets, key, {2, delta})
-
-      # --- PART 2: Recover Stride Counter (THE FIX) ---
-      # We need to know where we are relative to the current file's base
-      manifest = get_manifest_cached(shard)
-      active_base = manifest.active_base
-
-      # If anchor is 10 and active_base is 1, count_in_seg is 10.
-      # If anchor is 10 and active_base is 11, count_in_seg is 0.
-      count_in_seg = max(0, off - (active_base - 1))
-      :ets.insert(u_counts, {user, count_in_seg})
-    end
-
-    :ok
+  # 2. 📍 INDEX THAW: Restore physical jump points to RAM
+  if positions = Map.get(data, "positions") do
+    Enum.each(positions, fn {seg_key, user_off} ->
+      [base_str | _] = String.split(seg_key, "_")
+      base = String.to_integer(base_str)
+      # Put the sparse index back so 'fetch_batch' is fast
+      :ets.insert(idx_tab, {{user, partition_id, user_off}, {base, 0}})
+    end)
   end
 
+  # 3. 📉 STRIDE & OFFSET RECOVERY
+if anchor = data["__anchor__"] do
+  {_seg_key, off} = anchor
+  key = {user, partition_id}
+
+  # This part is CRITICAL. It tells ETS: "This user is already at 11"
+  # If this fails, the next update_counter starts at 1.
+  :ets.insert(u_offsets, {key, off})
+
+  # Recalculate stride
+  manifest = get_manifest_cached(shard)
+  count_in_seg = max(0, off - (manifest.active_base - 1))
+  :ets.insert(user_segment_counts_tab(shard), {user, count_in_seg})
+end
+  :ok
+end
 
 
   defp drain_buf(buf, state, _continuation \\ nil) do
@@ -596,17 +623,20 @@ defp rotate_segment(state) do
       else
         :ets.insert(u_offsets, {{:last_shard_offset, state.shard}, last_processed_idx})
 
-        # Process the batch
+        # 1. Write the batch to the .log file
         new_state = process_batch(state, Enum.reverse(items))
+
+        # 🚀 THE FIX: Snapshot IMMEDIATELY after the batch is processed.
+        # This guarantees the .bin file reflects what was just written to the .log.
+        snapshot_bin(new_state)
 
         # 3. Check for recursion
         if :ets.first(buf) != :"$end_of_table" do
-          # ADD THIS LOG
           Logger.info("Shard #{state.shard} RECURSING: More data found in buffer. Ptr: #{last_processed_idx}")
           drain_buf(buf, new_state)
         else
           Logger.info("Shard #{state.shard} DRAIN FINISHED: Buffer empty at Ptr: #{last_processed_idx}")
-          snapshot_bin(new_state)
+          # No longer need snapshot_bin here because it happened above!
           :file.datasync(state.log_fd)
           :file.datasync(state.idx_fd)
           finish_flush(new_state)
