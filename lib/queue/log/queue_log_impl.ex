@@ -24,6 +24,7 @@ defmodule Queue.QueueLogImpl do
   @log_buffer_prefix :"bimip_buf_"
   @stable_limit 5_000
   @flush_state :flush_state
+  @retention_seconds  30  # 604800
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -139,7 +140,8 @@ defmodule Queue.QueueLogImpl do
       log_fd: log_fd, idx_fd: idx_fd,
       current_size: actual_pos,
       msg_count: recovered_msg_count, # local file counter
-      active_base: base, active_ts: ts
+      active_base: base, active_ts: ts,
+      manifest: manifest
     }
 
     schedule_flush()
@@ -193,6 +195,8 @@ defmodule Queue.QueueLogImpl do
   def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
     log_off = Queue.DeviceBookmark.get(device_id, user)
     cache = :"device_bookmarks_cache_#{state.shard}"
+
+    # prune_stale_bookmarks()
 
     seg_id = case :ets.lookup(cache, user) do
       [{^user, %{"__anchor__" => {seg, _}}}] ->
@@ -695,6 +699,128 @@ end
   defp schedule_flush do
     interval = @flush_interval + :rand.uniform(10_000)
     Process.send_after(self(), :flush, interval)
+  end
+
+ @impl true
+def handle_cast(:trigger_maintenance, state) do
+  shard = state.shard
+  # 1. Check Lock
+  is_busy = :ets.lookup(@flush_state, shard) == [{shard, :busy}]
+
+  if is_busy do
+    Logger.warning("Shard #{shard} maintenance skipped: BUSY")
+    {:noreply, state}
+  else
+    :ets.insert(@flush_state, {shard, :busy})
+
+    # 2. Get manifest from ETS (The live version)
+    manifest = get_manifest_cached(shard)
+    now = System.system_time(:second)
+
+    # 3. Filter based on your 30s retention
+    expired_ids =
+      manifest.expired
+      |> Enum.filter(fn {_id, ts} -> (now - ts) > @retention_seconds end)
+      |> Enum.map(fn {id, _ts} -> id end)
+
+    if expired_ids == [] do
+      Logger.info("Shard #{shard} maintenance: Nothing old enough to archive yet.")
+      :ets.insert(@flush_state, {shard, :idle})
+      {:noreply, state}
+    else
+      Logger.info("🧹 Shard #{shard} archiving: #{inspect(expired_ids)}")
+
+      # 4. Perform the move
+      new_manifest_map = perform_archival(state, manifest, expired_ids)
+
+      # 5. Save results
+      u_offsets = user_offsets_tab(shard)
+      :ets.insert(u_offsets, {:manifest_snapshot, new_manifest_map})
+      write_manifest(shard, new_manifest_map)
+
+      :ets.insert(@flush_state, {shard, :idle})
+      {:noreply, %{state | manifest: new_manifest_map}}
+    end
+  end
+end
+
+  defp perform_archival(state, manifest, expired_ids) do
+    # 1. Setup Archive Path (e.g., data/archive/37)
+    archive_dir = Path.join("data/archive", "#{state.shard}")
+
+    case File.mkdir_p(archive_dir) do
+      :ok -> :ok
+      {:error, reason} -> Logger.error("Could not create archive dir: #{inspect(reason)}")
+    end
+
+    # 2. Iterate through each expired segment ID (e.g., "1_1769445066")
+    Enum.each(expired_ids, fn seg_id ->
+      Logger.info("🧹 Processing archival for Shard #{state.shard}, Segment #{seg_id}")
+
+      # A. Close the File Descriptors in the FDPool
+      # This prevents 'stale file handle' errors during the move
+      Queue.FDPoolShard.close_fd(state.shard, seg_id)
+
+      # B. Build the Search Pattern
+      # Matches: data/bimip/37/37_1_1769445066.*
+      search_pattern = Path.join(state.shard_dir, "#{state.shard}_#{seg_id}.*")
+
+      case Path.wildcard(search_pattern) do
+        [] ->
+          Logger.warning("⚠️ Shard #{state.shard}: No files found matching pattern: #{search_pattern}")
+
+        files ->
+          Enum.each(files, fn old_path ->
+            filename = Path.basename(old_path)
+            new_path = Path.join(archive_dir, filename)
+
+            # C. Physically move the file from Primary to Archive
+            case File.rename(old_path, new_path) do
+              :ok ->
+                Logger.info("✅ Successfully archived: #{filename}")
+              {:error, reason} ->
+                Logger.error("❌ Failed to move #{filename} to #{new_path}: #{inspect(reason)}")
+            end
+          end)
+      end
+
+      # D. Cleanup the Index Cache (ETS)
+      # We remove any sparse index pointers for this segment so the Reader
+      # doesn't try to read archived files from the primary folder.
+      [base_str | _] = String.split(seg_id, "_")
+      base_id = String.to_integer(base_str)
+
+      # This matches any key {user, partition, offset} where the value is {base_id, _}
+      :ets.match_delete(idx_cache(state.shard), {{:"$1", :"$2", :"$3"}, {base_id, :"$4"}})
+    end)
+
+    # 3. Update the Manifest
+    # Remove the archived IDs from the 'expired' map and return the new map
+    %{manifest | expired: Map.drop(manifest.expired, expired_ids)}
+  end
+
+  defp prune_stale_bookmarks(user, shard, manifest) do
+    cache = :"device_bookmarks_cache_#{shard}"
+
+    case :ets.lookup(cache, user) do
+      [{^user, data}] ->
+        # Get the list of segments that actually exist (active + expired)
+        valid_segments = Map.keys(manifest.expired) ++ ["#{manifest.active_base}_#{manifest.active_ts}"]
+
+        # Filter the positions map: keep only what exists on disk
+        current_positions = Map.get(data, "positions", %{})
+        new_positions = Map.filter(current_positions, fn {seg_key, _off} ->
+          seg_key in valid_segments
+        end)
+
+        # If we removed something, update ETS (The "Fix on Read")
+        if map_size(current_positions) != map_size(new_positions) do
+          updated_data = Map.put(data, "positions", new_positions)
+          :ets.insert(cache, {user, updated_data})
+          Logger.debug("Cleaned up archived bookmarks for user #{user}")
+        end
+      _ -> :ok
+    end
   end
 
   @impl true
