@@ -120,7 +120,7 @@ defmodule Queue.QueueLogImpl do
     # derive relative segment count (0-20) from global offset
     recovered_msg_count = if global_offset >= base, do: (global_offset - base) + 1, else: 0
 
-    recover_user_stride_counts_to_ets(shard, base)
+    # recover_user_stride_counts_to_ets(shard, base)
 
     log_path = Path.join(shard_dir, "#{shard}_#{base}_#{ts}.log")
     idx_path = Path.join(shard_dir, "#{shard}_#{base}_#{ts}.idx")
@@ -552,42 +552,39 @@ defp rotate_segment(state) do
     end
   end
 
-defp perform_recovery(user, partition_id, cache, data) do
-  shard = :erlang.phash2(user, @num_shards)
-  u_offsets = user_offsets_tab(shard)
-  u_counts = user_segment_counts_tab(shard)
-  idx_tab = idx_cache(shard)
+  defp perform_recovery(user, partition_id, cache, data) do
 
-  # 1. Seat the metadata cache
-  :ets.insert(cache, {user, data})
+    shard = :erlang.phash2(user, @num_shards)
+    u_offsets = user_offsets_tab(shard)
+    u_counts = user_segment_counts_tab(shard)
+    idx_tab = idx_cache(shard)
 
-  # 2. 📍 INDEX THAW: Restore physical jump points to RAM
-  if positions = Map.get(data, "positions") do
-    Enum.each(positions, fn {seg_key, user_off} ->
-      [base_str | _] = String.split(seg_key, "_")
-      base = String.to_integer(base_str)
-      # Put the sparse index back so 'fetch_batch' is fast
-      :ets.insert(idx_tab, {{user, partition_id, user_off}, {base, 0}})
-    end)
+    :ets.insert(cache, {user, data})
+
+    if positions = Map.get(data, "positions") do
+      Enum.each(positions, fn {seg_key, user_off} ->
+        [base_str | _] = String.split(seg_key, "_")
+        base = String.to_integer(base_str)
+        # Put the sparse index back so 'fetch_batch' is fast
+        :ets.insert(idx_tab, {{user, partition_id, user_off}, {base, 0}})
+      end)
+    end
+
+    if anchor = data["__anchor__"] do
+      {_seg_key, off} = anchor
+      key = {user, partition_id}
+
+      # This part is CRITICAL. It tells ETS: "This user is already at 11"
+      # If this fails, the next update_counter starts at 1.
+      :ets.insert(u_offsets, {key, off})
+
+      # Recalculate stride
+      manifest = get_manifest_cached(shard)
+      count_in_seg = max(0, off - (manifest.active_base - 1))
+      :ets.insert(user_segment_counts_tab(shard), {user, count_in_seg})
+    end
+    :ok
   end
-
-  # 3. 📉 STRIDE & OFFSET RECOVERY
-if anchor = data["__anchor__"] do
-  {_seg_key, off} = anchor
-  key = {user, partition_id}
-
-  # This part is CRITICAL. It tells ETS: "This user is already at 11"
-  # If this fails, the next update_counter starts at 1.
-  :ets.insert(u_offsets, {key, off})
-
-  # Recalculate stride
-  manifest = get_manifest_cached(shard)
-  count_in_seg = max(0, off - (manifest.active_base - 1))
-  :ets.insert(user_segment_counts_tab(shard), {user, count_in_seg})
-end
-  :ok
-end
-
 
   defp drain_buf(buf, state, _continuation \\ nil) do
     u_offsets = user_offsets_tab(state.shard)
