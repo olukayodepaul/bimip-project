@@ -13,8 +13,8 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 60_000
-  @max_messages_per_seg 10
-  @user_stride 5
+  @max_messages_per_seg 100
+  @user_stride 50
   @max_buffer_per_shard 10_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
@@ -24,7 +24,7 @@ defmodule Queue.QueueLogImpl do
   @log_buffer_prefix :"bimip_buf_"
   @stable_limit 5_000
   @flush_state :flush_state
-  @retention_seconds  30  # 604800
+  @retention_seconds  60 * 5  # 604800
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -70,8 +70,7 @@ defmodule Queue.QueueLogImpl do
     else
       # 🚀 FIX: Get both offsets atomically from the ShardServer
       {offset, shard_offset} = Queue.ShardServer.get_next_offsets(shard, recipient_uid)
-
-      data = Queue.Persist.build(%{payload: payload}, offset, recipient_uid, type, payload_ctx)
+      data = Queue.Persist.build(%{payload: payload}, offset , recipient_uid, type, payload_ctx)
 
       record = %{
         u: recipient_uid,
@@ -86,7 +85,6 @@ defmodule Queue.QueueLogImpl do
       }
 
       :ets.insert(buf, {shard_offset, {shard, offset, record}})
-      IO.inspect({shard_offset, offset})
       {:ok, offset}
     end
   end
@@ -99,7 +97,12 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
   # GENSERVER HANDLERS
   # ------------------------------------------------------------------
+@impl true
   def init(shard) do
+    # 🚀 TRAP EXIT: Essential for allowing terminate/2 to run during shutdown.
+    # This prevents the process from being killed instantly by the Supervisor.
+    Process.flag(:trap_exit, true)
+
     shard_dir = Path.join(@base_dir, "#{shard}")
     File.mkdir_p!(shard_dir)
     File.mkdir_p!("data/device_bookmarks")
@@ -113,38 +116,41 @@ defmodule Queue.QueueLogImpl do
 
     u_offsets = user_offsets_tab(shard)
 
-    # Keep the global shard offset
+    # Restore Shard Globals
     :ets.insert(u_offsets, {{:shard_offset, shard}, global_offset})
-
     :ets.insert(u_offsets, {{:last_shard_offset, shard}, global_offset})
 
-    # derive relative segment count (0-20) from global offset
+    # Derive relative segment count (local counter for rotation logic)
     recovered_msg_count = if global_offset >= base, do: (global_offset - base) + 1, else: 0
-
-    # recover_user_stride_counts_to_ets(shard, base)
 
     log_path = Path.join(shard_dir, "#{shard}_#{base}_#{ts}.log")
     idx_path = Path.join(shard_dir, "#{shard}_#{base}_#{ts}.idx")
 
+    # Open File Handles
     {:ok, log_fd} = :file.open(log_path, [:append, :raw, :binary, :read, :delayed_write])
     {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
 
-    # Seed ETS manifest snapshot
+    # Seed ETS manifest snapshot for immediate use by maintenance/readers
     :ets.insert(u_offsets, {:manifest_snapshot, manifest})
     if not manifest.exists, do: write_manifest(shard, manifest)
 
     {:ok, actual_pos} = :file.position(log_fd, :cur)
 
     state = %{
-      shard: shard, shard_dir: shard_dir,
-      log_fd: log_fd, idx_fd: idx_fd,
+      shard: shard,
+      shard_dir: shard_dir,
+      log_fd: log_fd,
+      idx_fd: idx_fd,
       current_size: actual_pos,
-      msg_count: recovered_msg_count, # local file counter
-      active_base: base, active_ts: ts,
+      msg_count: recovered_msg_count,
+      active_base: base,
+      active_ts: ts,
       manifest: manifest
     }
 
     schedule_flush()
+
+    # Ensure a bookmark snapshot exists if it's a first-time start
     if !File.exists?(bin_path), do: snapshot_bin(state)
 
     {:ok, state}
@@ -824,11 +830,31 @@ end
   end
 
   @impl true
-  def terminate(_reason, state) do
-    perform_flush(state)
-    snapshot_bin(state)
+  def terminate(reason, state) do
+    Logger.info("🛑 [Shard #{state.shard}] Shutdown initiated (Reason: #{inspect(reason)})")
+
+    # 1. Final Flush: Drains any messages in the ETS buffer to the .log file
+    # This respects the 'busy/idle' state of the shard before closing.
+    try do
+      perform_flush(state)
+      Logger.info("✅ [Shard #{state.shard}] Final buffer flush successful.")
+    rescue
+      e -> Logger.error("❌ [Shard #{state.shard}] Final flush failed: #{inspect(e)}")
+    end
+
+    # 2. Final Snapshot: Save user bookmarks to the .bin file
+    try do
+      snapshot_bin(state)
+      Logger.info("✅ [Shard #{state.shard}] Final bookmark snapshot saved.")
+    rescue
+      e -> Logger.error("❌ [Shard #{state.shard}] Bookmark snapshot failed: #{inspect(e)}")
+    end
+
+    # 3. Handle Closure: Safety close to ensure OS releases locks
     :file.close(state.log_fd)
     :file.close(state.idx_fd)
+
+    Logger.info("👋 [Shard #{state.shard}] Safety shutdown complete.")
     :ok
   end
 end
