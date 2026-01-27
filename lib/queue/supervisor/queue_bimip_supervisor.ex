@@ -33,7 +33,7 @@ defmodule Queue.BimipSupervisor do
     shard_children = for s <- 0..(@num_shards - 1) do
       [
         Supervisor.child_spec({Queue.ShardServer, s}, id: :"shard_sequencer_#{s}"),
-        Supervisor.child_spec({Queue.QueueLogImpl, s}, id: :"shard_#{s}"),
+        Supervisor.child_spec({Queue.QueueLogImpl, s}, id: :"shard_#{s}", shutdown: 30_000),
         Supervisor.child_spec({Queue.MessageTracker.Sweeper, s}, id: :"sweeper_#{s}")
       ]
     end |> List.flatten()

@@ -48,4 +48,4 @@ end
 # LogInspector.inspect_shard(37)
 
 # Run it
-# LogInspector.inspect_shard(37)
+# LogInspector.inspect_shard(0)

@@ -13,8 +13,8 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 60_000
-  @max_messages_per_seg 100
-  @user_stride 50
+  @max_messages_per_seg 5_00_000
+  @user_stride 1_000
   @max_buffer_per_shard 10_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
@@ -22,7 +22,7 @@ defmodule Queue.QueueLogImpl do
   @user_segment_counts_prefix :bimip_user_segment_counts_
   @idx_cache_prefix :"bimip_idx_"
   @log_buffer_prefix :"bimip_buf_"
-  @stable_limit 5_000
+  @stable_limit 50_000
   @flush_state :flush_state
   @retention_seconds  60 * 5  # 604800
 
@@ -80,7 +80,7 @@ defmodule Queue.QueueLogImpl do
         mid: message_id,
         msg_count: shard_offset, # This is now perfectly synced with 'off'
         writer_device: to_string(device_id),
-        bin: :erlang.term_to_binary(data),
+        bin: :erlang.term_to_binary(data, [:compressed]),
         ts: ts
       }
 
@@ -238,74 +238,74 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp process_batch(state, items, depth) do
-  space_left = @max_messages_per_seg - state.msg_count
-  {to_write, leftovers} = Enum.split(items, space_left)
-  u_counts = user_segment_counts_tab(state.shard)
+    space_left = @max_messages_per_seg - state.msg_count
+    {to_write, leftovers} = Enum.split(items, space_left)
+    u_counts = user_segment_counts_tab(state.shard)
 
-  if to_write != [] do
-    # 1. REDUCE: Generate IO data and track physical pointers correctly
-    {bin_io, idx_io, final_count, final_phys, updates, latest_map} =
-      Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}},
-        fn {{_s, _off, _seq}, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map} ->
+    if to_write != [] do
+      # 1. REDUCE: Generate IO data and track physical pointers correctly
+      {bin_io, idx_io, final_count, final_phys, updates, latest_map} =
+        Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}},
+          fn {{_s, _off, _seq}, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map} ->
 
-          # Encode packet for the log file
-          {bin_packet, p_size} = encode_packet(rec, rec.off, state)
+            # Encode packet for the log file
+            {bin_packet, p_size} = encode_packet(rec, rec.off, state)
 
-          # Increment the user's message count for THIS specific segment/file
-          u_count = :ets.update_counter(u_counts, rec.u, {2, 1}, {rec.u, 0})
+            # Increment the user's message count for THIS specific segment/file
+            u_count = :ets.update_counter(u_counts, rec.u, {2, 1}, {rec.u, 0})
 
-          # 2. STRIDE LOGIC: Check if this message hits the boundary (1, 3, 5...)
-          {new_i_acc, new_upd} =
-            if rem(u_count - 1, @user_stride) == 0 do
-              u_bin = to_string(rec.u)
+            # 2. STRIDE LOGIC: Check if this message hits the boundary (1, 3, 5...)
+            {new_i_acc, new_upd} =
+              if rem(u_count - 1, @user_stride) == 0 do
+                u_bin = to_string(rec.u)
 
-              # Use curr_phys (the position before this packet is written) as the index pointer
-              idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, rec.off::64, state.active_base::64, curr_phys::64>>
+                # Use curr_phys (the position before this packet is written) as the index pointer
+                idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, rec.off::64, state.active_base::64, curr_phys::64>>
 
-              # Update RAM cache for immediate fetching
-              :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, rec.off}, {state.active_base, curr_phys}})
+                # Update RAM cache for immediate fetching
+                :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, rec.off}, {state.active_base, curr_phys}})
 
-              {[i_acc | idx_entry], [{rec.u, rec.off} | upd]}
-            else
-              {i_acc, upd}
-            end
+                {[i_acc | idx_entry], [{rec.u, rec.off} | upd]}
+              else
+                {i_acc, upd}
+              end
 
-          # Accumulate: Note that curr_phys increases by p_size for the NEXT message
-          {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, Map.put(l_map, rec.u, rec.off)}
-        end)
+            # Accumulate: Note that curr_phys increases by p_size for the NEXT message
+            {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, Map.put(l_map, rec.u, rec.off)}
+          end)
 
-    # 3. DISK I/O: Bulk write the prepared IO data
-    :file.write(state.log_fd, bin_io)
-    :file.write(state.idx_fd, idx_io)
+      # 3. DISK I/O: Bulk write the prepared IO data
+      :file.write(state.log_fd, bin_io)
+      :file.write(state.idx_fd, idx_io)
 
-    # 4. MANIFEST & BOOKMARKS: Sync state
-    {_last_tag, last_record} = List.last(to_write)
-    u_offsets = user_offsets_tab(state.shard)
-    manifest = get_manifest_cached(state.shard) # Helper to get from ETS or Disk
+      # 4. MANIFEST & BOOKMARKS: Sync state
+      {_last_tag, last_record} = List.last(to_write)
+      u_offsets = user_offsets_tab(state.shard)
+      manifest = get_manifest_cached(state.shard) # Helper to get from ETS or Disk
 
-    updated_manifest = %{manifest | msg_count: last_record.msg_count}
-    write_manifest(state.shard, updated_manifest)
-    :ets.insert(u_offsets, {:manifest_snapshot, updated_manifest})
+      updated_manifest = %{manifest | msg_count: last_record.msg_count}
+      write_manifest(state.shard, updated_manifest)
+      :ets.insert(u_offsets, {:manifest_snapshot, updated_manifest})
 
-    # global_max_offset = latest_map |> Map.values() |> Enum.max()
-    # Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", global_max_offset) end)
-    Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", off) end)
-    Enum.each(updates, fn {u, off} -> Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off) end)
+      # global_max_offset = latest_map |> Map.values() |> Enum.max()
+      # Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", global_max_offset) end)
+      Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", off) end)
+      Enum.each(updates, fn {u, off} -> Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off) end)
 
-    new_state = %{state | msg_count: final_count, current_size: final_phys}
+      new_state = %{state | msg_count: final_count, current_size: final_phys}
 
-    # 5. ROTATION CHECK
-    if new_state.msg_count >= @max_messages_per_seg do
-      snapshot_bin(new_state)
-      rotated_state = rotate_segment(new_state)
-      process_batch(rotated_state, leftovers, depth + 1)
+      # 5. ROTATION CHECK
+      if new_state.msg_count >= @max_messages_per_seg do
+        snapshot_bin(new_state)
+        rotated_state = rotate_segment(new_state)
+        process_batch(rotated_state, leftovers, depth + 1)
+      else
+        process_batch(new_state, leftovers, depth + 1)
+      end
     else
-      process_batch(new_state, leftovers, depth + 1)
+      state
     end
-  else
-    state
   end
-end
 
 defp snapshot_bin(state) do
   cache = :"device_bookmarks_cache_#{state.shard}"
@@ -357,6 +357,11 @@ defp rotate_segment(state) do
     # 1. Calculate new coordinates
     new_base = state.active_base + state.msg_count
     new_ts = System.system_time(:second)
+
+    # 🚀 FIX: Sync current log and index to physical disk BEFORE closing.
+    # This ensures no data is trapped in the OS buffer if a crash occurs now.
+    :file.datasync(state.log_fd)
+    :file.datasync(state.idx_fd)
 
     # 2. Close old files
     :file.close(state.log_fd)
@@ -438,15 +443,36 @@ defp rotate_segment(state) do
   defp read_from_disk(state, base, pos) do
     case Path.wildcard(Path.join(state.shard_dir, "#{state.shard}_#{base}_*.log")) do
       [path | _] ->
+        # 1. Read the fixed-size header
         case Queue.FDPoolShard.pread(state.shard, path, pos, @header_size) do
-          {:ok, <<0xEE, size::32, _crc::32, ulen::16, dlen::16, _ts::64>>} ->
-            case Queue.FDPoolShard.pread(state.shard, path, pos + @header_size, ulen + dlen + 12 + size) do
-              {:ok, <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary>>} ->
-                {:ok, %{u: u, writer_device: d, p: p, off: off, data: :erlang.binary_to_term(body, [:safe])}, pos + @header_size + ulen + dlen + 12 + size}
-              _ -> {:error, :body_failed}
+          {:ok, <<0xEE, size::32, stored_crc::32, ulen::16, dlen::16, _ts::64>>} ->
+
+            # 2. Read the variable-length body
+            # (u_bin + d_bin + p(32) + off(64) + body) = ulen + dlen + 12 + size
+            total_body_size = ulen + dlen + 12 + size
+
+            case Queue.FDPoolShard.pread(state.shard, path, pos + @header_size, total_body_size) do
+              {:ok, <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary-size(size)>>} ->
+
+                # 🚀 THE FIX: CRC Validation
+                # We only CRC the 'body' (the actual payload) as per your 'encode_packet' logic
+                if :erlang.crc32(body) == stored_crc do
+                  try do
+                    decoded_data = :erlang.binary_to_term(body, [:safe])
+                    new_pos = pos + @header_size + total_body_size
+                    {:ok, %{u: u, writer_device: d, p: p, off: off, data: decoded_data}, new_pos}
+                  rescue
+                    _ -> {:error, :term_decode_failed}
+                  end
+                else
+                  Logger.error("💾 CRC Mismatch at shard #{state.shard}, pos #{pos}. Data corrupted.")
+                  {:error, :corrupted_record}
+                end
+
+              _ -> {:error, :body_read_failed}
             end
           :eof -> {:error, :eof}
-          _ -> {:error, :read_failed}
+          _ -> {:error, :header_read_failed}
         end
       [] -> {:error, :file_not_found}
     end
@@ -631,7 +657,7 @@ defp rotate_segment(state) do
         :ets.insert(u_offsets, {{:last_shard_offset, state.shard}, last_processed_idx})
 
         # 1. Write the batch to the .log file
-        new_state = process_batch(state, Enum.reverse(items))
+        new_state = process_batch(state, Enum.reverse(items), 0)
 
         # 🚀 THE FIX: Snapshot IMMEDIATELY after the batch is processed.
         # This guarantees the .bin file reflects what was just written to the .log.
@@ -653,6 +679,7 @@ defp rotate_segment(state) do
   end
 
 
+
   defp get_manifest_cached(shard) do
   u_offsets = user_offsets_tab(shard)
 
@@ -666,32 +693,51 @@ defp rotate_segment(state) do
   end
 end
 
-  defp finish_flush(state) do
-    :ets.insert(@flush_state, {state.shard, :idle})
-    Logger.debug("Shard #{state.shard} marked idle. Next flush scheduled.")
-    schedule_flush()
-    state
-  end
-
   @impl true
   def handle_info(:flush, state) do
     shard = state.shard
     buf = log_buffer(shard)
 
-    # Check busy status only
-    is_busy = :ets.lookup(@flush_state, shard) == [{shard, :busy}]
+    is_busy = case :ets.lookup(@flush_state, shard) do
+      [{^shard, {:busy, pid}}] -> Process.alive?(pid)
+      _ -> false
+    end
 
     if is_busy do
-      Logger.debug("Shard #{shard} flush skipped: already busy.")
       {:noreply, state}
     else
-      Logger.info("Shard #{shard} flush starting.")
-      :ets.insert(@flush_state, {shard, :busy})
+      :ets.insert(@flush_state, {shard, {:busy, self()}})
 
-      # Start the drain process
-      new_state = drain_buf(buf, state)
-      {:noreply, new_state}
+      # 🚀 We remove the 'after' and handle the lock release
+      # based on whether the result was a success or a crash.
+      try do
+        new_state = drain_buf(buf, state)
+
+        # SUCCESS PATH:
+        # drain_buf already calls finish_flush(new_state) internally
+        # which releases the lock and returns the NEW state.
+        {:noreply, new_state}
+      rescue
+        e ->
+          # FAILURE PATH:
+          Logger.error("❌ Shard #{shard} flush CRASHED: #{inspect(e)}")
+
+          # Manually release the lock so the shard isn't stuck forever
+          :ets.insert(@flush_state, {shard, :idle})
+          schedule_flush()
+
+          # Return the original state so we can try again later
+          {:noreply, state}
+      end
     end
+  end
+
+  defp finish_flush(state) do
+    # Clear the lock and schedule next check
+    :ets.insert(@flush_state, {state.shard, :idle})
+    Logger.debug("Shard #{state.shard} marked idle. Next flush scheduled.")
+    schedule_flush()
+    state
   end
 
   # HELPERS
@@ -707,48 +753,62 @@ end
     Process.send_after(self(), :flush, interval)
   end
 
- @impl true
-def handle_cast(:trigger_maintenance, state) do
-  shard = state.shard
-  # 1. Check Lock
-  is_busy = :ets.lookup(@flush_state, shard) == [{shard, :busy}]
+  @impl true
+  def handle_cast(:trigger_maintenance, state) do
+    shard = state.shard
 
-  if is_busy do
-    Logger.warning("Shard #{shard} maintenance skipped: BUSY")
-    {:noreply, state}
-  else
-    :ets.insert(@flush_state, {shard, :busy})
+    # 1. 🚀 PID-Aware Lock Validation
+    # Checks if the lock is held by a currently running process
+    is_busy = case :ets.lookup(@flush_state, shard) do
+      [{^shard, {:busy, pid}}] -> Process.alive?(pid)
+      [{^shard, :busy}] -> true # Legacy support
+      _ -> false
+    end
 
-    # 2. Get manifest from ETS (The live version)
-    manifest = get_manifest_cached(shard)
-    now = System.system_time(:second)
-
-    # 3. Filter based on your 30s retention
-    expired_ids =
-      manifest.expired
-      |> Enum.filter(fn {_id, ts} -> (now - ts) > @retention_seconds end)
-      |> Enum.map(fn {id, _ts} -> id end)
-
-    if expired_ids == [] do
-      Logger.info("Shard #{shard} maintenance: Nothing old enough to archive yet.")
-      :ets.insert(@flush_state, {shard, :idle})
+    if is_busy do
+      Logger.warning("Shard #{shard} maintenance skipped: BUSY (Lock held by active process)")
       {:noreply, state}
     else
-      Logger.info("🧹 Shard #{shard} archiving: #{inspect(expired_ids)}")
+      # 2. Acquire Lock with current PID
+      :ets.insert(@flush_state, {shard, {:busy, self()}})
 
-      # 4. Perform the move
-      new_manifest_map = perform_archival(state, manifest, expired_ids)
+      try do
+        # 3. Get manifest from ETS (The live version)
+        manifest = get_manifest_cached(shard)
+        now = System.system_time(:second)
 
-      # 5. Save results
-      u_offsets = user_offsets_tab(shard)
-      :ets.insert(u_offsets, {:manifest_snapshot, new_manifest_map})
-      write_manifest(shard, new_manifest_map)
+        # 4. Filter based on retention
+        expired_ids =
+          manifest.expired
+          |> Enum.filter(fn {_id, ts} -> (now - ts) > @retention_seconds end)
+          |> Enum.map(fn {id, _ts} -> id end)
 
-      :ets.insert(@flush_state, {shard, :idle})
-      {:noreply, %{state | manifest: new_manifest_map}}
+        if expired_ids == [] do
+          Logger.info("Shard #{shard} maintenance: Nothing old enough to archive yet.")
+          {:noreply, state}
+        else
+          Logger.info("🧹 Shard #{shard} archiving: #{inspect(expired_ids)}")
+
+          # 5. Perform the move (The heavy lifting)
+          new_manifest_map = perform_archival(state, manifest, expired_ids)
+
+          # 6. Save results back to ETS and Disk
+          u_offsets = user_offsets_tab(shard)
+          :ets.insert(u_offsets, {:manifest_snapshot, new_manifest_map})
+          write_manifest(shard, new_manifest_map)
+
+          {:noreply, %{state | manifest: new_manifest_map}}
+        end
+      rescue
+        e ->
+          Logger.error("❌ Shard #{shard} maintenance CRASHED: #{inspect(e)}")
+          {:noreply, state}
+      after
+        # 7. 🛡️ Safety Release: Always set back to idle, no matter what happened
+        :ets.insert(@flush_state, {shard, :idle})
+      end
     end
   end
-end
 
   defp perform_archival(state, manifest, expired_ids) do
     # 1. Setup Archive Path (e.g., data/archive/37)
