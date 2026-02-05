@@ -197,3 +197,13 @@ Device 2 fetches from `next_offset = 3` (index updated after its last fetch):
 If you want, I can **draw a timeline diagram with offsets, fetch, and ack for three devices** so you can paste directly in documentation.
 
 Do you want me to do that?
+
+
+
+
+bookmark adjustment
+__anchor__ => {segment or filenene, logical_offser}
+device=> %{
+   "device_1" => {logical_offser, timestamp},
+   "device_2" => {logical_offser, timestamp},
+}

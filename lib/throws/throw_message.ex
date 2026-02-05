@@ -31,10 +31,11 @@ defmodule ThrowMessageSchema do
       to: %{eid: from_eid, connection_resource_id: from_device_id},
       from: %{eid: to_eid, connection_resource_id: to_device_id},
       payload: payload,
+      payload_context: payload_context,
       encryption_type: encryption_type,
       encrypted: encrypted,
       transmission_mode: transmission_mode,
-      peer_eid: peer_to
+      reply_to: reply_to
     }) do
 
     message =  %Bimip.Message {
@@ -43,15 +44,15 @@ defmodule ThrowMessageSchema do
         to: %Bimip.Identity{eid: to_eid, connection_resource_id: to_device_id},
         timestamp: timestamp,
         payload: payload,
+        payload_context: payload_context,
         encryption_type: encryption_type,
         encrypted: encrypted,
         signature: signature,
         type: type,
         transmission_mode: transmission_mode,
-        peer_eid: peer_to,
+        reply_to: reply_to,
         offset: offset
       }
-
     %Bimip.MessageScheme{
       route: 6,
       payload: {:message, message}
