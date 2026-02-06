@@ -292,6 +292,8 @@ defp process_batch(state, items, depth) do
                 {i_acc, upd}
               end
 
+              new_l_map = Map.put(l_map, rec.u, rec.off)
+
             # Accumulate and pass the updated_counts_map to the next iteration
             {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, Map.put(l_map, rec.u, rec.off), updated_counts_map}
           end)
@@ -315,9 +317,27 @@ defp process_batch(state, items, depth) do
       write_manifest(state.shard, updated_manifest)
       :ets.insert(u_offsets, {:manifest_snapshot, updated_manifest})
 
-      # 4. Bookmark Updates (Note: latest_map contains the absolute latest offset per user in this batch)
-      Enum.each(latest_map, fn {u, off} ->
-        Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", off)
+
+      # Enum.each(latest_map, fn {u, off} ->
+      #   Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", off)
+      # end)
+
+      cache = :"device_bookmarks_cache_#{state.shard}"
+      file_id = "#{state.active_base}_#{state.active_ts}"
+
+      Enum.each(latest_map, fn {u, max_off} ->
+        # We fetch the existing record for THIS specific user only
+        case :ets.lookup(cache, u) do
+          [{^u, map}] ->
+            # We update ONLY this user's anchor.
+            # User A's anchor remains 'seg1' because we don't touch their record.
+            updated_map = Map.put(map, "__anchor__", {file_id, max_off})
+            :ets.insert(cache, {u, updated_map})
+
+          [] ->
+            # New user record
+            :ets.insert(cache, {u, %{"__anchor__" => {file_id, max_off}}})
+        end
       end)
 
       Enum.each(updates, fn {u, off} ->
@@ -341,42 +361,26 @@ defp process_batch(state, items, depth) do
     end
   end
 
+  defp snapshot_bin(state) do
+    cache = :"device_bookmarks_cache_#{state.shard}"
+    bin_path = Path.join("data/device_bookmarks", "#{state.shard}.bin")
 
-defp snapshot_bin(state) do
-  cache = :"device_bookmarks_cache_#{state.shard}"
-  u_offsets = user_offsets_tab(state.shard)
-  bin_path = Path.join("data/device_bookmarks", "#{state.shard}.bin")
-
-  # 1. Load the "Stale" data from disk (The 20)
-  existing_map = if File.exists?(bin_path) do
-    case File.read(bin_path) do
-      {:ok, b} when b != <<>> -> :erlang.binary_to_term(b)
-      _ -> %{}
+    # 1. 🚀 Direct RAM Dump: Grab the ETS table as it is.
+    # If User A's anchor is {seg1, off1} in RAM, it stays that way.
+    # If User B was updated to {seg2, off7} in process_batch, it reflects that.
+    hot_map = if :ets.info(cache) != :undefined do
+      :ets.tab2list(cache) |> Map.new()
+    else
+      %{}
     end
-  else
-    %{}
+
+    # 2. Save the map exactly as it exists in RAM.
+    # We no longer pull from u_offsets or force state.active_base on everyone.
+    bin = :erlang.term_to_binary(hot_map, [:compressed])
+    Queue.FDPoolShard.atomic_snapshot(state.shard, bin_path, bin)
+
+    :ok
   end
-
-  # 2. Get the "Recovered" metadata from ETS
-  hot_map = if :ets.info(cache) != :undefined, do: :ets.tab2list(cache) |> Map.new(), else: %{}
-
-  # 3. 🚀 THE SYNC: Pull the TRUE current offset (29) from the offsets table
-  # This ensures that even if recovery loaded '20', we save '29'.
-  final_map = Enum.reduce(:ets.tab2list(u_offsets), hot_map, fn
-    {{user, 1}, current_off}, acc ->
-      user_entry = Map.get(acc, user, %{"positions" => %{}})
-      # Force the anchor to match the ShardServer's truth
-      Map.put(acc, user, Map.put(user_entry, "__anchor__", {"#{state.active_base}_#{state.active_ts}", current_off}))
-    _, acc -> acc
-  end)
-
-  # 4. Merge: Final Map (RAM) must overwrite existing_map (Disk)
-  merged_data = Map.merge(existing_map, final_map, fn _k, _disk, ram -> ram end)
-
-  bin = :erlang.term_to_binary(merged_data, [:compressed])
-  Queue.FDPoolShard.atomic_snapshot(state.shard, bin_path, bin)
-  :ok
-end
 
   defp encode_packet(rec, offset, state) do
     u_bin = to_string(rec.u)

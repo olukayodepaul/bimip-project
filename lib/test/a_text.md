@@ -114,10 +114,3 @@ case File.read(bookmark_path) do
   {:error, reason} -> 
     IO.puts "❌ Could not find or read file: #{bookmark_path} (#{reason})"
 end
-
-
-
-
-
-
-
