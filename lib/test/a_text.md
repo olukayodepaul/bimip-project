@@ -10,19 +10,25 @@ case File.read(manifest_path) do
       IO.puts "================================================"
       
       base = data.active_base
-      file = data.active_ts
-      # This is the Global Offset from your record
+      file_ts = data.active_ts
       global_offset = Map.get(data, :msg_count, 0) 
       
-      # Calculate the count relative to the current file
-      # If global is 0 (new file), count is 0. 
-      # Otherwise, it's (Global - Base) + 1
-      current_count = if global_offset > 0, do: (global_offset - base) + 1, else: 0
+      # 🚀 THE ADDITION: Get the Physical Pointer
+      last_phys_pos = Map.get(data, :last_pos, 0)
       
+      # Relative count in the current segment
+      current_count = if global_offset >= base, do: (global_offset - base) + 1, else: 0
+      
+      # Calculate average message size for health monitoring
+      avg_size = if current_count > 0, do: Float.round(last_phys_pos / current_count, 2), else: 0
+
       IO.puts "🎯 ACTIVE SEGMENT:"
       IO.puts "   Base Offset:     #{base}"
       IO.puts "   Global Offset:   #{global_offset}"
-      IO.puts "   File:   #{file}"
+      IO.puts "   Msg in Segment:  #{current_count}"
+      IO.puts "   Physical Pos:    #{last_phys_pos} bytes 📍"
+      IO.puts "   Avg Msg Size:    #{avg_size} bytes"
+      IO.puts "   File TS:         #{file_ts}"
       
       IO.puts "------------------------------------------------"
       
@@ -30,7 +36,6 @@ case File.read(manifest_path) do
         IO.puts "📂 EXPIRED SEGMENTS: None"
       else
         IO.puts "📂 EXPIRED SEGMENTS:"
-        # Sort by rotation timestamp to see history in order
         Enum.sort_by(data.expired, fn {_, death_ts} -> death_ts end)
         |> Enum.each(fn {name_parts, death_ts} ->
           IO.puts "   • Segment: #{shard}_#{name_parts} | Rotated At: #{death_ts}"
@@ -42,7 +47,6 @@ case File.read(manifest_path) do
     end
   {:error, reason} -> IO.puts "❌ Could not open manifest: #{reason}"
 end
-
 
 shard = 37
 folder_path = "data/bimip/#{shard}"
@@ -69,54 +73,9 @@ Enum.each(idx_files, fn path ->
 end)
 
 
-shard = 37
-folder_path = "data/bimip/#{shard}"
-log_files = Path.wildcard("#{folder_path}/#{shard}_*.log") |> Enum.sort()
-
-IO.puts "📜 Found #{Enum.count(log_files)} log files in #{folder_path}\n"
-
-Enum.each(log_files, fn path ->
-  IO.puts "================================================"
-  IO.puts "📄 LOG FILE: #{Path.basename(path)}"
-  
-  case File.read(path) do
-    {:ok, binary} ->
-      parse_log = fn
-        recursive, <<0xEE, body_size::32, crc::32, ulen::16, dlen::16, ts::64, rest::binary>>, count ->
-          # Extract dynamic length strings and data
-          <<user::binary-size(ulen), device::binary-size(dlen), p::32, off::64, body::binary-size(body_size), next::binary>> = rest
-          
-          # Attempt to decode the Erlang term
-          payload = try do
-            :erlang.binary_to_term(body)
-          rescue
-            _ -> "⚠️ [Could not decode Erlang term]"
-          end
-
-          IO.puts "📝 Entry ##{count}"
-          IO.puts "   👤 User: #{user} | 📱 Device: #{device}"
-          IO.puts "   🔢 Partition: #{p} | 🆔 Offset: #{off}"
-          IO.puts "   🕒 TS: #{ts} | 📦 CRC: #{crc}"
-          IO.puts "   --------------------------------------------"
-          
-          recursive.(recursive, next, count + 1)
-
-        _, <<>>, count -> 
-          IO.puts "🏁 End of log reached. Total records: #{count}"
-
-        _, rest, count -> 
-          IO.puts "⚠️ Trailing/Corrupt data: #{byte_size(rest)} bytes remaining. Total valid: #{count}"
-      end
-
-      parse_log.(parse_log, binary, 1)
-
-    {:error, reason} -> 
-      IO.puts "❌ Could not read log: #{reason}"
-  end
-end)
-
 Queue.QueueLogImpl.system_recovery("user57@domain.com", 1)
 Queue.QueueLogImpl.system_recovery("user1@domain.com", 1)
+Queue.QueueLogImpl.system_recovery("user30@domain.com", 1)
 :ets.tab2list(:device_bookmarks_cache_37)
 :ets.tab2list(:bimip_user_offsets_37)
 

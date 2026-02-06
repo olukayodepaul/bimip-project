@@ -1,6 +1,6 @@
 defmodule QueueLogTest do
   @user_count 64
-  @total_messages 10_000_000 # Total per user process
+  @total_messages 9 # Total per user process
   @num_shards 64
 
   def run_test do
@@ -88,7 +88,7 @@ defp write_loop_for_user(user, all_users) do
     end
   end
 end
-
+# QueueLogTest.run_test()
 # # 09:09
 
 

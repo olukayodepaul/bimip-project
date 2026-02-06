@@ -70,6 +70,7 @@ defmodule Bimip.Message do
   field :reply_to, 11, proto3_optional: true, type: :string, json_name: "replyTo"
   field :offset, 12, proto3_optional: true, type: :int64
   field :payload_context, 13, type: :int32, json_name: "payloadContext"
+  field :shard_offset, 14, proto3_optional: true, type: :int64, json_name: "shardOffset"
 end
 
 defmodule Bimip.MessageAckSignal do

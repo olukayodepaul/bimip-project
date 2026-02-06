@@ -7,10 +7,11 @@ defmodule Queue.Persist do
 
   @transmission_mode 1
 
-  def build(%{ payload: payload} = _attrs, next_offset, reply_to, type, payload_context) do
+  def build(%{ payload: payload} = _attrs, next_offset, shard_offset, reply_to, type, payload_context) do
 
        %Bimip.Message{
           offset: next_offset,
+          shard_offset: shard_offset,
           type: type,
           peer_uid: payload.peer_uid,
           from: %Bimip.Identity{ eid: payload.from.eid, connection_resource_id: payload.from.connection_resource_id},

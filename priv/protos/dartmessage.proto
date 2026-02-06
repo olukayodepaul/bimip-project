@@ -53,6 +53,7 @@ message OWNERS {
     optional string reply_to = 11;
     optional int64 offset = 12;
     int32 payload_context = 13;
+    optional int64 shard_offset = 14;
   }
 
   message MessageAckSignal {

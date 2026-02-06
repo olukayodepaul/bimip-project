@@ -13,8 +13,8 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 60_000
-  @max_messages_per_seg 5_00_000
-  @user_stride 1_000
+  @max_messages_per_seg 10
+  @user_stride 2
   @max_buffer_per_shard 10_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
@@ -70,7 +70,7 @@ defmodule Queue.QueueLogImpl do
     else
       # 🚀 FIX: Get both offsets atomically from the ShardServer
       {offset, shard_offset} = Queue.ShardServer.get_next_offsets(shard, recipient_uid)
-      data = Queue.Persist.build(%{payload: payload}, offset , recipient_uid, type, payload_ctx)
+      data = Queue.Persist.build(%{payload: payload}, offset , shard_offset, recipient_uid, type, payload_ctx)
 
       record = %{
         u: recipient_uid,
@@ -85,7 +85,8 @@ defmodule Queue.QueueLogImpl do
       }
 
       :ets.insert(buf, {shard_offset, {shard, offset, record}})
-      {:ok, offset}
+      IO.inspect({offset, shard_offset})
+      {:ok, offset, shard_offset}
     end
   end
 
@@ -97,17 +98,14 @@ defmodule Queue.QueueLogImpl do
   # ------------------------------------------------------------------
   # GENSERVER HANDLERS
   # ------------------------------------------------------------------
-@impl true
+  @impl true
   def init(shard) do
     # 🚀 TRAP EXIT: Essential for allowing terminate/2 to run during shutdown.
-    # This prevents the process from being killed instantly by the Supervisor.
     Process.flag(:trap_exit, true)
 
     shard_dir = Path.join(@base_dir, "#{shard}")
     File.mkdir_p!(shard_dir)
     File.mkdir_p!("data/device_bookmarks")
-
-    bin_path = Path.join("data/device_bookmarks", "#{shard}.bin")
 
     manifest = load_manifest(shard)
     base = manifest.active_base
@@ -120,8 +118,8 @@ defmodule Queue.QueueLogImpl do
     :ets.insert(u_offsets, {{:shard_offset, shard}, global_offset})
     :ets.insert(u_offsets, {{:last_shard_offset, shard}, global_offset})
 
-    # Derive relative segment count (local counter for rotation logic)
-    recovered_msg_count = if global_offset >= base, do: (global_offset - base) + 1, else: 0
+    # Derive relative segment count
+    recovered_msg_count = max(0, global_offset - (base - 1))
 
     log_path = Path.join(shard_dir, "#{shard}_#{base}_#{ts}.log")
     idx_path = Path.join(shard_dir, "#{shard}_#{base}_#{ts}.idx")
@@ -130,18 +128,29 @@ defmodule Queue.QueueLogImpl do
     {:ok, log_fd} = :file.open(log_path, [:append, :raw, :binary, :read, :delayed_write])
     {:ok, idx_fd} = :file.open(idx_path, [:append, :raw, :binary, :read, :write])
 
-    # Seed ETS manifest snapshot for immediate use by maintenance/readers
+    # 🚀 INTEGRITY CHECK: Compare Manifest vs Actual Disk Size
+    # We ask the OS where the file ends currently.
+    {:ok, actual_disk_size} = :file.position(log_fd, :eof)
+
+    # Use the manifest position, but don't exceed the actual physical file.
+    # This prevents "pointing to ghost data" if the file was truncated.
+    recovered_pos = if manifest.last_pos <= actual_disk_size do
+      manifest.last_pos
+    else
+      Logger.warning("⚠️ Shard #{shard} Manifest mismatch! Manifest: #{manifest.last_pos}, Disk: #{actual_disk_size}. Reverting to Disk size.")
+      actual_disk_size
+    end
+
+    # Seed ETS manifest snapshot
     :ets.insert(u_offsets, {:manifest_snapshot, manifest})
     if not manifest.exists, do: write_manifest(shard, manifest)
-
-    {:ok, actual_pos} = :file.position(log_fd, :cur)
 
     state = %{
       shard: shard,
       shard_dir: shard_dir,
       log_fd: log_fd,
       idx_fd: idx_fd,
-      current_size: actual_pos,
+      current_size: recovered_pos,   # 🚀 Validated physical position
       msg_count: recovered_msg_count,
       active_base: base,
       active_ts: ts,
@@ -150,7 +159,7 @@ defmodule Queue.QueueLogImpl do
 
     schedule_flush()
 
-    # Ensure a bookmark snapshot exists if it's a first-time start
+    bin_path = Path.join("data/device_bookmarks", "#{shard}.bin")
     if !File.exists?(bin_path), do: snapshot_bin(state)
 
     {:ok, state}
@@ -237,32 +246,45 @@ defmodule Queue.QueueLogImpl do
     state
   end
 
-  defp process_batch(state, items, depth) do
+defp process_batch(state, items, depth) do
+    # 1. Split items based on how much space is left in the current segment
     space_left = @max_messages_per_seg - state.msg_count
     {to_write, leftovers} = Enum.split(items, space_left)
-    u_counts = user_segment_counts_tab(state.shard)
+    u_counts_tab = user_segment_counts_tab(state.shard)
 
     if to_write != [] do
-      # 1. REDUCE: Generate IO data and track physical pointers correctly
-      {bin_io, idx_io, final_count, final_phys, updates, latest_map} =
-        Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}},
-          fn {{_s, _off, _seq}, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map} ->
+      # --- STEP A: PRE-BATCH FETCH ---
+      # Get unique users in this specific batch to minimize ETS lookups
+      unique_users = to_write |> Enum.map(fn {_, rec} -> rec.u end) |> Enum.uniq()
 
-            # Encode packet for the log file
+      # Load starting counts into a local map for the loop
+      base_counts = Enum.reduce(unique_users, %{}, fn u, acc ->
+        current = case :ets.lookup(u_counts_tab, u) do
+          [{^u, val}] -> val
+          [] -> 0
+        end
+        Map.put(acc, u, current)
+      end)
+
+      # --- STEP B: THE ACCUMULATOR LOOP ---
+      {bin_io, idx_io, final_count, final_phys, updates, latest_map, final_local_counts} =
+        Enum.reduce(to_write, {[], [], state.msg_count, state.current_size, [], %{}, base_counts},
+          fn {{_s, _off, _seq}, rec}, {b_acc, i_acc, curr_idx, curr_phys, upd, l_map, current_counts_map} ->
+
+            # Increment local count for this user
+            new_u_count = Map.get(current_counts_map, rec.u) + 1
+            updated_counts_map = Map.put(current_counts_map, rec.u, new_u_count)
+
+            # Encode packet for log file
             {bin_packet, p_size} = encode_packet(rec, rec.off, state)
 
-            # Increment the user's message count for THIS specific segment/file
-            u_count = :ets.update_counter(u_counts, rec.u, {2, 1}, {rec.u, 0})
-
-            # 2. STRIDE LOGIC: Check if this message hits the boundary (1, 3, 5...)
+            # STRIDE LOGIC: Check boundary (1, 1001, 2001...)
             {new_i_acc, new_upd} =
-              if rem(u_count - 1, @user_stride) == 0 do
+              if rem(new_u_count - 1, @user_stride) == 0 do
                 u_bin = to_string(rec.u)
-
-                # Use curr_phys (the position before this packet is written) as the index pointer
                 idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, rec.off::64, state.active_base::64, curr_phys::64>>
 
-                # Update RAM cache for immediate fetching
+                # Update index cache for immediate reads
                 :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, rec.off}, {state.active_base, curr_phys}})
 
                 {[i_acc | idx_entry], [{rec.u, rec.off} | upd]}
@@ -270,42 +292,55 @@ defmodule Queue.QueueLogImpl do
                 {i_acc, upd}
               end
 
-            # Accumulate: Note that curr_phys increases by p_size for the NEXT message
-            {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, Map.put(l_map, rec.u, rec.off)}
+            # Accumulate and pass the updated_counts_map to the next iteration
+            {[b_acc | bin_packet], new_i_acc, curr_idx + 1, curr_phys + p_size, new_upd, Map.put(l_map, rec.u, rec.off), updated_counts_map}
           end)
 
-      # 3. DISK I/O: Bulk write the prepared IO data
+      # --- STEP C: BULK COMMITS ---
+      # 1. Commit the final user counts to ETS in one pass
+      Enum.each(final_local_counts, fn {u, final_val} ->
+        :ets.insert(u_counts_tab, {u, final_val})
+      end)
+
+      # 2. Disk I/O: One big write call for the log and index
       :file.write(state.log_fd, bin_io)
       :file.write(state.idx_fd, idx_io)
 
-      # 4. MANIFEST & BOOKMARKS: Sync state
+      # 3. Update Manifest and Shard Globals
       {_last_tag, last_record} = List.last(to_write)
       u_offsets = user_offsets_tab(state.shard)
-      manifest = get_manifest_cached(state.shard) # Helper to get from ETS or Disk
+      manifest = get_manifest_cached(state.shard)
 
-      updated_manifest = %{manifest | msg_count: last_record.msg_count}
+      updated_manifest = %{manifest | msg_count: last_record.msg_count, last_pos: final_phys }
       write_manifest(state.shard, updated_manifest)
       :ets.insert(u_offsets, {:manifest_snapshot, updated_manifest})
 
-      # global_max_offset = latest_map |> Map.values() |> Enum.max()
-      # Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", global_max_offset) end)
-      Enum.each(latest_map, fn {u, off} -> Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", off) end)
-      Enum.each(updates, fn {u, off} -> Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off) end)
+      # 4. Bookmark Updates (Note: latest_map contains the absolute latest offset per user in this batch)
+      Enum.each(latest_map, fn {u, off} ->
+        Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", off)
+      end)
+
+      Enum.each(updates, fn {u, off} ->
+        Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off)
+      end)
 
       new_state = %{state | msg_count: final_count, current_size: final_phys}
 
-      # 5. ROTATION CHECK
+      # --- STEP D: ROTATION CHECK ---
       if new_state.msg_count >= @max_messages_per_seg do
         snapshot_bin(new_state)
         rotated_state = rotate_segment(new_state)
+        # Recurse for leftovers in the new segment
         process_batch(rotated_state, leftovers, depth + 1)
       else
+        # If there are leftovers but no rotation (rare), process them
         process_batch(new_state, leftovers, depth + 1)
       end
     else
       state
     end
   end
+
 
 defp snapshot_bin(state) do
   cache = :"device_bookmarks_cache_#{state.shard}"
@@ -405,6 +440,7 @@ defp rotate_segment(state) do
       active_base: new_base,
       active_ts: new_ts,
       msg_count: current_global_offset, # Preserve the global truth
+      last_pos: 0,
       expired: Map.put(manifest.expired, expired_key, new_ts)
     }
 
@@ -533,11 +569,12 @@ defp rotate_segment(state) do
         active_base: Map.get(data, :active_base) || Map.get(data, "active_base", 1),
         active_ts: Map.get(data, :active_ts) || Map.get(data, "active_ts", System.system_time(:second)),
         msg_count: Map.get(data, :msg_count) || Map.get(data, "msg_count", 0),
+        last_pos: Map.get(data, :last_pos) || 0,
         expired: Map.get(data, :expired) || Map.get(data, "expired", %{}),
         exists: true
       }
     else
-      %{active_base: 1, active_ts: System.system_time(:second), msg_count: 0, expired: %{}, exists: false}
+      %{active_base: 1, active_ts: System.system_time(:second), msg_count: 0, last_pos: 0, expired: %{}, exists: false}
     end
   end
 
