@@ -30,28 +30,6 @@ defmodule Queue.DeviceBookmark do
     {:ok, state}
   end
 
-  # -------------------------------------------------------------------
-  # Public API
-  # -------------------------------------------------------------------
-
-  @doc """
-  Updates the global anchor (__anchor__) for a user.
-  The anchor typically reflects the last seen message offset.
-  """
-  def mark_anchor(user, file_id, off) do
-    cache = cache_name(shard_for(user))
-
-    # Fetch existing map for the user from ETS, or start fresh
-    user_map =
-      case :ets.lookup(cache, user) do
-        [{^user, m}] -> m
-        [] -> %{}
-      end
-
-    updated_map = Map.put(user_map, "__anchor__", {file_id, off})
-    :ets.insert(cache, {user, updated_map})
-  end
-
   @doc """
   Updates the sparse positions map for a user.
   Keeps the minimal offset per segment (sparse indexing).

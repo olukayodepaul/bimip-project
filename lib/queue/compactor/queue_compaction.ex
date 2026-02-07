@@ -17,8 +17,8 @@ defmodule Queue.BimipCompactor do
 
   @num_shards 64
   # Frequency of maintenance cycles
-  # @check_interval :timer.minutes(2)
-  @check_interval :timer.hours(4)
+  @check_interval :timer.minutes(30)
+  # @check_interval :timer.hours(4)
   # Root directory for archived data
   @archive_root "data/archive"
 
@@ -79,8 +79,8 @@ defmodule Queue.BimipCompactor do
   # ------------------------------------------------------------------
   # PRIVATE HELPERS
   # ------------------------------------------------------------------
-
   defp schedule_check do
     Process.send_after(self(), :check, @check_interval)
   end
+
 end

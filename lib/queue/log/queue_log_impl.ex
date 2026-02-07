@@ -13,8 +13,8 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 60_000
-  @max_messages_per_seg 10
-  @user_stride 2
+  @max_messages_per_seg 1_000_000
+  @user_stride 1_000
   @max_buffer_per_shard 10_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
@@ -85,7 +85,6 @@ defmodule Queue.QueueLogImpl do
       }
 
       :ets.insert(buf, {shard_offset, {shard, offset, record}})
-      IO.inspect({offset, shard_offset})
       {:ok, offset, shard_offset}
     end
   end
@@ -308,6 +307,8 @@ defp process_batch(state, items, depth) do
       :file.write(state.log_fd, bin_io)
       :file.write(state.idx_fd, idx_io)
 
+      Queue.Replicator.push_flush(state.shard, state.active_base, bin_io, idx_io)
+
       # 3. Update Manifest and Shard Globals
       {_last_tag, last_record} = List.last(to_write)
       u_offsets = user_offsets_tab(state.shard)
@@ -316,11 +317,6 @@ defp process_batch(state, items, depth) do
       updated_manifest = %{manifest | msg_count: last_record.msg_count, last_pos: final_phys }
       write_manifest(state.shard, updated_manifest)
       :ets.insert(u_offsets, {:manifest_snapshot, updated_manifest})
-
-
-      # Enum.each(latest_map, fn {u, off} ->
-      #   Queue.DeviceBookmark.mark_anchor(u, "#{state.active_base}_#{state.active_ts}", off)
-      # end)
 
       cache = :"device_bookmarks_cache_#{state.shard}"
       file_id = "#{state.active_base}_#{state.active_ts}"
@@ -365,20 +361,15 @@ defp process_batch(state, items, depth) do
     cache = :"device_bookmarks_cache_#{state.shard}"
     bin_path = Path.join("data/device_bookmarks", "#{state.shard}.bin")
 
-    # 1. 🚀 Direct RAM Dump: Grab the ETS table as it is.
-    # If User A's anchor is {seg1, off1} in RAM, it stays that way.
-    # If User B was updated to {seg2, off7} in process_batch, it reflects that.
     hot_map = if :ets.info(cache) != :undefined do
       :ets.tab2list(cache) |> Map.new()
     else
       %{}
     end
 
-    # 2. Save the map exactly as it exists in RAM.
-    # We no longer pull from u_offsets or force state.active_base on everyone.
     bin = :erlang.term_to_binary(hot_map, [:compressed])
     Queue.FDPoolShard.atomic_snapshot(state.shard, bin_path, bin)
-
+    Queue.Replicator.push_snapshot(state.shard, bin)
     :ok
   end
 
@@ -478,6 +469,7 @@ defp rotate_segment(state) do
     :file.close(fd)
 
     File.rename!(tmp_path, path)
+    Queue.Replicator.push_manifest(shard, manifest_data)
   end
 
   defp read_from_disk(state, base, pos) do
@@ -719,20 +711,18 @@ defp rotate_segment(state) do
     end
   end
 
-
-
   defp get_manifest_cached(shard) do
-  u_offsets = user_offsets_tab(shard)
+    u_offsets = user_offsets_tab(shard)
 
-  # Check ETS first for the "live" manifest snapshot
-  case :ets.lookup(u_offsets, :manifest_snapshot) do
-    [{:manifest_snapshot, manifest}] ->
-      manifest
-    [] ->
-      # Fallback to disk if the process just started or ETS was cleared
-      load_manifest(shard)
+    # Check ETS first for the "live" manifest snapshot
+    case :ets.lookup(u_offsets, :manifest_snapshot) do
+      [{:manifest_snapshot, manifest}] ->
+        manifest
+      [] ->
+        # Fallback to disk if the process just started or ETS was cleared
+        load_manifest(shard)
+    end
   end
-end
 
   @impl true
   def handle_info(:flush, state) do
@@ -860,7 +850,6 @@ end
       {:error, reason} -> Logger.error("Could not create archive dir: #{inspect(reason)}")
     end
 
-    # 2. Iterate through each expired segment ID (e.g., "1_1769445066")
     Enum.each(expired_ids, fn seg_id ->
       Logger.info("🧹 Processing archival for Shard #{state.shard}, Segment #{seg_id}")
 
