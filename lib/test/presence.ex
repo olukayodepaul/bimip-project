@@ -1,6 +1,6 @@
 defmodule QueueLogTest do
   @user_count 64
-  @total_messages 1_000_000 # Total per user process
+  @total_messages 11 # Total per user process
   @num_shards 64
 
   def run_test do

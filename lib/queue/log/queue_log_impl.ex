@@ -13,8 +13,8 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 60_000
-  @max_messages_per_seg 1_000_000
-  @user_stride 1_000
+  @max_messages_per_seg 10
+  @user_stride 2
   @max_buffer_per_shard 10_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
@@ -24,7 +24,7 @@ defmodule Queue.QueueLogImpl do
   @log_buffer_prefix :"bimip_buf_"
   @stable_limit 50_000
   @flush_state :flush_state
-  @retention_seconds  60 * 5  # 604800
+  @retention_seconds 60 * 60 * 24 * 7
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -205,30 +205,96 @@ defmodule Queue.QueueLogImpl do
     end)
   end
 
-  @impl true
   def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
-    log_off = Queue.DeviceBookmark.get(device_id, user)
     cache = :"device_bookmarks_cache_#{state.shard}"
+    today = Date.utc_today() |> Date.to_iso8601()
 
-    # prune_stale_bookmarks()
+    # --- STEP 1: LOAD & RECONCILE ---
+    user_data = case :ets.lookup(cache, user) do
+      [{^user, %{"exp" => %{"last_check_date" => ^today}} = data}] -> data
+      [{^user, data}] ->
+        reconciled = reconcile_user_data(data, state.manifest)
+        :ets.insert(cache, {user, reconciled})
+        reconciled
+      [] ->
+        case system_recovery(user, p) do
+          :ok ->
+            [{^user, data}] = :ets.lookup(cache, user)
+            reconciled = reconcile_user_data(data, state.manifest)
+            :ets.insert(cache, {user, reconciled})
+            reconciled
+          _ -> %{}
+        end
+    end
 
-    seg_id = case :ets.lookup(cache, user) do
-      [{^user, %{"__anchor__" => {seg, _}}}] ->
-        [base_str | _] = String.split(seg, "_")
-        String.to_integer(base_str)
+    # --- STEP 2: IDENTIFY STARTING POINT ---
+    {seg_id, last_off} = case Map.get(user_data, device_id) do
+      {s, o} -> {s, o}
+      nil -> {find_oldest_valid_segment(user_data, state.manifest), 0}
+    end
+
+    # --- STEP 3: RESOLVE PHYSICAL JUMP (Disk only) ---
+    target_base = case String.split(seg_id, "_") do
+      [base_str | _] -> String.to_integer(base_str)
       _ -> state.active_base
     end
 
-    gate_off = if log_off > 0, do: log_off - rem(log_off - 1, @user_stride), else: 0
+    gate_off = if last_off > 0, do: last_off - rem(last_off - 1, @user_stride), else: 0
 
-    {actual_seg, actual_phys} = case :ets.lookup(idx_cache(state.shard), {user, p, gate_off}) do
-      [{_, {s, pos}}] -> {s, pos}
-      _ -> {seg_id, 0}
+    {actual_seg_base, actual_phys} = case :ets.lookup(idx_cache(state.shard), {user, p, gate_off}) do
+      [{_, {^target_base, pos}}] -> {target_base, pos}
+      _ -> {target_base, 0}
     end
 
-    {:ok, disk_results} = stream_messages(state, user, p, actual_seg, actual_phys, batch_size, [], device_id)
-    filtered = Enum.filter(disk_results, fn msg -> msg.off > log_off end)
-    {:reply, {:ok, filtered}, state}
+    # --- STEP 4: FETCH FROM DISK ---
+    {:ok, disk_results} = stream_messages(state, user, p, actual_seg_base, actual_phys, batch_size, [], device_id)
+
+    # --- STEP 5: FETCH FROM RAM BUFFER (Zero-Delay) ---
+    # 🚀 This is where we solve the delay. We pull from the buffer before it hits disk.
+    buffer_tab = log_buffer(state.shard)
+    raw_buffer = :ets.select(buffer_tab, [
+      {
+        {:"$1", {state.shard, :"$2", %{u: user, p: p, bin: :"$3", off: :"$4", writer_device: :"$5"}}},
+        [
+          {:>, :"$4", last_off},      # 🎯 Filter: Only newer messages
+          {:"/=", :"$5", device_id}  # 🎯 Filter: Ignore messages from this device
+        ],
+        [:"$3"] # Return the binary for decoding
+      }
+    ])
+
+    unflushed_results = Enum.map(raw_buffer, fn bin ->
+      # Decode into the same structure stream_messages returns
+      :erlang.binary_to_term(bin, [:safe])
+    end)
+
+    # --- STEP 6: MERGE & DEDUP ---
+    # Since a flush might be happening, a message could be in BOTH disk and RAM.
+    # uniq_by removes the duplicate during the 'handover' window.
+    combined = (disk_results ++ unflushed_results)
+               |> Enum.uniq_by(fn msg -> msg.offset end)
+               |> Enum.filter(fn msg -> msg.offset > last_off end) # Safety filter
+               |> Enum.sort_by(fn msg -> msg.offset end)
+               |> Enum.take(batch_size)
+
+    {:reply, {:ok, combined}, state}
+  end
+
+  defp find_oldest_valid_segment(user_data, manifest) do
+    active_seg_key = "#{manifest.active_base}_#{manifest.active_ts}"
+    positions = Map.get(user_data, "positions", %{})
+
+    case Map.keys(positions) do
+      [] -> active_seg_key
+      keys ->
+        # 🚀 FIX: Sort by the integer value of the base offset
+        keys
+        |> Enum.sort_by(fn key ->
+          [base_str | _] = String.split(key, "_")
+          String.to_integer(base_str)
+        end, :asc)
+        |> List.first()
+    end
   end
 
   defp perform_flush(state) do
@@ -245,7 +311,7 @@ defmodule Queue.QueueLogImpl do
     state
   end
 
-defp process_batch(state, items, depth) do
+  defp process_batch(state, items, depth) do
     # 1. Split items based on how much space is left in the current segment
     space_left = @max_messages_per_seg - state.msg_count
     {to_write, leftovers} = Enum.split(items, space_left)
@@ -354,6 +420,41 @@ defp process_batch(state, items, depth) do
       end
     else
       state
+    end
+  end
+
+  defp reconcile_user_data(user_data, manifest) do
+    today = Date.utc_today() |> Date.to_iso8601()
+    last_check = get_in(user_data, ["exp", "last_check_date"]) || "1970-01-01"
+
+    if last_check < today do
+      expired_map = manifest.expired
+
+      # 1. Filter Positions: Removes segments that no longer exist on disk
+      new_positions =
+        (user_data["positions"] || %{})
+        |> Enum.reject(fn {seg, _} -> Map.has_key?(expired_map, seg) end)
+        |> Map.new()
+
+      # 2. Filter Device Bookmarks: Purge "Ghost Pointers"
+      cleaned_map = Enum.reduce(user_data, %{}, fn
+        # Match a device entry: key is device_id, value is {seg, off}
+        {k, {seg, off}}, acc when is_binary(k) and k not in ["exp", "positions", "__anchor__"] ->
+          if Map.has_key?(expired_map, seg) do
+            acc # Drop it: the file this device was reading is gone
+          else
+            Map.put(acc, k, {seg, off}) # Keep it: file is still valid
+          end
+
+        # Keep metadata keys as they are
+        {k, v}, acc -> Map.put(acc, k, v)
+      end)
+
+      cleaned_map
+      |> Map.put("positions", new_positions)
+      |> Map.put("exp", %{"last_check_date" => today, "status" => :attended})
+    else
+      user_data
     end
   end
 
@@ -839,6 +940,64 @@ defp rotate_segment(state) do
         :ets.insert(@flush_state, {shard, :idle})
       end
     end
+  end
+
+  @impl true
+@impl true
+def handle_cast({:ack, user, device_id, ack_offset}, state) do
+  cache = :"device_bookmarks_cache_#{state.shard}"
+
+  case :ets.lookup(cache, user) do
+    [{^user, user_data}] ->
+      # 1. Resolve Segment
+      positions = Map.get(user_data, "positions", %{})
+      resolved_seg = find_segment_for_offset(positions, ack_offset, state.active_base)
+
+      # 2. Update/Create the device entry
+      updated_user_data = Map.put(user_data, device_id, {resolved_seg, ack_offset})
+
+      # 3. Commit
+      :ets.insert(cache, {user, updated_user_data})
+      Logger.debug("Ack processed: #{user} on #{device_id} -> Seg #{resolved_seg}")
+
+    [] ->
+      # This is likely a truly new user.
+      # We create a minimal record so the Ack isn't lost.
+      file_id = "#{state.active_base}_#{state.active_ts}"
+      new_user_data = %{
+        device_id => {file_id, ack_offset},
+        "positions" => %{},
+        "__anchor__" => {file_id, ack_offset} # 🚀 CRITICAL for Step 5 Recovery
+      }
+      :ets.insert(cache, {user, new_user_data})
+      Logger.info("Created new bookmark record for user: #{user} via Ack")
+  end
+
+  {:noreply, state}
+end
+
+  # Helper to find the "Landing Zone" for an offset
+  defp find_segment_for_offset(positions, ack_offset, active_base) do
+    if positions == %{} do
+      # Fallback if no history exists
+      "#{active_base}"
+    else
+      # Find the highest base_offset that is <= our ack_offset
+      best_seg =
+        positions
+        |> Enum.filter(fn {_seg_key, start_off} -> start_off <= ack_offset end)
+        |> Enum.max_by(fn {_seg_key, start_off} -> start_off end, fn -> nil end)
+
+      case best_seg do
+        {seg_id, _start_off} -> seg_id
+        nil -> "#{active_base}"
+      end
+    end
+  end
+
+  def acknowledge(user, device_id, last_seen_offset) do
+    shard = :erlang.phash2(user, @num_shards)
+    GenServer.cast(worker_name(shard), {:ack, user, to_string(device_id), last_seen_offset})
   end
 
   defp perform_archival(state, manifest, expired_ids) do
