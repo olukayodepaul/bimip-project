@@ -1,6 +1,6 @@
 defmodule QueueLogTest do
   @user_count 64
-  @total_messages 11 # Total per user process
+  @total_messages 1_000_000 # Total per user process
   @num_shards 64
 
   def run_test do
@@ -91,6 +91,9 @@ end
 # QueueLogTest.run_test()
 # # 09:09
 
+# {:ok, messages} = Queue.QueueLogImpl.fetch_batch("user1@domain.com", 1, 1, 20)
+#  Queue.QueueLogImpl.write(1, user1, user1, "1", 1, 1, msg1, unique_id, System.system_time(:millisecond))
+#   Queue.QueueLogImpl.write(1, user2, user2, "1", 1, 1, msg2, unique_id, System.system_time(:millisecond))
 
 # shard_to_check = 37
 # table_name = :"bimip_buf_#{shard_to_check}"

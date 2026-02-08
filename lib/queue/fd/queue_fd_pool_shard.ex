@@ -2,26 +2,63 @@ defmodule Queue.FDPoolShard do
   use GenServer
   require Logger
 
-  # Limits open FDs to 11 per shard (64 shards * 11 = 704 total, well under 1024 limit)
+  # Limits open FDs to 11 per shard (64 shards * 11 = 704 total)
   @max_read_fds 11
 
   def start_link(shard_id), do: GenServer.start_link(__MODULE__, shard_id, name: via(shard_id))
 
-  # --- Client API ---
+  # --- Client API (High Concurrency / Multi-Process) ---
 
-  def pread(shard_id, path, pos, length), do: GenServer.call(via(shard_id), {:pread, path, pos, length})
+  @doc """
+  Performs a concurrent positional read.
+  If the file is already open, it bypasses the GenServer and reads directly.
+  """
+  def pread(shard_id, path, pos, length) do
+    table = :"fd_pool_#{shard_id}"
 
-  def read_bin(shard_id, path), do: GenServer.call(via(shard_id), {:read_bin, path})
+    case :ets.lookup(table, {:lookup, path}) do
+      [{_, fd, old_ts}] ->
+        # 🚀 FAST PATH: Concurrent read without GenServer bottleneck
+        result = :file.pread(fd, pos, length)
+        # Asynchronously update the LRU timestamp
+        GenServer.cast(via(shard_id), {:touch, path, fd, old_ts})
+        result
+
+      [] ->
+        # 🐢 SLOW PATH: Talk to GenServer to open the file and manage eviction
+        GenServer.call(via(shard_id), {:pread, path, pos, length})
+    end
+  end
+
+  @doc """
+  Reads an entire binary file (used for recovery/snapshots).
+  Bypasses GenServer if handle is cached.
+  """
+  def read_bin(shard_id, path) do
+    table = :"fd_pool_#{shard_id}"
+
+    case :ets.lookup(table, {:lookup, path}) do
+      [{_, fd, old_ts}] ->
+        GenServer.cast(via(shard_id), {:touch, path, fd, old_ts})
+        case :file.position(fd, :eof) do
+          {:ok, size} -> :file.pread(fd, 0, size)
+          error -> error
+        end
+      [] ->
+        GenServer.call(via(shard_id), {:read_bin, path})
+    end
+  end
 
   def close_fd(shard_id, path), do: GenServer.call(via(shard_id), {:close_force, path})
 
   def atomic_snapshot(shard_id, path, data), do: GenServer.cast(via(shard_id), {:atomic_snapshot, path, data})
 
-  # --- Server Callbacks ---
+  # --- Server Callbacks (Serialization & State Management) ---
 
   def init(shard_id) do
     table = :"fd_pool_#{shard_id}"
     if :ets.info(table) == :undefined do
+      # ordered_set allows O(1) eviction via :ets.first
       :ets.new(table, [:named_table, :public, :ordered_set, {:read_concurrency, true}])
     end
     {:ok, %{shard: shard_id, table: table}}
@@ -65,8 +102,7 @@ defmodule Queue.FDPoolShard do
     tmp_path = "#{final_path}.tmp"
     bak_path = "#{final_path}.bak"
 
-    # Close any open read-only FD for this path before renaming
-    # This prevents "file in use" errors during the rename
+    # Close any open read-only FD for this path before renaming to prevent locking issues
     handle_call({:close_force, final_path}, nil, state)
 
     case :file.open(tmp_path, [:write, :raw, :binary]) do
@@ -86,17 +122,19 @@ defmodule Queue.FDPoolShard do
   def handle_cast({:touch, path, fd, old_ts}, state) do
     table = state.table
     now = :erlang.monotonic_time(:nanosecond)
+    # Update the LRU index: Delete old timestamp, insert new one
     :ets.delete(table, {:evict, old_ts, path})
     :ets.insert(table, [{{:lookup, path}, fd, now}, {{:evict, now, path}, true}])
     {:noreply, state}
   end
 
-  # --- Private Helpers ---
+  # --- Internal Logic ---
 
   defp get_internal_fd(path, state) do
     table = state.table
     case :ets.lookup(table, {:lookup, path}) do
       [{_, fd, old_ts}] ->
+        # Still triggers a touch cast to maintain LRU order
         GenServer.cast(self(), {:touch, path, fd, old_ts})
         {:ok, fd}
       [] ->
@@ -112,10 +150,11 @@ defmodule Queue.FDPoolShard do
   end
 
   defp evict_if_needed(table) do
+    # Two keys per FD (lookup + evict), so we check against @max_read_fds * 2
     current_size = :ets.info(table, :size) || 0
     if div(current_size, 2) >= @max_read_fds do
-      first_key = :ets.first(table)
-      case first_key do
+      # :ordered_set ensures the first key is the smallest (oldest) timestamp
+      case :ets.first(table) do
         {:evict, ts, path} ->
           case :ets.lookup(table, {:lookup, path}) do
             [{_, fd, ^ts}] ->
@@ -124,10 +163,12 @@ defmodule Queue.FDPoolShard do
               :ets.delete(table, {:evict, ts, path})
               evict_if_needed(table)
             _ ->
-              :ets.delete(table, first_key)
+              :ets.delete(table, {:evict, ts, path})
               evict_if_needed(table)
           end
-        {:lookup, _path} -> find_and_evict_oldest(table, first_key)
+        {:lookup, _path} ->
+          # Skip lookups to find the next eviction candidate
+          find_and_evict_oldest(table, :ets.next(table, :ets.first(table)))
         _ -> :ok
       end
     else

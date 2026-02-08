@@ -13,8 +13,8 @@ defmodule Queue.QueueLogImpl do
   @num_shards 64
   @header_size 21
   @flush_interval 60_000
-  @max_messages_per_seg 10
-  @user_stride 2
+  @max_messages_per_seg 1_000_000
+  @user_stride 1_000
   @max_buffer_per_shard 10_000_000
 
   @checkpoints_prefix :bimip_segment_checkpoints_
@@ -24,7 +24,7 @@ defmodule Queue.QueueLogImpl do
   @log_buffer_prefix :"bimip_buf_"
   @stable_limit 50_000
   @flush_state :flush_state
-  @retention_seconds 60 * 60 * 24 * 7
+  @retention_seconds 60 * 60 * 24 * 1
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -573,41 +573,61 @@ defp rotate_segment(state) do
     Queue.Replicator.push_manifest(shard, manifest_data)
   end
 
-  defp read_from_disk(state, base, pos) do
-    case Path.wildcard(Path.join(state.shard_dir, "#{state.shard}_#{base}_*.log")) do
-      [path | _] ->
-        # 1. Read the fixed-size header
-        case Queue.FDPoolShard.pread(state.shard, path, pos, @header_size) do
-          {:ok, <<0xEE, size::32, stored_crc::32, ulen::16, dlen::16, _ts::64>>} ->
+defp read_from_disk(state, base, pos) do
+    # 🚀 PATH OPTIMIZATION:
+    # Construct path directly to avoid expensive directory scanning (wildcards).
+    ts = if base == state.active_base do
+      state.active_ts
+    else
+      # Look for the timestamp in the manifest.expired map.
+      # Note: Ensure your manifest keys are strings if they come from JSON/External sources.
+      Map.get(state.manifest.expired, "#{base}")
+    end
 
-            # 2. Read the variable-length body
-            # (u_bin + d_bin + p(32) + off(64) + body) = ulen + dlen + 12 + size
-            total_body_size = ulen + dlen + 12 + size
+    path = if ts do
+      Path.join(state.shard_dir, "#{state.shard}_#{base}_#{ts}.log")
+    else
+      # Emergency Fallback: If for some reason the TS isn't in the manifest,
+      # we do one wildcard search to find the file.
+      case Path.wildcard(Path.join(state.shard_dir, "#{state.shard}_#{base}_*.log")) do
+        [p | _] -> p
+        [] -> nil
+      end
+    end
 
-            case Queue.FDPoolShard.pread(state.shard, path, pos + @header_size, total_body_size) do
-              {:ok, <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary-size(size)>>} ->
+    if path do
+      # 1. Read the fixed-size header
+      case Queue.FDPoolShard.pread(state.shard, path, pos, @header_size) do
+        {:ok, <<0xEE, size::32, stored_crc::32, ulen::16, dlen::16, _ts::64>>} ->
 
-                # 🚀 THE FIX: CRC Validation
-                # We only CRC the 'body' (the actual payload) as per your 'encode_packet' logic
-                if :erlang.crc32(body) == stored_crc do
-                  try do
-                    decoded_data = :erlang.binary_to_term(body, [:safe])
-                    new_pos = pos + @header_size + total_body_size
-                    {:ok, %{u: u, writer_device: d, p: p, off: off, data: decoded_data}, new_pos}
-                  rescue
-                    _ -> {:error, :term_decode_failed}
-                  end
-                else
-                  Logger.error("💾 CRC Mismatch at shard #{state.shard}, pos #{pos}. Data corrupted.")
-                  {:error, :corrupted_record}
+          # 2. Read the variable-length body
+          # (u_bin + d_bin + p(32) + off(64) + body) = ulen + dlen + 12 + size
+          total_body_size = ulen + dlen + 12 + size
+
+          case Queue.FDPoolShard.pread(state.shard, path, pos + @header_size, total_body_size) do
+            {:ok, <<u::binary-size(ulen), d::binary-size(dlen), p::32, off::64, body::binary-size(size)>>} ->
+
+              # 🚀 CRC Validation
+              if :erlang.crc32(body) == stored_crc do
+                try do
+                  decoded_data = :erlang.binary_to_term(body, [:safe])
+                  new_pos = pos + @header_size + total_body_size
+                  {:ok, %{u: u, writer_device: d, p: p, off: off, data: decoded_data}, new_pos}
+                rescue
+                  _ -> {:error, :term_decode_failed}
                 end
+              else
+                Logger.error("💾 CRC Mismatch at shard #{state.shard}, pos #{pos}. Data corrupted.")
+                {:error, :corrupted_record}
+              end
 
-              _ -> {:error, :body_read_failed}
-            end
-          :eof -> {:error, :eof}
-          _ -> {:error, :header_read_failed}
-        end
-      [] -> {:error, :file_not_found}
+            _ -> {:error, :body_read_failed}
+          end
+        :eof -> {:error, :eof}
+        _ -> {:error, :header_read_failed}
+      end
+    else
+      {:error, :file_not_found}
     end
   end
 
