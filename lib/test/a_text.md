@@ -77,10 +77,11 @@ Queue.QueueLogImpl.system_recovery("user57@domain.com", 1)
 Queue.QueueLogImpl.system_recovery("user1@domain.com", 1)
 Queue.QueueLogImpl.system_recovery("user30@domain.com", 1)
 Queue.QueueLogImpl.acknowledge("user57@domain.com", 2, 5)
+
 {:ok, messages} = Queue.QueueLogImpl.fetch_batch("user57@domain.com", 1, 2, 20)
  {:ok, messages} = Queue.QueueLogImpl.fetch_batch("user1@domain.com", "partition", "device_id", 20)
 
-
+{:ok, messages} = Queue.QueueLogImpl.fetch_batch("user57@domain.com", 1, 2, 20)
 :ets.tab2list(:device_bookmarks_cache_37)
 :ets.tab2list(:bimip_user_offsets_37)
 

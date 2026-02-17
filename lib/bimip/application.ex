@@ -22,56 +22,64 @@ defmodule Bimip.Application do
 
     :mnesia.start()
     :mnesia.wait_for_tables([], 5_000)
-
     create_all_bimip_tables()
 
     # -----------------------
-    # TCP / HTTP
+    # COWBOY CONNECTIONS
     # -----------------------
-    tcp_connection =
+    connections_children = []
+
+    # TLS server
+    connections_children =
       if Connections.secure_tls?() do
-        %{
+        tls_child = %{
           id: :https,
           start:
             {:cowboy, :start_tls,
              [
                :https,
                [
-                 port: Connections.port(),
+                 port: Connections.tls_port(),
                  certfile: Connections.cert_file(),
                  keyfile: Connections.key_file()
                ],
                %{env: %{dispatch: dispatch()}}
              ]}
         }
+
+        [tls_child | connections_children]
       else
-        %{
-          id: :http,
-          start:
-            {:cowboy, :start_clear,
-             [
-               :http,
-               [port: Connections.port()],
-               %{env: %{dispatch: dispatch()}}
-             ]}
-        }
+        connections_children
       end
+
+    # Non-TLS server
+    non_tls_child = %{
+      id: :http,
+      start:
+        {:cowboy, :start_clear,
+         [
+           :http,
+           [port: Connections.clear_port()],
+           %{env: %{dispatch: dispatch()}}
+         ]}
+    }
+
+    connections_children = [non_tls_child | connections_children]
 
     # -----------------------
     # SUPERVISION TREE
     # -----------------------
-   children = [
-    tcp_connection,
-    {Phoenix.PubSub, name: Bimip.PubSub},
-    {Redix, name: :redix},
-    {Horde.Registry, name: DeviceIdRegistry, keys: :unique, members: :auto},
-    {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},
-    {Supervisor.Server, []},
-    {Supervisor.Client, []},
-    {Queue.BimipSupervisor, []},
-    {Task.Supervisor, name: Chat.TaskSupervisor}
-  ]
-
+    children = connections_children ++
+      [
+        {Phoenix.PubSub, name: Bimip.PubSub},
+        {Redix, name: :redix},
+        {Horde.Registry, name: DeviceIdRegistry, keys: :unique, members: :auto},
+        {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},
+        {Supervisor.Server, []},
+        {Supervisor.Client, []},
+        {Queue.BimipSupervisor, []},
+        {Task.Supervisor, name: Chat.TaskSupervisor}
+      ]
 
     opts = [strategy: :one_for_one, name: Bimip.Supervisor]
     Supervisor.start_link(children, opts)
