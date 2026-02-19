@@ -1,37 +1,47 @@
 # ---------- Build Stage ----------
-FROM hexpm/elixir:1.18.4-erlang-27.7-alpine AS build
+FROM elixir:1.18.4-alpine AS build
 
-RUN apk add --no-cache build-base git bash
+# Install build dependencies
+RUN apk add --no-cache git build-base curl bash npm
 
+# Set working directory
 WORKDIR /app
 
-# Copy mix files and get deps
+# Copy project files
 COPY mix.exs mix.lock ./
-RUN mix local.hex --force && mix local.rebar --force
-RUN mix deps.get --only prod
+COPY config config
+COPY lib lib
+COPY priv priv
 
-# Copy the rest of the app
-COPY . .
+# Install Hex, Rebar, dependencies
+RUN mix local.hex --force && \
+    mix local.rebar --force && \
+    mix deps.get --only prod && \
+    mix deps.compile
 
-# Compile and build escript
+# Compile the project and build release
 RUN MIX_ENV=prod mix compile
-RUN MIX_ENV=prod mix escript.build
+RUN MIX_ENV=prod mix release
 
 # ---------- Runtime Stage ----------
-FROM alpine:3.18
+FROM alpine:3.18 AS app
 
-RUN apk add --no-cache bash openssl ncurses-libs
+# Install runtime dependencies including C++ libraries for Beam
+RUN apk add --no-cache \
+    bash \
+    openssl \
+    ncurses-libs \
+    libgcc \
+    libstdc++
 
 WORKDIR /app
 
-# Copy compiled escript
-COPY --from=build /app/bimips .
+# Copy release from build stage
+COPY --from=build /app/_build/prod/rel/bimips ./
 
-# Copy runtime config
-COPY --from=build /app/config ./config
-COPY --from=build /app/priv ./priv
-
+# Expose application ports
 EXPOSE 4000 4001
 
-ENTRYPOINT ["./bimips"]
+# Start the release
+ENTRYPOINT ["bin/bimips"]
 CMD ["start"]

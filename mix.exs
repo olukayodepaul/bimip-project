@@ -10,7 +10,13 @@ defmodule Bimip.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      escript: [main_module: Bimip.CLI]
+      releases: [
+        bimips: [
+          include_executables_for: [:unix],  # makes `bin/bimips` available
+          applications: [bimips: :permanent],
+          steps: [:assemble, :tar]          # optional: creates a tarball for distribution
+        ]
+      ]
     ]
   end
 

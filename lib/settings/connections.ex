@@ -1,19 +1,60 @@
 defmodule Settings.Connections do
-    #settings
-    @moduledoc """
-    Provides access to connection settings for Bimip.
-    """
+  @moduledoc """
+  Helper module to read connections config at runtime.
+  """
 
-    @config :bimip
+  # TLS enabled?
+  def secure_tls? do
+    System.get_env("BIMIP_SECURE_TLS")
+    |> parse_bool(Application.get_env(:bimips, :connections, [])[:secure_tls] || false)
+  end
 
-    def cert_file, do: get(:connections) |> Keyword.get(:cert_file, "priv/cert.pem")
-    def key_file, do: get(:connections) |> Keyword.get(:key_file, "priv/key.pem")
-    def port, do: get(:connections) |> Keyword.get(:port, 4000)
-    def secure_tls?, do: get(:connections) |> Keyword.get(:secure_tls, false)
-    def resource_path, do: get(:connections) |> Keyword.get(:resource_path, "/")
-    def idle_timeout, do: get(:connections) |> Keyword.get(:idle_timeout, 60000)
+  # TLS port
+  def tls_port do
+    System.get_env("BIMIP_TLS_PORT")
+    |> parse_int(Application.get_env(:bimips, :connections, [])[:tls_port] || 4001)
+  end
 
-    
+  # Non-TLS port
+  def clear_port do
+    System.get_env("BIMIP_CLEAR_PORT")
+    |> parse_int(Application.get_env(:bimips, :connections, [])[:clear_port] || 4000)
+  end
 
-    defp get(key), do: Application.get_env(@config, key, [])
+  # Cert file path
+  def cert_file do
+    System.get_env("BIMIP_CERT_FILE") ||
+      Application.get_env(:bimips, :connections, [])[:cert_file] ||
+      "priv/keys/cert.pem"
+  end
+
+  # Key file path
+  def key_file do
+    System.get_env("BIMIP_KEY_FILE") ||
+      Application.get_env(:bimips, :connections, [])[:key_file] ||
+      "priv/keys/key.pem"
+  end
+
+  # Resource path
+  def resource_path do
+    System.get_env("BIMIP_RESOURCE_PATH") ||
+      Application.get_env(:bimips, :connections, [])[:resource_path] ||
+      "/application/development"
+  end
+
+  # Idle timeout
+  def idle_timeout do
+    System.get_env("BIMIP_IDLE_TIMEOUT")
+    |> parse_int(Application.get_env(:bimips, :connections, [])[:idle_timeout] || 60_000)
+  end
+
+  # -----------------------
+  # Private helpers
+  # -----------------------
+  defp parse_bool(nil, default), do: default
+  defp parse_bool(val, _default) when is_binary(val), do: String.downcase(val) == "true"
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(val, _default) when is_binary(val), do: String.to_integer(val)
+  defp parse_int(val, _default) when is_integer(val), do: val
 end

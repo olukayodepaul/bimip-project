@@ -57,20 +57,19 @@ defmodule Bimip.Message do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :peer_uid, 1, type: :string, json_name: "peerUid"
+  field :id, 1, type: :string
   field :from, 2, type: Bimip.Identity
   field :to, 3, type: Bimip.Identity
-  field :timestamp, 4, type: :int64
-  field :payload, 5, type: :bytes
-  field :encryption_type, 6, type: :string, json_name: "encryptionType"
-  field :encrypted, 7, type: :string
-  field :signature, 8, type: :string
-  field :type, 9, proto3_optional: true, type: :int32
-  field :transmission_mode, 10, proto3_optional: true, type: :int32, json_name: "transmissionMode"
-  field :reply_to, 11, proto3_optional: true, type: :string, json_name: "replyTo"
-  field :offset, 12, proto3_optional: true, type: :int64
-  field :payload_context, 13, type: :int32, json_name: "payloadContext"
-  field :shard_offset, 14, proto3_optional: true, type: :int64, json_name: "shardOffset"
+  field :offset, 4, proto3_optional: true, type: :int64
+  field :timestamp, 5, type: :int64
+  field :payload, 6, type: :bytes
+  field :delivery_type, 7, proto3_optional: true, type: :int32, json_name: "deliveryType"
+  field :participant_role, 8, proto3_optional: true, type: :int32, json_name: "participantRole"
+  field :content_type, 9, proto3_optional: true, type: :int32, json_name: "contentType"
+  field :ephemeral_public_key, 10, type: :bytes, json_name: "ephemeralPublicKey"
+  field :counter, 11, type: :uint32
+  field :mac, 12, type: :bytes
+  field :message_type, 13, type: :int32, json_name: "messageType"
 end
 
 defmodule Bimip.MessageAckSignal do
