@@ -78,8 +78,6 @@ defmodule Bimip.SignalServer do
               }
           end)
 
-          IO.inspect(new_state)
-
         {:noreply, new_state}
 
       {:error, reason} ->
@@ -98,36 +96,9 @@ defmodule Bimip.SignalServer do
 
 
   @impl true
-  def handle_cast({:route_message, %Chat.MessageStruct{} = payload},  state) do
-    user = payload.eid
-    device_id = payload.device_id
-    message_id = payload.peer_uid
-    payload_context = payload.payload_context
-    reply_to = payload.to.eid
-    uupid = payload.uupid
-    type = 1
-
-    case Queue.MessageTracker.check_and_insert(user, device_id, message_id) do
-      {:ok, :inserted} ->
-        queue = Queue.QueueLogImpl.write(payload_context, user, reply_to, uupid, type, payload_context, payload, message_id)
-        case queue do
-          {:ok, offset} ->
-            now = DateTime.utc_now()
-            Chat.SendMessage.send_received_ack_to_sender(message_id, user, reply_to, offset, device_id)
-            Chat.SendMessage.push_message_to_other_devices(payload, offset, :device, state.devices)
-
-            new_state = update_in(state.devices[device_id], fn
-              nil -> nil
-              device -> Map.put(device, :last_seen, now)
-            end)
-
-            {:noreply, new_state}
-          {:error, :backpressure} ->
-            {:noreply, state}
-        end
-      {:error, _reason} ->
-        {:noreply, state}
-    end
+  def handle_cast({:message, message_builder},  state) do
+    IO.inspect(message_builder)
+    {:noreply, state}
   end
 
   @impl true

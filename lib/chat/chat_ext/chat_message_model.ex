@@ -1,24 +1,10 @@
 defmodule Chat.Message.Model do
 
-  def builder({%Bimip.Message{} = message, uupid, eid, device_id}) do
-    %Chat.MessageStruct{
-      peer_uid: message.peer_uid,
-      from: %Chat.EntityStruct{
-        eid: eid,
-        connection_resource_id: device_id
-      },
-      to: %Chat.EntityStruct{
-        eid: message.to.eid
-      },
-      timestamp: message.timestamp,
-      payload: message.payload,
-      payload_context: message.payload_context,
-      encryption_type: message.encryption_type,
-      encrypted: message.encrypted,
-      signature: message.signature,
-      device_id: device_id, #real device id
-      uupid: uupid, # number
-      eid: eid
+  def builder({%Bimip.Message{} = message, device_id, uupid}) do
+    %{
+      message: message,
+      device_id: device_id,
+      uupid: uupid
     }
   end
 

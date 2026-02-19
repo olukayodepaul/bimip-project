@@ -1,7 +1,11 @@
 defmodule Settings.Connections do
   @moduledoc """
-  Helper module to read connections config at runtime.
+  Helper module to read runtime config for connections and JWT.
   """
+
+  # -----------------------
+  # Connection Settings
+  # -----------------------
 
   # TLS enabled?
   def secure_tls? do
@@ -49,11 +53,28 @@ defmodule Settings.Connections do
   end
 
   # -----------------------
+  # JWT Settings
+  # -----------------------
+
+  # Public key path
+  def jwt_public_key do
+    System.get_env("BIMIP_PUBLIC_KEY") ||
+      Application.get_env(:bimips, :jwt, [])[:public_key] ||
+      "./priv/keys/public.pem"
+  end
+
+  # Signing algorithm
+  def jwt_signing_algorithm do
+    System.get_env("BIMIP_SIGNING_ALGORITHM") ||
+      Application.get_env(:bimips, :jwt, [])[:signing_algorithm] ||
+      "RS256"
+  end
+
+  # -----------------------
   # Private helpers
   # -----------------------
   defp parse_bool(nil, default), do: default
   defp parse_bool(val, _default) when is_binary(val), do: String.downcase(val) == "true"
-
   defp parse_int(nil, default), do: default
   defp parse_int(val, _default) when is_binary(val), do: String.to_integer(val)
   defp parse_int(val, _default) when is_integer(val), do: val

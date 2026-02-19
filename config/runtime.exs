@@ -13,7 +13,8 @@ config :bimips, :connections,
   idle_timeout: String.to_integer(System.get_env("BIMIP_IDLE_TIMEOUT") || "60000")
 
 # -----------------------
-# JWT (override runtime paths if needed)
+# JWT
 # -----------------------
 config :bimips, :jwt,
-  public_key_path: System.get_env("BIMIP_PUBLIC_KEY") || "priv/keys/public.pem"
+  public_key: System.get_env("BIMIP_PUBLIC_KEY") || "priv/keys/public.pem",
+  signing_algorithm: System.get_env("BIMIP_SIGNING_ALGORITHM") || "RS256"

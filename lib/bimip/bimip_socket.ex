@@ -108,7 +108,7 @@ defmodule Bimip.Socket do
   end
 
   def handle_signal(state, data) do
-    case Connect.handle_inbouce_signal({:device_id, state.device_id, :signal_to_client, data}) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :signal_to_client, data}) do
       :ok ->
         {:ok, state}
       :error ->
@@ -162,7 +162,7 @@ defmodule Bimip.Socket do
   end
 
   defp handle_message(state, data) do
-    case Connect.handle_inbouce_signal({:device_id, state.device_id, :chat_message, data}) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :message, data}) do
       :ok ->
         {:ok, state}
       :error ->

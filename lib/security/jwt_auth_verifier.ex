@@ -4,6 +4,8 @@ defmodule Bimip.Auth.TokenVerifier do
   require Logger
   alias Settings.Jwt
 
+  alias Settings.Connections
+
   # -------------------------------
   # Base Claims
   # -------------------------------
@@ -20,7 +22,7 @@ defmodule Bimip.Auth.TokenVerifier do
   # Load Public Key at Runtime
   # -------------------------------
   defp load_public_key do
-    Jwt.public_key_path()
+    Connections.jwt_public_key()
     |> File.read!()
     |> JOSE.JWK.from_pem()
     |> JOSE.JWK.to_map()
@@ -31,7 +33,7 @@ defmodule Bimip.Auth.TokenVerifier do
   # JWT Signer (runtime-safe)
   # -------------------------------
   def verifier do
-    Joken.Signer.create(Jwt.signing_algorithm(), load_public_key())
+    Joken.Signer.create(Connections.jwt_signing_algorithm(), load_public_key())
   end
 
   # -------------------------------

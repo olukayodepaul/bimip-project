@@ -171,7 +171,7 @@ defmodule Route.Connect do
   # {:eid, eid, map, payload}
   # {:device_id, device_id, map, payload}
   # map = :where_to_map
-  def handle_inbouce_signal({identifier, registry_id, resouce_finder, payload}) do
+  def client_server_inbound({identifier, registry_id, resouce_finder, payload}) do
     case identifier do
       :eid ->
         consolidated_route({@eid_registry, registry_id, resouce_finder, payload})

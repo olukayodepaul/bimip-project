@@ -77,15 +77,17 @@ defmodule Bimip.Validators.MessageValidator do
   defp validate_from_to_not_same(_, _), do: :ok
 
   # ---------------- Replay Window ----------------
-  defp validate_timestamp(ts) when is_integer(ts) and ts > 0 do
+  defp validate_timestamp(timestamp) when is_integer(timestamp) do
     now = System.system_time(:millisecond)
+    max_age = 30 * 60 * 1000  # 30 minutes
 
-    if abs(now - ts) <= @replay_window_ms do
-      :ok
+    if now - timestamp > max_age do
+      error(@status_out_of_order, "timestamp expired (older than 30 minutes)", "timestamp")
     else
-      error(@status_out_of_order, "timestamp outside replay window", "timestamp")
+      :ok
     end
   end
+
 
   defp validate_timestamp(_),
     do: error(@status_bad_request, "timestamp must be positive int64", "timestamp")

@@ -2,11 +2,7 @@ defmodule ThrowProtocolErrorSchema do
 
   @route_id 11
 
-  def build(%{
-    route_id: route_id,
-    details: details,
-    timestamp: timestamp
-  }) do
+  def build(route_id, details, timestamp) do
 
     protocol_error = %Bimip.ProtocolError{
       route_id: route_id,
