@@ -40,35 +40,10 @@ defmodule ThrowAwarenessVisibilitySchema do
     }
 
     %MessageScheme{
-      route: @route,
+      route_id: @route,
       payload: {:awareness_visibility, msg}
     }
     |> MessageScheme.encode()
   end
 
-  # ---------------- ERROR ----------------
-  @doc """
-  Builds an error response for a failed AwarenessVisibility update.
-
-  Parameters:
-    - id: Request ID to echo back for reconciliation
-    - from_eid: User's EID
-    - from_device_id: Device connection resource ID
-    - description: Error description
-  """
-  def error(id, from_eid, from_device_id, description) do
-    msg = %AwarenessVisibility{
-      id: id,
-      from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
-      type: 3, # ERROR
-      timestamp: System.system_time(:millisecond),
-      details: description
-    }
-
-    %MessageScheme{
-      route: @route,
-      payload: {:awareness_visibility, msg}
-    }
-    |> MessageScheme.encode()
-  end
 end

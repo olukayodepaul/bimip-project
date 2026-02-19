@@ -17,7 +17,7 @@ defmodule ThrowLogouResponseSchema do
     }
 
     %Bimip.MessageScheme{
-      route: 14,
+      route_id: 14,
       payload: {:logout, logout}
     }
     |> Bimip.MessageScheme.encode()

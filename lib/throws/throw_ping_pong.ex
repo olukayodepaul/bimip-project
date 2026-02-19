@@ -23,25 +23,7 @@ defmodule ThrowPingPongSchema do
     }
 
     %MessageScheme{
-      route: 3,
-      payload: {:ping_pong, ping_pong}
-    }
-    |> MessageScheme.encode()
-  end
-
-
-  # Inline error response
-  def error(from_eid, from_device_id, id, description) do
-    ping_pong = %PingPong{
-      id: id,
-      from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
-      type: 3, # ERROR
-      timestamp: System.system_time(:millisecond),
-      details: description
-    }
-
-    %MessageScheme{
-      route: 3,
+      route_id: 3,
       payload: {:ping_pong, ping_pong}
     }
     |> MessageScheme.encode()

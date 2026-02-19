@@ -64,27 +64,23 @@ defmodule Bimip.Message do
   field :timestamp, 5, type: :int64
   field :payload, 6, type: :bytes
   field :delivery_type, 7, proto3_optional: true, type: :int32, json_name: "deliveryType"
-  field :participant_role, 8, proto3_optional: true, type: :int32, json_name: "participantRole"
-  field :content_type, 9, proto3_optional: true, type: :int32, json_name: "contentType"
+  field :participant_role, 8, type: :int32, json_name: "participantRole"
+  field :content_type, 9, type: :int32, json_name: "contentType"
   field :ephemeral_public_key, 10, type: :bytes, json_name: "ephemeralPublicKey"
-  field :counter, 11, type: :uint32
-  field :mac, 12, type: :bytes
-  field :message_type, 13, type: :int32, json_name: "messageType"
+  field :mac, 11, type: :bytes
+  field :message_type, 12, type: :int32, json_name: "messageType"
 end
 
-defmodule Bimip.MessageAckSignal do
+defmodule Bimip.MessageDeliveryReceipts do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :to, 1, type: Bimip.Identity
+  field :id, 1, type: :string
   field :from, 2, type: Bimip.Identity
-  field :peer_uid, 3, type: :string, json_name: "peerUid"
-  field :method, 4, type: :int32
+  field :to, 3, type: Bimip.Identity
+  field :offset, 4, type: :int64
   field :timestamp, 5, type: :int64
-  field :status_code, 6, type: :int32, json_name: "statusCode"
-  field :reply_to, 7, type: :string, json_name: "replyTo"
-  field :offset, 8, type: :int64
 end
 
 defmodule Bimip.Signal do
@@ -155,15 +151,14 @@ defmodule Bimip.PushNotification do
   field :payload, 6, type: :bytes
 end
 
-defmodule Bimip.ErrorMessage do
+defmodule Bimip.ProtocolError do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :code, 1, type: :int32
-  field :error_origin, 2, type: :int32, json_name: "errorOrigin"
-  field :details, 3, type: :string
-  field :timestamp, 4, type: :int64
+  field :route_id, 1, type: :int32, json_name: "routeId"
+  field :details, 2, type: :string
+  field :timestamp, 3, type: :int64
 end
 
 defmodule Bimip.PingPong do
@@ -248,7 +243,7 @@ defmodule Bimip.Body do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :route, 1, type: :uint32
+  field :route_id, 1, type: :int32, json_name: "routeId"
   field :messages, 2, repeated: true, type: Bimip.Message
   field :timestamp, 3, type: :int64
 end
@@ -260,7 +255,7 @@ defmodule Bimip.MessageScheme do
 
   oneof :payload, 0
 
-  field :route, 1, type: :int64
+  field :route_id, 1, type: :int64, json_name: "routeId"
   field :awareness, 2, type: Bimip.Awareness, oneof: 0
   field :ping_pong, 3, type: Bimip.PingPong, json_name: "pingPong", oneof: 0
 
@@ -280,11 +275,11 @@ defmodule Bimip.MessageScheme do
 
   field :location_stream, 9, type: Bimip.LocationStream, json_name: "locationStream", oneof: 0
   field :body, 10, type: Bimip.Body, oneof: 0
-  field :error, 11, type: Bimip.ErrorMessage, oneof: 0
+  field :protocol_error, 11, type: Bimip.ProtocolError, json_name: "protocolError", oneof: 0
   field :logout, 12, type: Bimip.Logout, oneof: 0
 
-  field :message_ack_signal, 13,
-    type: Bimip.MessageAckSignal,
-    json_name: "messageAckSignal",
+  field :message_delivery_receipts, 13,
+    type: Bimip.MessageDeliveryReceipts,
+    json_name: "messageDeliveryReceipts",
     oneof: 0
 end

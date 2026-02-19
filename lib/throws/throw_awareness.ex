@@ -34,33 +34,10 @@ defmodule ThrowAwarenessSchema do
     }
 
     %Bimip.MessageScheme{
-      route: @route,
+      route_id: @route,
       payload: {:awareness, awareness}
     }
     |> Bimip.MessageScheme.encode()
   end
 
-  # ------------------------------------------------------------------------
-  # ERROR STANZA
-  # ------------------------------------------------------------------------
-  def error(eid, device_id, description) do
-    awareness = %Bimip.Awareness{
-      from: %Bimip.Identity{eid: eid, connection_resource_id: device_id},
-      to: %Bimip.Identity{eid: eid, connection_resource_id: device_id},
-      type: @type_error,
-      status: 0,
-      location_sharing: 2,
-      latitude: 0.0,
-      longitude: 0.0,
-      ttl: 0,
-      details: description,
-      timestamp: System.system_time(:millisecond)
-    }
-
-    %Bimip.MessageScheme{
-      route: @route,
-      payload: {:awareness, awareness}
-    }
-    |> Bimip.MessageScheme.encode()
-  end
 end

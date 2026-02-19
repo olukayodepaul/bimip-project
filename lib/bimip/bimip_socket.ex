@@ -194,7 +194,7 @@ defmodule Bimip.Socket do
   # -----------------------
   defp safe_decode_route(data) do
     try do
-      with %Bimip.MessageScheme{route: route} <- Bimip.MessageScheme.decode(data) do
+      with %Bimip.MessageScheme{route_id: route} <- Bimip.MessageScheme.decode(data) do
         {:ok, route}
       else
         _ -> {:error, :invalid_route}

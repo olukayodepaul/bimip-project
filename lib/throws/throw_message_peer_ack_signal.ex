@@ -1,30 +1,26 @@
-defmodule ThrowMessagePeerAckSignalSchema do
+defmodule ThrowMessageDeliveryReceiptsSchema do
 
-  @method 2
-  @status_code 200
+  @route_id 13
 
   def build(%{
-    offset: offset,
+    id: id,
     from: from,
     to: to,
-    peer_uid: peer_uid,
-    reply_to: reply_to
+    offset: offset,
+    timestamp: timestamp
   }) do
 
-    message_ack_signal = %Bimip.MessageAckSignal{
-      offset: offset,
-      peer_uid: peer_uid,
+    message_delivery_receipts = %Bimip.MessageDeliveryReceipts{
+       id: id,
       from: from,
       to: to,
-      method: @method,
-      timestamp: Until.UniPosTime.uni_pos_time(),
-      status_code: @status_code,
-      reply_to: reply_to
+      offset: offset,
+      timestamp: timestamp
     }
 
     %Bimip.MessageScheme{
-      route: 13,
-      payload: {:message_ack_signal, message_ack_signal}
+      route_id: @route_id,
+      payload: {:message_delivery_receipts, message_delivery_receipts}
     }
     |> Bimip.MessageScheme.encode()
   end

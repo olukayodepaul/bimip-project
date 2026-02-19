@@ -7,7 +7,6 @@ defmodule Bimip.Validators.MessageValidator do
   - Replay window timestamp validation
   - Enum constraints
   - Payload size limits
-  - Monotonic counter hook
   """
 
   alias Bimip.Message
@@ -38,10 +37,8 @@ defmodule Bimip.Validators.MessageValidator do
          :ok <- validate_participant_role(msg.participant_role),
          :ok <- validate_optional_int32(msg.delivery_type, "delivery_type"),
          :ok <- validate_binary_required(msg.ephemeral_public_key, "ephemeral_public_key"),
-         :ok <- validate_uint32(msg.counter, "counter"),
          :ok <- validate_binary_required(msg.mac, "mac"),
-         :ok <- validate_required_int32(msg.message_type, "message_type"),
-         :ok <- validate_counter_monotonic(msg) do
+         :ok <- validate_required_int32(msg.message_type, "message_type") do
       :ok
     end
   end
@@ -144,28 +141,12 @@ defmodule Bimip.Validators.MessageValidator do
   defp validate_required_int32(_, field),
     do: error(@status_bad_request, "#{field} must be int32", field)
 
-  # ---------------- uint32 ----------------
-  defp validate_uint32(val, _) when is_integer(val) and val >= 0,
-    do: :ok
-
-  defp validate_uint32(_, field),
-    do: error(@status_bad_request, "#{field} must be uint32 (>= 0)", field)
-
   # ---------------- Required Binary ----------------
   defp validate_binary_required(val, _) when is_binary(val) and byte_size(val) > 0,
     do: :ok
 
   defp validate_binary_required(_, field),
     do: error(@status_invalid_encrypt, "#{field} must be non-empty bytes", field)
-
-  # ---------------- Counter Monotonic Hook ----------------
-  # This is a hook placeholder. You plug ETS/DB check here.
-  defp validate_counter_monotonic(%Message{from: %Identity{eid: eid}, counter: counter}) do
-    case Bimip.CounterStore.next_valid?(eid, counter) do
-      true -> :ok
-      false -> error(@status_out_of_order, "counter not monotonic", "counter")
-    end
-  end
 
   # ---------------- Error Helper ----------------
   defp error(code, description, field),

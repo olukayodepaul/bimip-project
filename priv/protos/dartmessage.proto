@@ -50,22 +50,17 @@ message OWNERS {
     int32 participant_role = 8;
     int32 content_type = 9;
     bytes ephemeral_public_key = 10;
-    uint32 counter = 11;
-    bytes mac = 12;
-    int32 message_type = 13;
+    bytes mac = 11;
+    int32 message_type = 12;
   }
 
-  message MessageAckSignal {
-    Identity to = 1;
+  message MessageDeliveryReceipts {
+    string id = 1;
     Identity from = 2;
-    string peer_uid = 3;
-    int32 method = 4;
-    int64 timestamp = 5;  
-    int32 status_code = 6; 
-    string reply_to = 7;
-    int64 offset = 8;
+    Identity to = 3;
+    int64 offset = 4;
+    int64 timestamp = 5;
   }
-
 
 // when Device receive sent ack. it update the local message with 
 // signal_offset and user_offset.
@@ -140,11 +135,10 @@ message PushNotification {
 }
 
 // ---------------- ErrorMessage ----------------
-message ErrorMessage {
-  int32 code = 1;
-  int32 error_origin = 2;
-  string details = 3;
-  int64 timestamp = 4;
+message ProtocolError {
+  int32 route_id = 1;
+  string details = 2;
+  int64 timestamp = 3;
 }
 
 // ---------------- PingPong ----------------
@@ -208,14 +202,14 @@ message Logout {
 
 // ---------------- Body ----------------
 message Body {
-  uint32 route = 1;
+  int32 route_id = 1;
   repeated Message messages = 2;
   int64 timestamp = 3;
 }
 
 // ---------------- MessageScheme ----------------
 message MessageScheme {
-  int64 route = 1;
+  int64 route_id = 1;
   oneof payload {
     Awareness awareness = 2;
     PingPong ping_pong = 3;
@@ -226,12 +220,11 @@ message MessageScheme {
     PushNotification push_notification = 8;
     LocationStream location_stream = 9;
     Body body = 10;
-    ErrorMessage error = 11;
+    ProtocolError protocol_error = 11;
     Logout logout = 12;
-    MessageAckSignal message_ack_signal = 13;
+    MessageDeliveryReceipts message_delivery_receipts = 13;
   }
 }
-
   
 
 
