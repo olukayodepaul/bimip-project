@@ -32,6 +32,11 @@ defmodule Settings.Connections do
       "priv/keys/cert.pem"
   end
 
+  def stale_threshold_seconds do
+    System.get_env("BIMIP_SERVER_STALE_THRESHOLD_SECONDS") ||
+    Application.get_env(:bimips, :connections, [])[:stale_threshold_seconds] || 1
+  end
+
   # Key file path
   def key_file do
     System.get_env("BIMIP_KEY_FILE") ||

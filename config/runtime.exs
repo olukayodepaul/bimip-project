@@ -10,7 +10,8 @@ config :bimips, :connections,
   cert_file: System.get_env("BIMIP_CERT_FILE") || "priv/cert.pem",
   key_file: System.get_env("BIMIP_KEY_FILE") || "priv/key.pem",
   resource_path: System.get_env("BIMIP_RESOURCE_PATH") || "/application/development",
-  idle_timeout: String.to_integer(System.get_env("BIMIP_IDLE_TIMEOUT") || "60000")
+  idle_timeout: String.to_integer(System.get_env("BIMIP_IDLE_TIMEOUT") || "60000"),
+  stale_threshold_seconds: String.to_integer(System.get_env("BIMIP_SERVER_STALE_THRESHOLD_SECONDS") || "600")
 
 # -----------------------
 # JWT

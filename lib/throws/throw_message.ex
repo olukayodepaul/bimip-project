@@ -21,8 +21,8 @@ defmodule ThrowMessageSchema do
 
   def build_message(%{
     id: id,
-    from: from_eid,
-    to: to_eid,
+    from: from,
+    to: to,
     offset: offset,
     timestamp: timestamp,
     payload: payload,
@@ -36,8 +36,8 @@ defmodule ThrowMessageSchema do
 
     message = %Message{
       id: id,
-      from: %Identity{eid: from_eid},
-      to: %Identity{eid: to_eid},
+      from: from,
+      to: to,
       offset: offset,
       timestamp: timestamp,
       payload: payload,

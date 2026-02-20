@@ -8,24 +8,13 @@ defmodule Bimip.SignalServer do
 
   #old alias
   alias Supervisor.{Registry, Client}
-  alias Route.SignalCommunication
   alias Chat.{SendMessage, ReceivedSignal}
-  # refactoring
-
   alias Storage.DeviceStorage
-  alias Storage.Registration
   alias Bimip.Broker
-  alias Settings.ServerState
-  alias Route.AwarenessFanOut
   alias ThrowAwarenessSchema
-  alias Util.StatusMapper
-  alias BimipLog
-  alias BimipRPCClient
 
 
 
-
-  @stale_threshold_seconds ServerState.stale_threshold_seconds()
   # ----------------------
   # Start
   # ----------------------
@@ -80,6 +69,7 @@ defmodule Bimip.SignalServer do
               }
           end)
 
+        Queue.QueueLogImpl.system_recovery(eid, 1)
         {:noreply, new_state}
 
       {:error, reason} ->
@@ -97,8 +87,9 @@ defmodule Bimip.SignalServer do
   end
 
   def handle_cast({:message, message_builder}, state) do
+
     Task.Supervisor.start_child(Message.TaskSupervisor, fn ->
-      t1 = Task.async(fn -> Message.Broker.sender(message_builder) end)
+      t1 = Task.async(fn -> Message.Broker.sender(message_builder, state.devices) end)
       t2 = Task.async(fn -> Message.Broker.recv(message_builder) end)
 
       Task.await(t1)
@@ -110,10 +101,9 @@ defmodule Bimip.SignalServer do
 
   @impl true
   def handle_cast({:message_transmiter, message_builder}, state) do
-    IO.inspect(message_builder)
+    Message.Broker.push_to_devices(state.eid, 0, state.devices, message_builder)
     {:noreply, state}
   end
-
 
 
 

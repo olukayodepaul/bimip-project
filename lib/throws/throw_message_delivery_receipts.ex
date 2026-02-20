@@ -2,7 +2,7 @@ defmodule ThrowMessageDeliveryReceiptsSchema do
 
   @route_id 13
 
-  def build(id, from, to, offset, timestamp ) do
+  def build(id, from, to, offset, timestamp) do
 
     message_delivery_receipts = %Bimip.MessageDeliveryReceipts{
        id: id,
