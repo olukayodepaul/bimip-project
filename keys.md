@@ -162,3 +162,193 @@ When you assemble this for the network, your **Protobuf** message should look li
 * **Recovery:** When your server reboots, it simply does `Repo.all(from m in BimipQueue, where: m.delivered == false)` and pushes those raw binaries out. Because the **Ephemeral Key** is in the DB, the client can still decrypt perfectly.
 
 **Since this is now production-ready, would you like me to write the "Supervisor" logic in Elixir that automatically restarts the message push whenever the server comes back online?**
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##Subscribers
+Here’s a short and clear **implementation TODO doc** for you 👇
+(Aligned with your current distributed Elixir + WebSocket + subscriber architecture.)
+
+---
+
+# 📌 Subscriber Validation & Blocking – TODO
+
+## 1️⃣ Validate Subscriber Before Message Routing
+
+### Objective
+
+Ensure a client **can only send messages to users who are in their subscriber list**.
+
+### Tasks
+
+* [ ] Maintain a subscriber list per user (ETS / DB / in-memory store).
+* [ ] On every outbound message:
+
+  * Extract `from` and `to` JIDs.
+  * Validate that `to` exists in `from` subscriber list.
+* [ ] If NOT a subscriber:
+
+  * Reject message.
+  * Return proper error response (e.g., `not_authorized`).
+* [ ] Log unauthorized attempt for audit.
+
+### Expected Behavior
+
+* Message routing proceeds **only if** `to` ∈ `from_subscribers`.
+* Prevents unauthorized message delivery.
+
+---
+
+## 2️⃣ Block Subscriber Feature
+
+### Objective
+
+When a user blocks another user:
+
+* Remove them from subscriber list.
+* Prevent further communication.
+
+### Tasks
+
+* [ ] Implement `block_user(from, target)` function.
+* [ ] Remove `target` from `from` subscriber list.
+* [ ] Optionally remove `from` from `target` list (if mutual model).
+* [ ] Persist block state (DB/ETS).
+* [ ] During message validation:
+
+  * Check block list before subscriber check.
+
+### Expected Behavior
+
+* Blocked user cannot:
+
+  * Send messages.
+  * Initiate signaling.
+  * Receive routing acknowledgment.
+* Server returns `blocked` error response.
+
+---
+
+## 3️⃣ Routing-Level Enforcement (Critical)
+
+Before routing in WebSocket handler or GenServer:
+
+```elixir
+if authorized?(from, to) do
+  route_message(...)
+else
+  reply_error(...)
+end
+```
+
+Authorization Logic:
+
+* Not blocked
+* Is subscriber
+
+---
+
+## 4️⃣ Security Notes
+
+* Validation must happen **server-side only**
+* Never trust client-side validation
+* Log abuse attempts
+* Consider rate limiting repeated violations
+
+---
+
+## 5️⃣ Future Enhancement
+
+* [ ] Add “soft block” vs “hard block”
+* [ ] Add block expiration option
+* [ ] Add admin override
+* [ ] Add metrics counter for unauthorized attempts
+
+---
+
+If you want, I can also:
+
+* Help you design the ETS schema
+* Help you design the GenServer logic
+* Or help you design the distributed enforcement across BEAM nodes
+
+This is a very important feature for your signaling architecture. You’re thinking in the right direction 🔥
+
+
+
+
+
+
+
+
+
+defmodule Message.Broker do
+
+  alias Route.Connect
+  @num_shards 64
+
+  def send_message(
+    %{
+      message: %Bimip.Message{from: from_eid, to: to_eid} = message,
+      device_id: device_id,
+      uupid: uupid
+    } = message_builder
+  ) do
+
+    shard = :erlang.phash2(message.from.eid, @num_shards)
+    suffix = :crypto.strong_rand_bytes(8) |> Base.encode16()
+
+    message_id = if message.message_type == 2 do
+      "#{message.content_type}-#{message.id}-#{suffix}"
+    else
+      "#{message.content_type}-#{message.id}"
+    end
+
+    case Queue.MessageTracker.check_and_insert(shard, message.from.eid, device_id, message_id, %{message_builder: message_builder, delim: :sender}) do
+      {:ok, :inserted, sender_offset} ->
+
+        send_to_device =
+          message
+          |> Map.put(:offset, sender_offset)
+          |> Map.put(:participant_role, 2)
+          |> Map.put(:delivery_type, 1)
+
+       {:ok, receiver_offset} = to_rcv_queue( %{message_builder: message_builder, delim: :receiver})
+
+          message
+          |> Map.put(:offset, receiver_offset)
+          |> Map.put(:participant_role, 3)
+          |> Map.put(:delivery_type, 1)
+          |> then(&Connect.client_server_inbound({:eid, message.to.eid, :message_transmiter, &1}))
+
+      {:error, :already_exists, offset} ->
+        ThrowMessageDeliveryReceiptsSchema.build(message.id, to_eid, from_eid, offset, Until.UniPosTime.response_time())
+        |> then(&Connect.outbouce(device_id, &1))
+    end
+
+  end
+
+  defp to_rcv_queue(message_builder) do
+    Queue.QueueLogImpl.write(message_builder)
+  end
+
+  defp subscribers_validation(eid) do
+
+  end
+
+
+end

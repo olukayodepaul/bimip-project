@@ -108,3 +108,46 @@
       |> Chat.Message.Model.to_message_struct()
       |> IO.inspect()
   end
+
+
+
+
+
+
+
+
+
+
+user = state.eid
+    device_id = payload.from.connection_resource_id
+    message_id = payload.peer_uid
+    payload_context = payload.payload_context
+    reply_to = payload.from.eid
+    uupid = 0
+    type = 3
+
+    case Queue.MessageTracker.check_and_insert(user, device_id, message_id) do
+      {:ok, :inserted} ->
+
+        queue = Queue.QueueLogImpl.write(payload_context, user, reply_to, uupid, type, payload_context, payload, message_id)
+
+        case queue do
+        {:ok, offset} ->
+          new_payload = Chat.SendMessage.map_to_message_struct(payload)
+          Chat.SendMessage.push_message_to_other_devices(new_payload, offset, :reciever, state.devices)
+          {:noreply, state}
+        {:error, :backpressure} ->
+          {:noreply, state}
+        end
+
+      {:error, _reason} ->
+        {:noreply, state}
+    end
+
+
+
+
+
+
+
+    

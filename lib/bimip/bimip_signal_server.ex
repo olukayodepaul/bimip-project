@@ -96,9 +96,21 @@ defmodule Bimip.SignalServer do
     handle_cast({:start_device, {eid, device_id, exp, ws_pid, uupid}}, state)
   end
 
+  def handle_cast({:message, message_builder}, state) do
+    Task.Supervisor.start_child(Message.TaskSupervisor, fn ->
+      t1 = Task.async(fn -> Message.Broker.sender(message_builder) end)
+      t2 = Task.async(fn -> Message.Broker.recv(message_builder) end)
+
+      Task.await(t1)
+      Task.await(t2)
+    end)
+
+    {:noreply, state}
+  end
+
   @impl true
-  def handle_cast({:message, message_builder},  state) do
-    Message.Broker.send_message(message_builder)
+  def handle_cast({:message_transmiter, message_builder}, state) do
+    IO.inspect(message_builder)
     {:noreply, state}
   end
 
@@ -107,49 +119,6 @@ defmodule Bimip.SignalServer do
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  @impl true
-  def handle_cast({:message_transmiter, payload}, state) do
-    user = state.eid
-    device_id = payload.from.connection_resource_id
-    message_id = payload.peer_uid
-    payload_context = payload.payload_context
-    reply_to = payload.from.eid
-    uupid = 0
-    type = 3
-
-    case Queue.MessageTracker.check_and_insert(user, device_id, message_id) do
-      {:ok, :inserted} ->
-
-        queue = Queue.QueueLogImpl.write(payload_context, user, reply_to, uupid, type, payload_context, payload, message_id)
-
-        case queue do
-        {:ok, offset} ->
-          new_payload = Chat.SendMessage.map_to_message_struct(payload)
-          Chat.SendMessage.push_message_to_other_devices(new_payload, offset, :reciever, state.devices)
-          {:noreply, state}
-        {:error, :backpressure} ->
-          {:noreply, state}
-        end
-
-      {:error, _reason} ->
-        {:noreply, state}
-    end
-  end
 
 
 

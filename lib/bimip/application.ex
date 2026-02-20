@@ -64,7 +64,7 @@ defmodule Bimip.Application do
         {Supervisor.Server, []},
         {Supervisor.Client, []},
         {Queue.BimipSupervisor, []},
-        {Task.Supervisor, name: Chat.TaskSupervisor}
+        {Task.Supervisor, name: Message.TaskSupervisor}
       ]
 
     opts = [strategy: :one_for_one, name: Bimip.Supervisor]
