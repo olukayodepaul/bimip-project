@@ -380,5 +380,10 @@ defmodule Bimip.SignalClient do
     |> Connect.client_server_inbound()
   end
 
+  def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
+    send(ws_pid, {:binary, binary})
+    {:noreply, state}
+  end
+
 
 end
