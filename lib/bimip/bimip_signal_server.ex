@@ -4,6 +4,9 @@ defmodule Bimip.SignalServer do
 
 
 
+
+
+  #old alias
   alias Supervisor.{Registry, Client}
   alias Route.SignalCommunication
   alias Chat.{SendMessage, ReceivedSignal}
@@ -68,7 +71,6 @@ defmodule Bimip.SignalServer do
           update_in(state, [:devices, device_id], fn
             nil ->
               device_info
-
             existing ->
               %{
                 existing
@@ -94,12 +96,31 @@ defmodule Bimip.SignalServer do
     handle_cast({:start_device, {eid, device_id, exp, ws_pid, uupid}}, state)
   end
 
-
   @impl true
   def handle_cast({:message, message_builder},  state) do
-    IO.inspect(message_builder)
+    Message.Broker.send_message(message_builder)
     {:noreply, state}
   end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   @impl true
   def handle_cast({:message_transmiter, payload}, state) do
@@ -257,6 +278,3 @@ defmodule Bimip.SignalServer do
 
 
 end
-
-
-# Queue.QueueLogImpl.fetch_for_device("a@domain.com", 1, "aaaaa1", 1)

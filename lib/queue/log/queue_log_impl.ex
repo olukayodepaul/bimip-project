@@ -61,32 +61,34 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
-  def write(partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id, ts) do
-    shard = :erlang.phash2(recipient_uid, @num_shards)
-    buf = log_buffer(shard)
+  def write(message_builder) do
+    # partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id, ts
+    # shard = :erlang.phash2(recipient_uid, @num_shards)
+    # buf = log_buffer(shard)
 
-    if :ets.info(buf, :size) > @max_buffer_per_shard do
-      {:error, :backpressure}
-    else
-      # 🚀 FIX: Get both offsets atomically from the ShardServer
-      {offset, shard_offset} = Queue.ShardServer.get_next_offsets(shard, recipient_uid)
-      data = Queue.Persist.build(%{payload: payload}, offset , shard_offset, recipient_uid, type, payload_ctx)
+    # if :ets.info(buf, :size) > @max_buffer_per_shard do
+    #   {:error, :backpressure}
+    # else
+    #   # 🚀 FIX: Get both offsets atomically from the ShardServer
+    #   {offset, shard_offset} = Queue.ShardServer.get_next_offsets(shard, recipient_uid)
+    #   data = Queue.Persist.build(%{payload: payload}, offset , shard_offset, recipient_uid, type, payload_ctx)
 
-      record = %{
-        u: recipient_uid,
-        s: sender_uid,
-        p: partition_id,
-        off: offset,
-        mid: message_id,
-        msg_count: shard_offset, # This is now perfectly synced with 'off'
-        writer_device: to_string(device_id),
-        bin: :erlang.term_to_binary(data, [:compressed]),
-        ts: ts
-      }
+    #   record = %{
+    #     u: recipient_uid,
+    #     s: sender_uid,
+    #     p: partition_id,
+    #     off: offset,
+    #     mid: message_id,
+    #     msg_count: shard_offset, # This is now perfectly synced with 'off'
+    #     writer_device: to_string(device_id),
+    #     bin: :erlang.term_to_binary(data, [:compressed]),
+    #     ts: ts
+    #   }
 
-      :ets.insert(buf, {shard_offset, {shard, offset, record}})
-      {:ok, offset, shard_offset}
-    end
+    #   :ets.insert(buf, {shard_offset, {shard, offset, record}})
+    #   {:ok, offset}
+    # end
+    {:ok, 10}
   end
 
   def fetch_batch(user, partition_id, device_id, batch_size \\ 50) do

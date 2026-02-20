@@ -1,6 +1,4 @@
-defmodule Chat.SendMessage do
-
-  alias Route.Connect
+ alias Route.Connect
 
   @stale_threshold_seconds Settings.ServerState.stale_threshold_seconds()
   @types 2
@@ -110,5 +108,3 @@ defmodule Chat.SendMessage do
       |> Chat.Message.Model.to_message_struct()
       |> IO.inspect()
   end
-
-end
