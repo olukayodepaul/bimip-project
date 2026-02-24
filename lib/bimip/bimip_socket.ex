@@ -2,6 +2,10 @@ defmodule Bimip.Socket do
   # bimip
 
   @behaviour :cowboy_websocket
+  @compose_route_id 4
+  @message_route_id 6
+
+
   alias Bimip.Auth.TokenVerifier
   alias Util.{ConnectionsHelper, TokenRevoked}
   alias Supervisor.Server
@@ -91,9 +95,9 @@ defmodule Bimip.Socket do
     %{
       2 => &handle_awareness/2,
       3 => &handle_ping_pong/2,
-      4 => &handle_awareness_visibility/2,
+      4 => &handle_compose/2,
       6 => &handle_message/2,
-      7 => &handle_signal/2
+      7 => &handle_commit_offset/2,
     }
   end
 
@@ -107,16 +111,7 @@ defmodule Bimip.Socket do
     {:ok, state}
   end
 
-  def handle_signal(state, data) do
-    case Connect.client_server_inbound({:device_id, state.device_id, :signal_to_client, data}) do
-      :ok ->
-        {:ok, state}
-      :error ->
-        error_msg = ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
-        send(self(), {:binary, error_msg})
-        {:ok, state}
-    end
-  end
+
 
   defp handle_awareness(state, data) do
     case Connect.route_awareness_to_client(state.eid, state.device_id, data) do
@@ -148,21 +143,39 @@ defmodule Bimip.Socket do
     end
   end
 
-  defp handle_awareness_visibility(state, data) do
-    # Uncomment this later when routing is ready
-    case Connect.route_awareness_visibility_to_client(state.eid, state.device_id, data) do
+
+
+
+
+
+
+
+
+
+
+
+  defp handle_message(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :message, data}) do
       :ok ->
         {:ok, state}
-
       :error ->
-        error_msg = ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
-        send(self(), {:binary, error_msg})
+        reason = "Field 'to.eid' → #{} Invalid subscriber 500"
+        throws = ThrowProtocolErrorSchema.build( @message_route_id, reason, Until.UniPosTime.response_time())
+        send(self(), {:binary, throws})
+    end
+  end
+
+  defp handle_compose(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :compose, data}) do
+      :ok ->
+        {:ok, state}
+      :error ->
         {:ok, state}
     end
   end
 
-  defp handle_message(state, data) do
-    case Connect.client_server_inbound({:device_id, state.device_id, :message, data}) do
+  defp handle_commit_offset(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :offset_commit, data}) do
       :ok ->
         {:ok, state}
       :error ->

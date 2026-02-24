@@ -1,6 +1,9 @@
 defmodule Bimip.SignalServer do
+
   use GenServer
   require Logger
+  @partition 1
+  @message_route_id 6
 
 
 
@@ -69,7 +72,7 @@ defmodule Bimip.SignalServer do
               }
           end)
 
-        Queue.QueueLogImpl.system_recovery(eid, 1)
+        Queue.QueueLogImpl.system_recovery(eid, @partition)
         {:noreply, new_state}
 
       {:error, reason} ->
@@ -86,26 +89,55 @@ defmodule Bimip.SignalServer do
     handle_cast({:start_device, {eid, device_id, exp, ws_pid, uupid}}, state)
   end
 
-  def handle_cast({:message, message_builder}, state) do
+  def handle_cast({:message, %{
+    message: message,
+    device_id: device_id,
+    uupid: _uupid } = message_builder}, state
+    ) do
 
-    Task.Supervisor.start_child(Message.TaskSupervisor, fn ->
-      t1 = Task.async(fn -> Message.Broker.sender(message_builder, state.devices) end)
-      t2 = Task.async(fn -> Message.Broker.recv(message_builder) end)
+    case subscribers_validation(message.to.eid) do
+      {:ok, :success} ->
+         Task.Supervisor.start_child(Message.TaskSupervisor, fn ->
+          t1 = Task.async(fn -> Message.Broker.sender(message_builder, state.devices) end)
+          t2 = Task.async(fn -> Message.Broker.recv(message_builder) end)
 
-      Task.await(t1)
-      Task.await(t2)
-    end)
-
+          Task.await(t1)
+          Task.await(t2)
+        end)
+      {:error, :failed} ->
+        reason = "Field 'to.eid' → #{message.to.eid} Invalid subscriber 500"
+        ThrowProtocolErrorSchema.build(@message_route_id, reason, Until.UniPosTime.response_time())
+        |> then(&Route.Connect.outbouce(device_id, &1))
+    end
     {:noreply, state}
+  end
+
+  defp subscribers_validation(subscriber_eid) do
+    validate = 1
+    if validate == 0 do
+      {:ok, :success}
+    else
+      {:error, :failed}
+    end
   end
 
   @impl true
   def handle_cast({:message_transmiter, message_builder}, state) do
-    Message.Broker.push_to_devices(state.eid, 0, state.devices, message_builder)
+    Device.Transmission.emit(state.eid, 0, state.devices, message_builder)
     {:noreply, state}
   end
 
+  @impl true
+  def handle_cast({:compose, binary}, state) do
+    Device.Transmission.emit(state.eid, 0, state.devices, binary)
+    {:noreply, state}
+  end
 
+  @impl true
+  def handle_cast({:offset_commit, data}, state) do
+    Commit.Offset.offset_commit(data)
+    {:noreply, state}
+  end
 
 
 

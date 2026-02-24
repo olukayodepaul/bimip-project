@@ -64,6 +64,7 @@ defmodule Bimip.Application do
         {Supervisor.Server, []},
         {Supervisor.Client, []},
         {Queue.BimipSupervisor, []},
+        # {BimipsSignal.SignalManager, []},
         {Task.Supervisor, name: Message.TaskSupervisor}
       ]
 

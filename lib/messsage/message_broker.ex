@@ -15,10 +15,10 @@ defmodule Message.Broker do
     shard = :erlang.phash2(message.from.eid, @num_shards)
     suffix = :crypto.strong_rand_bytes(8) |> Base.encode16()
 
-    message_id = if message.message_type == 2 do
-      "#{message.content_type}-#{message.id}-#{suffix}"
+    message_id = if message.message_type in [2, 6, 7] do
+      "#{message.id}-#{suffix}"
     else
-      "#{message.content_type}-#{message.id}"
+      "#{message.id}"
     end
 
     case Queue.MessageTracker.check_and_insert(shard, message.from.eid, device_id, message_id, %{message_builder: message_builder, delim: :sender}) do
@@ -29,7 +29,7 @@ defmodule Message.Broker do
         |> Map.put(:participant_role, 2)
         |> Map.put(:delivery_type, 1)
         |> ThrowMessageSchema.build_message()
-        |> then(&push_to_devices(message.from.eid, device_id, all_devices, &1))
+        |> then(&Device.Transmission.emit(message.from.eid, device_id, all_devices, &1))
 
         message_receipt(message.id, to_eid, from_eid, sender_offset, device_id)
 
@@ -49,16 +49,16 @@ defmodule Message.Broker do
     shard = :erlang.phash2(message.to.eid, @num_shards)
     suffix = :crypto.strong_rand_bytes(8) |> Base.encode16()
 
-    message_id = if message.message_type == 2 do
-      "#{message.content_type}-#{message.id}-#{suffix}"
+     message_id = if message.message_type in [2, 6, 7] do
+      "#{message.id}-#{suffix}"
     else
-      "#{message.content_type}-#{message.id}"
+      "#{message.id}"
     end
 
     case Queue.MessageTracker.check_and_insert(shard, message.to.eid, device_id, message_id, %{message_builder: message_builder, delim: :sender}) do
       {:ok, :inserted, receiver_offset} ->
 
-         message
+        message
           |> Map.put(:offset, receiver_offset)
           |> Map.put(:participant_role, 3)
           |> Map.put(:delivery_type, 1)
@@ -70,43 +70,10 @@ defmodule Message.Broker do
     end
   end
 
-  def push_to_devices(eid, device_id,  all_devices, payload) do
-
-    stale_limit = get_stale_threshold()
-    now = DateTime.utc_now()
-
-    online_devices =
-      all_devices
-      |> Enum.filter(fn {_id, dev} ->
-        DateTime.diff(now, dev.last_seen, :second) <= stale_limit and
-          dev.device_id != device_id
-      end)
-      |> Enum.map(fn {_id, dev} -> dev end)
-
-      online_devices
-      |> Task.async_stream(
-        fn dev ->
-          Connect.outbouce(dev.device_id, payload)
-        end,
-        max_concurrency: 10,
-        ordered: false,
-        timeout: 5_000
-      )
-      |> Stream.run()
-
-  end
-
-  defp subscribers_validation(eid) do
-
-  end
-
   def message_receipt(message_id, to_eid, from_eid, sender_offset, device_id) do
     ThrowMessageDeliveryReceiptsSchema.build(message_id, to_eid, from_eid, sender_offset, Until.UniPosTime.response_time())
     |> then(&Connect.outbouce(device_id, &1))
   end
 
-  defp get_stale_threshold do
-    Settings.Connections.stale_threshold_seconds()
-  end
 
 end

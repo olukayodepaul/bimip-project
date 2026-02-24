@@ -83,8 +83,8 @@ Queue.QueueLogImpl.acknowledge("user57@domain.com", 2, 10)
 {:ok, messages} = Queue.QueueLogImpl.fetch_batch("user57@domain.com", 1, 2, 20)
 
 
-:ets.tab2list(:device_bookmarks_cache_37)
-:ets.tab2list(:bimip_user_offsets_37)
+:ets.tab2list(:device_bookmarks_cache_18)
+:ets.tab2list(:bimip_user_offsets_18)
 
 shard = 37
 bookmark_path = "data/device_bookmarks/#{shard}.bin"

@@ -39,28 +39,6 @@ message OWNERS {
   string to = 2; 
 }
 
-  message Message {
-    string id = 1;
-    Identity from = 2;
-    Identity to = 3;
-    optional int64 offset = 4;
-    int64 timestamp = 5;
-    bytes payload = 6;
-    optional int32 delivery_type = 7;
-    int32 participant_role = 8;
-    int32 content_type = 9;
-    bytes ephemeral_public_key = 10;
-    bytes mac = 11;
-    int32 message_type = 12;
-  }
-
-  message MessageDeliveryReceipts {
-    string id = 1;
-    Identity from = 2;
-    Identity to = 3;
-    int64 offset = 4;
-    int64 timestamp = 5;
-  }
 
 // when Device receive sent ack. it update the local message with 
 // signal_offset and user_offset.
@@ -135,11 +113,7 @@ message PushNotification {
 }
 
 // ---------------- ErrorMessage ----------------
-message ProtocolError {
-  int32 route_id = 1;
-  string details = 2;
-  int64 timestamp = 3;
-}
+
 
 // ---------------- PingPong ----------------
 message PingPong {
@@ -161,14 +135,7 @@ message Contact {
   string details = 7;
 }
 
-// ---------------- AwarenessVisibility ----------------
-message AwarenessVisibility {
-  string id = 1;
-  Identity from = 2;
-  int32 type = 3;
-  int64 timestamp = 4;
-  string details = 5;
-}
+
 
 // ---------------- TokenAuthority ----------------
 message TokenAuthority {
@@ -207,16 +174,63 @@ message Body {
   int64 timestamp = 3;
 }
 
+
+
+//user protobuf
+
+message OffsetCommit {
+  Identity from = 1;
+  int32 type = 2;
+  int64 offset = 3;
+  int64 timestamp = 4;
+}
+
+message ProtocolError {
+  int32 route_id = 1;
+  string details = 2;
+  int64 timestamp = 3;
+}
+
+message MessageDeliveryReceipts {
+  string id = 1;
+  Identity from = 2;
+  Identity to = 3;
+  int64 offset = 4;
+  int64 timestamp = 5;
+}
+
+message Message {
+  string id = 1;
+  Identity from = 2;
+  Identity to = 3;
+  optional int64 offset = 4;
+  int64 timestamp = 5;
+  bytes payload = 6;
+  optional int32 delivery_type = 7;
+  int32 participant_role = 8;
+  int32 content_type = 9;
+  bytes ephemeral_public_key = 10;
+  bytes mac = 11;
+  int32 message_type = 12;
+}
+
+message Compose {
+  Identity to = 1;
+  Identity from = 2;
+  int32 type = 3;
+  int64 timestamp = 4;
+}
+
 // ---------------- MessageScheme ----------------
 message MessageScheme {
   int64 route_id = 1;
   oneof payload {
     Awareness awareness = 2;
     PingPong ping_pong = 3;
-    AwarenessVisibility awareness_visibility = 4;
+    Compose compose = 4;
     TokenAuthority token_authority = 5;
     Message message = 6;
-    Signal signal = 7;
+    OffsetCommit offset_commit = 7;
     PushNotification push_notification = 8;
     LocationStream location_stream = 9;
     Body body = 10;

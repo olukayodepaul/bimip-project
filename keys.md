@@ -32,6 +32,46 @@ hex    = Base.encode16(binary, case: :upper)
 080632BB010A2461376332653964342D316636622D346333612D396438652D326235663761316330653333120E0A0C6140646F6D61696E2E636F6D1A0E0A0C6240646F6D61696E2E636F6D28D1DE92BBC73332200C956679A346D9FC823BA8E0477C805C3EC0AC9C8238FF39A74125D6A25C022238014001480152209238AA3E2AE6E9B3C44A6ADDAD36C87E0DE0DAC868811900C8C1C2386AE413325A200C956679A346D9FC823BA8E0477C805C3EC0AC9C8238FF39A74125D6A25C02226001
 
 
+
+
+
+
+//compose
+request = %Bimip.Compose{
+    from: %Bimip.Identity{eid: "a@domain.com"},
+    to: %Bimip.Identity{eid: "b@domain.com"},
+    timestamp: System.system_time(:millisecond),
+    type: 1,
+}
+
+compose = %Bimip.MessageScheme{
+    route_id: 4,
+    payload: {:compose, request}
+}
+
+binary = Bimip.MessageScheme.encode(compose)
+hex    = Base.encode16(binary, case: :upper)
+
+
+//commit offset
+request = %Bimip.OffsetCommit{
+    from: %Bimip.Identity{eid: "a@domain.com"},
+    type: 1,
+    offset: 1,
+    timestamp: System.system_time(:millisecond),
+}
+
+cf = %Bimip.MessageScheme{
+    route_id: 7,
+    payload: {:offset_commit, request}
+}
+
+binary = Bimip.MessageScheme.encode(cf)
+hex    = Base.encode16(binary, case: :upper)
+
+
+
+
 ```
 
 

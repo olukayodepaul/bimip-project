@@ -52,37 +52,6 @@ defmodule Bimip.OWNERS do
   field :to, 2, type: :string
 end
 
-defmodule Bimip.Message do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :id, 1, type: :string
-  field :from, 2, type: Bimip.Identity
-  field :to, 3, type: Bimip.Identity
-  field :offset, 4, proto3_optional: true, type: :int64
-  field :timestamp, 5, type: :int64
-  field :payload, 6, type: :bytes
-  field :delivery_type, 7, proto3_optional: true, type: :int32, json_name: "deliveryType"
-  field :participant_role, 8, type: :int32, json_name: "participantRole"
-  field :content_type, 9, type: :int32, json_name: "contentType"
-  field :ephemeral_public_key, 10, type: :bytes, json_name: "ephemeralPublicKey"
-  field :mac, 11, type: :bytes
-  field :message_type, 12, type: :int32, json_name: "messageType"
-end
-
-defmodule Bimip.MessageDeliveryReceipts do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :id, 1, type: :string
-  field :from, 2, type: Bimip.Identity
-  field :to, 3, type: Bimip.Identity
-  field :offset, 4, type: :int64
-  field :timestamp, 5, type: :int64
-end
-
 defmodule Bimip.Signal do
   @moduledoc false
 
@@ -151,16 +120,6 @@ defmodule Bimip.PushNotification do
   field :payload, 6, type: :bytes
 end
 
-defmodule Bimip.ProtocolError do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :route_id, 1, type: :int32, json_name: "routeId"
-  field :details, 2, type: :string
-  field :timestamp, 3, type: :int64
-end
-
 defmodule Bimip.PingPong do
   @moduledoc false
 
@@ -185,18 +144,6 @@ defmodule Bimip.Contact do
   field :action, 5, type: :int32
   field :timestamp, 6, type: :int64
   field :details, 7, type: :string
-end
-
-defmodule Bimip.AwarenessVisibility do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :id, 1, type: :string
-  field :from, 2, type: Bimip.Identity
-  field :type, 3, type: :int32
-  field :timestamp, 4, type: :int64
-  field :details, 5, type: :string
 end
 
 defmodule Bimip.TokenAuthority do
@@ -248,6 +195,69 @@ defmodule Bimip.Body do
   field :timestamp, 3, type: :int64
 end
 
+defmodule Bimip.OffsetCommit do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :from, 1, type: Bimip.Identity
+  field :type, 2, type: :int32
+  field :offset, 3, type: :int64
+  field :timestamp, 4, type: :int64
+end
+
+defmodule Bimip.ProtocolError do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :route_id, 1, type: :int32, json_name: "routeId"
+  field :details, 2, type: :string
+  field :timestamp, 3, type: :int64
+end
+
+defmodule Bimip.MessageDeliveryReceipts do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :id, 1, type: :string
+  field :from, 2, type: Bimip.Identity
+  field :to, 3, type: Bimip.Identity
+  field :offset, 4, type: :int64
+  field :timestamp, 5, type: :int64
+end
+
+defmodule Bimip.Message do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :id, 1, type: :string
+  field :from, 2, type: Bimip.Identity
+  field :to, 3, type: Bimip.Identity
+  field :offset, 4, proto3_optional: true, type: :int64
+  field :timestamp, 5, type: :int64
+  field :payload, 6, type: :bytes
+  field :delivery_type, 7, proto3_optional: true, type: :int32, json_name: "deliveryType"
+  field :participant_role, 8, type: :int32, json_name: "participantRole"
+  field :content_type, 9, type: :int32, json_name: "contentType"
+  field :ephemeral_public_key, 10, type: :bytes, json_name: "ephemeralPublicKey"
+  field :mac, 11, type: :bytes
+  field :message_type, 12, type: :int32, json_name: "messageType"
+end
+
+defmodule Bimip.Compose do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :to, 1, type: Bimip.Identity
+  field :from, 2, type: Bimip.Identity
+  field :type, 3, type: :int32
+  field :timestamp, 4, type: :int64
+end
+
 defmodule Bimip.MessageScheme do
   @moduledoc false
 
@@ -258,15 +268,10 @@ defmodule Bimip.MessageScheme do
   field :route_id, 1, type: :int64, json_name: "routeId"
   field :awareness, 2, type: Bimip.Awareness, oneof: 0
   field :ping_pong, 3, type: Bimip.PingPong, json_name: "pingPong", oneof: 0
-
-  field :awareness_visibility, 4,
-    type: Bimip.AwarenessVisibility,
-    json_name: "awarenessVisibility",
-    oneof: 0
-
+  field :compose, 4, type: Bimip.Compose, oneof: 0
   field :token_authority, 5, type: Bimip.TokenAuthority, json_name: "tokenAuthority", oneof: 0
   field :message, 6, type: Bimip.Message, oneof: 0
-  field :signal, 7, type: Bimip.Signal, oneof: 0
+  field :offset_commit, 7, type: Bimip.OffsetCommit, json_name: "offsetCommit", oneof: 0
 
   field :push_notification, 8,
     type: Bimip.PushNotification,

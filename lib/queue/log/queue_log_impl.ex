@@ -964,13 +964,13 @@ defp read_from_disk(state, base, pos) do
     end
   end
 
-  @impl true
 @impl true
 def handle_cast({:ack, user, device_id, ack_offset}, state) do
   cache = :"device_bookmarks_cache_#{state.shard}"
 
   case :ets.lookup(cache, user) do
     [{^user, user_data}] ->
+      IO.inspect(2)
       # 1. Resolve Segment
       positions = Map.get(user_data, "positions", %{})
       resolved_seg = find_segment_for_offset(positions, ack_offset, state.active_base)
@@ -983,6 +983,7 @@ def handle_cast({:ack, user, device_id, ack_offset}, state) do
       Logger.debug("Ack processed: #{user} on #{device_id} -> Seg #{resolved_seg}")
 
     [] ->
+      IO.inspect(1)
       # This is likely a truly new user.
       # We create a minimal record so the Ack isn't lost.
       file_id = "#{state.active_base}_#{state.active_ts}"
