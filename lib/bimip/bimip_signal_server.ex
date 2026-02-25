@@ -139,8 +139,11 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
-
-
+  @impl true
+  def handle_cast({:ping, data}, state) do
+    IO.inspect(data)
+    {:noreply, state}
+  end
 
 
 

@@ -120,18 +120,6 @@ defmodule Bimip.PushNotification do
   field :payload, 6, type: :bytes
 end
 
-defmodule Bimip.PingPong do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :id, 1, type: :string
-  field :from, 2, type: Bimip.Identity
-  field :type, 3, type: :int32
-  field :timestamp, 4, type: :int64
-  field :details, 5, type: :string
-end
-
 defmodule Bimip.Contact do
   @moduledoc false
 
@@ -193,6 +181,17 @@ defmodule Bimip.Body do
   field :route_id, 1, type: :int32, json_name: "routeId"
   field :messages, 2, repeated: true, type: Bimip.Message
   field :timestamp, 3, type: :int64
+end
+
+defmodule Bimip.Ping do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :id, 1, type: :string
+  field :from, 2, type: Bimip.Identity
+  field :type, 3, type: :int32
+  field :timestamp, 4, type: :int64
 end
 
 defmodule Bimip.OffsetCommit do
@@ -267,7 +266,7 @@ defmodule Bimip.MessageScheme do
 
   field :route_id, 1, type: :int64, json_name: "routeId"
   field :awareness, 2, type: Bimip.Awareness, oneof: 0
-  field :ping_pong, 3, type: Bimip.PingPong, json_name: "pingPong", oneof: 0
+  field :ping, 3, type: Bimip.Ping, oneof: 0
   field :compose, 4, type: Bimip.Compose, oneof: 0
   field :token_authority, 5, type: Bimip.TokenAuthority, json_name: "tokenAuthority", oneof: 0
   field :message, 6, type: Bimip.Message, oneof: 0

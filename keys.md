@@ -71,6 +71,22 @@ hex    = Base.encode16(binary, case: :upper)
 
 
 
+//ping
+request = %Bimip.Ping {
+  id: "a7c2e9d4-1f6b-4c3a-9d8e-2b5f7a1c0e33",
+  from: %Bimip.Identity{eid: "a@domain.com"},
+  type: 1,
+  timestamp: System.system_time(:millisecond),
+}
+
+cf = %Bimip.MessageScheme{
+    route_id: 3,
+    payload: {:ping, request}
+}
+
+binary = Bimip.MessageScheme.encode(cf)
+hex    = Base.encode16(binary, case: :upper)
+
 
 ```
 

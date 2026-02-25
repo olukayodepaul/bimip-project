@@ -4,6 +4,8 @@ defmodule Bimip.Socket do
   @behaviour :cowboy_websocket
   @compose_route_id 4
   @message_route_id 6
+  @ping_route_id 3
+  @commit_offset_route_id 7
 
 
   alias Bimip.Auth.TokenVerifier
@@ -54,9 +56,6 @@ defmodule Bimip.Socket do
     {:ok, state}
   end
 
-  def websocket_info(:send_ping, state) do
-    {:reply, :ping, state}
-  end
 
   # client receiving awareness status from server
   # create route binary dont
@@ -94,17 +93,15 @@ defmodule Bimip.Socket do
   defp dispatch_map do
     %{
       2 => &handle_awareness/2,
-      3 => &handle_ping_pong/2,
+      3 => &handle_ping/2,
       4 => &handle_compose/2,
       6 => &handle_message/2,
       7 => &handle_commit_offset/2,
     }
   end
 
-  def websocket_handle(:pong, %{eid: _eid, device_id: device_id} = state) do
-    AdaptivePingPong.handle_pong_from_network(device_id, DateTime.utc_now())
-    {:ok, state}
-  end
+
+
 
   defp default_handler(%{eid: eid, device_id: device_id} = state, data) do
     Logger.error("Unknown route received for device #{device_id}, eid #{eid}")
@@ -127,39 +124,46 @@ defmodule Bimip.Socket do
     end
   end
 
-  defp handle_ping_pong(state, data) do
-    case Connect.route_others_ping(state.eid, state.device_id, data) do
+
+
+
+
+
+
+
+
+
+
+  def websocket_info(:send_ping, state) do
+    {:reply, :ping, state}
+  end
+
+  def websocket_handle(:pong,  state) do
+     case Connect.client_server_inbound({:device_id, state.device_id, :pong, DateTime.utc_now()}) do
       :ok ->
         {:ok, state}
-
       :error ->
-        # return same stanza error from here not global error
-        error_msg =
-          ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
-
-        send(self(), {:binary, error_msg})
-
-        {:ok, state}
+        :ok
     end
   end
 
-
-
-
-
-
-
-
-
-
-
+  defp handle_ping(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :ping, data}) do
+      :ok ->
+        {:ok, state}
+      :error ->
+        reason = "Field '' →  Invalid ping 500"
+        throws = ThrowProtocolErrorSchema.build(@ping_route_id, reason, Until.UniPosTime.response_time())
+        send(self(), {:binary, throws})
+    end
+  end
 
   defp handle_message(state, data) do
     case Connect.client_server_inbound({:device_id, state.device_id, :message, data}) do
       :ok ->
         {:ok, state}
       :error ->
-        reason = "Field 'to.eid' → #{} Invalid subscriber 500"
+        reason = "Field '' → #{} Invalid message 500"
         throws = ThrowProtocolErrorSchema.build( @message_route_id, reason, Until.UniPosTime.response_time())
         send(self(), {:binary, throws})
     end
@@ -179,7 +183,9 @@ defmodule Bimip.Socket do
       :ok ->
         {:ok, state}
       :error ->
-        # same message error
+        reason = "Field '' → Invalid commmit offset 500"
+        throws = ThrowProtocolErrorSchema.build(@commit_offset_route_id, reason, Until.UniPosTime.response_time())
+        send(self(), {:binary, throws})
         {:ok, state}
     end
   end

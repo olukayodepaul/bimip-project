@@ -6,7 +6,7 @@ defmodule Bimip.Validators.ComposeValidator do
   Ensures:
   - `from` and `to` identities are valid
   - `from` is not equal to `to`
-  - `type` is 1 (COMPOSING), 2 (RECORDING), or 3 (PAUSED)
+  - `type` is 1 (TYPING), 2 (VIDEO RECORDING), 3 (AUDIO RECORDING), or 4 (PAUSED)
   - `timestamp` is positive int64
   - `eid` matches `msg.from.eid`
   """
@@ -14,7 +14,7 @@ defmodule Bimip.Validators.ComposeValidator do
   alias Bimip.Compose
   alias Bimip.Identity
 
-  @allowed_types [1, 2, 3]
+  @allowed_types [1, 2, 3, 4]
 
   @spec validate(Compose.t(), String.t()) :: :ok | :drop
   def validate(%Compose{} = msg, eid) when is_binary(eid) do

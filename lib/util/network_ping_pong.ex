@@ -1,206 +1,115 @@
 defmodule Util.Network.AdaptivePingPong do
   @moduledoc """
-  Handles network-level PingPong for child GenServers.
-
-  Features:
-    - Tracks missed pongs and RTT per device
-    - Dynamically adjusts ping frequency and max missed pongs
-    - Schedules next ping automatically
-    - Integrates with DeviceStateChange to trigger online/offline state updates
-    - Terminates after exceeding max allowed delay with no pong
+  Adaptive native WebSocket heartbeat logic for a single-device GenServer.
   """
 
   require Logger
   alias Settings.AdaptiveNetwork
   alias Route.Connect
-  alias Util.Client.DeviceState
 
   @max_pong_counter AdaptiveNetwork.max_pong_retries()
   @default_ping_interval AdaptiveNetwork.default_ping_interval_ms()
   @max_allowed_delay AdaptiveNetwork.max_allowed_delay_seconds()
 
   # -------------------------
-  # Handle periodic ping
+  # Core Adaptive Heartbeat
   # -------------------------
-  def handle_ping(state) when is_map(state) do
-    missed = Map.get(state, :missed_pongs, 0)
-    counter = Map.get(state, :pong_counter, 0)
-    last_ping = Map.get(state, :timer, DateTime.utc_now())
-    eid = Map.get(state, :eid)
-    device_id = Map.get(state, :device_id)
-    ws_pid = Map.get(state, :ws_pid)
-    last_rtt = Map.get(state, :last_rtt, nil)
-    max_missed = Map.get(state, :max_missed_pongs_adaptive, AdaptiveNetwork.initial_max_missed_pings())
+  def handle_ping(state) do
     now = DateTime.utc_now()
-    delta = DateTime.diff(now, last_ping)
-    last_state_change = Map.get(state, :last_state_change, DateTime.utc_now())
+    interval_ms = maybe_adaptive_interval(state.last_rtt)
+
+    # Silence Check: How long since the client last sent us ANY data?
+    ms_since_seen = if state.last_seen, do: DateTime.diff(now, state.last_seen, :millisecond), else: :infinity
 
     cond do
-      # Ping delayed → terminate
-      delta > @max_allowed_delay ->
-        Logger.error(
-          "[#{device_id}] Ping delayed by #{delta}s (> #{@max_allowed_delay}), terminating GenServer"
-        )
-        Connect.send_terminate_signal_to_server({device_id, eid})
+      # SKIP: Client is talking to us. Skip the native ping to save bandwidth.
+      ms_since_seen < interval_ms ->
+        Logger.debug("[Heartbeat] Client active #{ms_since_seen}ms ago; skipping ping", device_id: state.device_id)
+        schedule_ping(state.device_id, state.last_rtt)
+        {:noreply, state}
+
+      # ZOMBIE: It's been way too long since any successful interaction (dead socket).
+      DateTime.diff(now, state.timer) > @max_allowed_delay ->
+        Logger.error("[Heartbeat] Connection zombie (no response for #{DateTime.diff(now, state.timer)}s). Terminating.", device_id: state.device_id)
+        Connect.send_terminate_signal_to_server({state.device_id, state.eid})
         {:stop, :normal, state}
 
-      # Too many missed pongs → mark offline
-      missed >= max_missed ->
-        Logger.error(
-          "[#{device_id}] Device OFFLINE: missed #{missed} pings in a row (limit=#{max_missed})"
-        )
-
-        case state_change(device_id, eid, "OFFLINE", last_state_change, state) do
-          {:chr, new_device_state} ->
-            Logger.warning("[#{device_id}] OFFLINE state change emitted to RegistryHub")
-            send(ws_pid, :send_ping)
-            schedule_ping(device_id, last_rtt)
-
-            {:noreply,
-              %{
-                state
-                | missed_pongs: max_missed,
-                  pong_counter: counter,
-                  last_rtt: nil,
-                  last_send_ping: nil,
-                  last_state_change: now,
-                  device_state: new_device_state
-              }}
-
-          {:unchr, same_device_state} ->
-            Logger.debug("[#{device_id}] Still OFFLINE (no new state change)")
-            send(ws_pid, :send_ping)
-            schedule_ping(device_id, last_rtt)
-
-            {:noreply,
-              %{
-                state
-                | missed_pongs: max_missed,
-                  pong_counter: counter,
-                  last_rtt: nil,
-                  last_send_ping: nil,
-                  device_state: same_device_state
-              }}
-        end
-
-      # Normal ping
+      # PING: Send the native WebSocket frame (0x9)
       true ->
-        Logger.info(
-          "[#{device_id}] Sending ping (missed=#{missed}/#{max_missed}, " <>
-            "remaining=#{max_missed - missed}, counter=#{counter})"
-        )
-
-        send(ws_pid, :send_ping)
-        schedule_ping(device_id, last_rtt)
-        handle_increment_counter(state, counter, missed, last_rtt, now, device_id, eid, last_state_change)
+        Logger.info("[Heartbeat] Sending native ping; missed_pongs: #{state.missed_pongs + 1}", device_id: state.device_id)
+        send(state.ws_pid, :send_ping) # Triggers {:reply, :ping, state}
+        schedule_ping(state.device_id, state.last_rtt)
+        {:noreply, %{state | timer: now, missed_pongs: state.missed_pongs + 1}}
     end
   end
 
   # -------------------------
-  # Increment pong counter
+  # Activity Tracking (Call this on every Message or Pong)
   # -------------------------
-  defp handle_increment_counter(state, counter, missed, last_rtt, now, device_id, eid, last_state_change) do
-    case increment_counter(counter, device_id, eid, last_state_change, state) do
-      {:ok, counter, cur_new_state} ->
-        update_state_after_increment(state, counter, missed, last_rtt, now, cur_new_state)
+  def mark_active(state) do
+    # Logged at debug level to avoid noise in production info logs
+    Logger.debug("[Heartbeat] Activity detected; resetting counters", device_id: state.device_id)
 
-      {:er, counter} ->
-        Logger.debug(
-          "[#{device_id}] Missed pong incremented → #{missed + 1} (limit=#{Map.get(state, :max_missed_pongs_adaptive)})"
-        )
-
-        {:noreply,
-          %{
-            state
-            | missed_pongs: missed + 1,
-              pong_counter: counter,
-              timer: now,
-              last_rtt: last_rtt,
-              last_send_ping: now
-          }}
-    end
+    state
+    |> Map.put(:last_seen, DateTime.utc_now())
+    |> Map.put(:missed_pongs, 0)
+    |> maybe_report_presence()
   end
 
-  defp update_state_after_increment(state, counter, missed, last_rtt, now, {:chr, chr_device_state}) do
-    Logger.info("[#{state.device_id}] Device ONLINE state refreshed via ping counter reset")
+  defp maybe_report_presence(state) do
+    now = DateTime.utc_now()
+    interval = Map.get(state, :presence_report_interval, 60_000)
 
-    {:noreply,
-      %{
-        state
-        | missed_pongs: missed + 1,
-          pong_counter: counter,
-          timer: now,
-          last_rtt: last_rtt,
-          last_send_ping: now,
-          last_state_change: DateTime.utc_now(),
-          device_state: chr_device_state
-      }}
-  end
-
-  defp update_state_after_increment(state, counter, missed, last_rtt, now, {:unchr, unchr_device_state}) do
-    Logger.debug("[#{state.device_id}] Device state unchanged (ONLINE) after ping counter increment")
-
-    {:noreply,
-    %{
-      state
-      | missed_pongs: missed + 1,
-        pong_counter: counter,
-        timer: now,
-        last_rtt: last_rtt,
-        last_send_ping: now,
-        device_state: unchr_device_state
-    }}
-  end
-
-  defp increment_counter(counter, device_id, eid, last_state_change, state) do
-    if counter + 1 >= @max_pong_counter do
-      Logger.debug("[#{device_id}] Ping counter limit reached → ONLINE transition for #{eid}")
-      new_state = state_change(device_id, eid, "ONLINE", last_state_change, state)
-      {:ok, 0, new_state}
+    if is_nil(state.last_reported_seen) or DateTime.diff(now, state.last_reported_seen, :millisecond) >= interval do
+      Logger.info("[Presence] Reporting active status to external service", device_id: state.device_id, uupid: state.uupid)
+      %{state | last_reported_seen: now}
     else
-      {:er, counter + 1}
+      state
     end
   end
 
   # -------------------------
-  # Device state change
+  # Native Pong Received
   # -------------------------
-  def state_change(device_id, eid, status, last_state_change, state, awareness_intention \\ 2) do
+  def pongs_received(device_id, receive_time, state) do
+    rtt = if state.timer, do: DateTime.diff(receive_time, state.timer, :millisecond), else: 0
 
-    attrs = %{
-      status: status,
-      last_seen: DateTime.utc_now(),
-      awareness_intention: awareness_intention,
-      last_activity: last_state_change
-    }
+    Logger.info("[Heartbeat] Native pong received (RTT: #{rtt}ms)", device_id: device_id)
 
+    new_state = state
+                |> Map.put(:last_rtt, rtt)
+                |> Map.put(:max_missed_pongs_adaptive, maybe_adaptive_max_missed(rtt))
+                |> mark_active()
 
-    device_state = Map.get(state, :device_state)
+    handle_status_refresh(new_state)
+  end
 
-    case DeviceState.track_state_change(attrs, device_state) do
-      {:changed, prev_status, new_state} ->
-        Logger.info("[#{device_id}] State changed #{prev_status} → #{status}")
-        Connect.send_pong_to_bimip_server_master(device_id, eid, prev_status)
-        {:chr, new_state}
+  # -------------------------
+  # Status & Global Presence
+  # -------------------------
+  defp handle_status_refresh(state) do
+    if state.pong_counter + 1 >= @max_pong_counter do
+      Logger.info("[Presence] Master server refresh (ONLINE)", device_id: state.device_id)
+      Connect.send_pong_to_bimip_server_master(state.device_id, state.eid, "ONLINE")
 
-        {:refresh, prev_status, new_state} ->
-        Logger.debug("[#{device_id}] State refresh #{prev_status} → #{status}")
-        Connect.send_pong_to_bimip_server_master(device_id, eid, prev_status)
-        {:chr, new_state}
-
-      {:unchanged, prev_status, new_state} ->
-        Logger.debug("[#{device_id}] State unchanged (#{prev_status})")
-        {:unchr, new_state}
+      # Reset the counter after notifying Master
+      {:noreply, %{state | pong_counter: 0, last_state_change: DateTime.utc_now()}}
+    else
+      # Just increment locally, don't talk to Master yet
+      {:noreply, %{state | pong_counter: state.pong_counter + 1}}
     end
   end
 
   # -------------------------
-  # Adaptive ping interval
+  # Adaptive Calculations
   # -------------------------
-  defp calculate_adaptive_interval(rtt) when is_integer(rtt) do
+  defp maybe_adaptive_interval(rtt) do
+    if is_nil(rtt), do: @default_ping_interval, else: calculate_interval(rtt)
+  end
+
+  defp calculate_interval(rtt) do
     thresholds = AdaptiveNetwork.rtt_thresholds()
     intervals = AdaptiveNetwork.ping_intervals()
-
     cond do
       rtt > thresholds.high -> intervals.high_rtt
       rtt < thresholds.low -> intervals.default
@@ -208,81 +117,18 @@ defmodule Util.Network.AdaptivePingPong do
     end
   end
 
-  defp maybe_adaptive_interval(nil), do: @default_ping_interval
-  defp maybe_adaptive_interval(rtt) when is_integer(rtt), do: calculate_adaptive_interval(rtt)
-
-  # -------------------------
-  # Adaptive max missed pongs
-  # -------------------------
-  # defp maybe_adaptive_max_missed(nil), do: AdaptiveNetwork.max_missed_pongs().default
-  defp maybe_adaptive_max_missed(rtt) when is_integer(rtt) do
+  defp maybe_adaptive_max_missed(rtt) do
     thresholds = AdaptiveNetwork.rtt_thresholds()
-    max_missed = AdaptiveNetwork.max_missed_pongs()
-
+    max_m = AdaptiveNetwork.max_missed_pongs()
     cond do
-      rtt > thresholds.high -> max_missed.high
-      rtt < thresholds.low -> max_missed.low
-      true -> max_missed.default
+      is_nil(rtt) -> max_m.default
+      rtt > thresholds.high -> max_m.high
+      rtt < thresholds.low -> max_m.low
+      true -> max_m.default
     end
   end
 
-  # -------------------------
-  # Schedule next ping
-  # -------------------------
-  @doc "Schedule next ping with adaptive interval"
   def schedule_ping(device_id, last_rtt \\ nil) do
-    interval = maybe_adaptive_interval(last_rtt)
-    Logger.debug("[#{device_id}] Scheduling next ping in #{interval}ms")
-    Connect.schedule_ping_registry(device_id, interval)
-    :ok
-  end
-
-  # -------------------------
-  # Pong received from client
-  # -------------------------
-  def pongs_received(device_id, receive_time, state) when is_map(state) do
-    last_send_ping = Map.get(state, :last_send_ping)
-    rtt = if last_send_ping, do: DateTime.diff(receive_time, last_send_ping, :millisecond), else: 0
-
-    Logger.info(
-      "[#{device_id}] Pong received (RTT=#{rtt}ms). Resetting missed_pongs=0 (was #{state.missed_pongs})"
-    )
-
-    adaptive_max_missed = maybe_adaptive_max_missed(rtt)
-
-    new_counter =
-      if Map.get(state, :pong_counter, 0) + 1 >= @max_pong_counter do
-        Logger.debug("[#{device_id}] Pong counter limit reached → ONLINE transition")
-        cur_device_state =
-          state_change(device_id, Map.get(state, :eid), "ONLINE", Map.get(state, :last_state_change), state)
-        {:pr_count, 0, cur_device_state}
-      else
-        {:unpr_count, Map.get(state, :pong_counter, 0) + 1}
-      end
-
-    case new_counter do
-      {:pr_count, counter, cur_device_state} ->
-        update_state_after_increment(state, counter, 0, rtt, receive_time, cur_device_state)
-
-      {:unpr_count, counter} ->
-        {:noreply,
-          %{
-            state
-            | missed_pongs: 0,
-              pong_counter: counter,
-              timer: receive_time,
-              last_rtt: rtt,
-              max_missed_pongs_adaptive: adaptive_max_missed,
-              last_send_ping: receive_time
-          }}
-    end
-  end
-
-  # -------------------------
-  # Pong received from network
-  # -------------------------
-  def handle_pong_from_network(device_id, sent_time) do
-    Logger.debug("[#{device_id}] Handling network pong at #{sent_time}")
-    Connect.handle_pong_registry(device_id, sent_time)
+    Connect.schedule_ping_registry(device_id, maybe_adaptive_interval(last_rtt))
   end
 end

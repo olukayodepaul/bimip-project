@@ -4,6 +4,7 @@ defmodule Bimip.SignalClient do
   @message_route_id 6
   @compose_route_id 4
   @commit_offset_route_id 7
+  @ping_route_id 3
   alias Bimip.{MessageScheme}
 
 
@@ -25,49 +26,38 @@ defmodule Bimip.SignalClient do
     GenServer.start_link(__MODULE__, state, name: Registry.via_registry(device_id))
   end
 
-  @impl true
   def init({eid, device_id, exp, ws_pid, uupid}) do
+    now = DateTime.utc_now()
 
-    AdaptivePingPong.schedule_ping(device_id)
+    # 1. Schedule the first check
+    Util.Network.AdaptivePingPong.schedule_ping(device_id)
 
+    # 2. Return the COMPLETE state map
     {:ok,
       %{
-        missed_pongs: 0,
-        pong_counter: 0,
-        timer: DateTime.utc_now(),
+        # Basic Info
         eid: eid,
         device_id: device_id,
         uupid: uupid,
-        exp_time: exp, #token expiration time
-        token_state: :active, # token state...
         ws_pid: ws_pid,
-        last_rtt: nil,
-        max_missed_pongs_adaptive: AdaptiveNetwork.initial_max_missed_pings(),
-        last_send_ping: nil,
-        last_state_change: DateTime.utc_now(),
+        exp: exp,
 
-        # nested device state (replacement for ETS)
-        device_state: %{
-          device_status: "ONLINE",  # pick one as default
-          last_change_at: nil,
-          last_seen: nil,
-          last_activity: DateTime.utc_now()
-        }
-      }}
+        # REQUIRED for AdaptivePingPong
+        timer: now,                         # Tracks last ping attempt
+        last_seen: now,                      # Tracks last activity
+        last_rtt: nil,                       # Network speed
+        missed_pongs: 0,                     # Health check
+        pong_counter: 0,                     # Status refresh counter
+        last_state_change: now,              # For Registry updates
+        last_reported_seen: nil,             # For external presence
+        presence_report_interval: 60_000,    # 60 seconds
+        max_missed_pongs_adaptive: 3         # Initial limit
+      }
+    }
   end
 
 
 
-  # Handle ping/pong
-  @impl true
-  def handle_info({:send_ping, interval}, state) do
-    AdaptivePingPong.handle_ping(%{state | last_rtt: interval})
-  end
-
-  @impl true
-  def handle_cast({:received_pong, {device_id, receive_time}}, state) do
-    AdaptivePingPong.pongs_received(device_id, receive_time, state)
-  end
 
   def handle_cast({:send_terminate_signal_to_client, {device_id, eid}}, state) do
     # RegistryHub.send_terminate_signal_to_server({device_id, eid})
@@ -183,7 +173,20 @@ defmodule Bimip.SignalClient do
      {:noreply, state}
   end
 
-  def handle_cast(
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def handle_cast(
       {:ping_pong, _eid, _device_id, data},
       %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state
     ) do
@@ -243,63 +246,55 @@ defmodule Bimip.SignalClient do
     #     send(ws_pid, {:binary, error_binary})
     #     {:noreply, state}
     # end
-    {:noreply, state}
   end
 
 
-
-
-  #--- WORKING
-
-  # validation next
-  def handle_cast({:signal_to_client, payload}, %{eid: state_eid, device_id: device_id} = state) do
-
-    # msg = Bimip.MessageScheme.decode(payload)
-
-    # case msg.payload do
-    #   {:signal, %Bimip.Signal{} = signal} ->
-
-    #     new_to = if signal.to != nil do
-    #           %Chat.EntityStruct{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id}
-    #         else
-    #           %Chat.EntityStruct{}
-    #         end
-
-    #     new_from = if signal.from != nil do
-    #           %Chat.EntityStruct{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id}
-    #         else
-    #           %Chat.EntityStruct{}
-    #         end
-
-    #     %Chat.SignalStruct{
-    #       id: signal.id,
-    #       from: new_from,
-    #       to: new_to,
-    #       status: signal.status,
-    #       type: signal.type,
-    #       signal_offset: signal.signal_offset,
-    #       user_offset: signal.user_offset,
-    #       signal_type: signal.signal_type,
-    #       eid: state_eid,
-    #       device: device_id,
-    #       signal_type_ex: signal.signal_type_ex,
-    #       batched_acks: signal.batched_acks
-    #     }
-    #     |> server_inbound(:eid, :signal_to_server, state_eid)
-    #   _ ->
-    #     :ok
-    # end
-    {:noreply, state}
+  # Handle ping/pong
+  @impl true
+  def handle_info({:send_ping, interval}, state) do
+    AdaptivePingPong.handle_ping(%{state | last_rtt: interval})
   end
 
+  @impl true
+  def handle_cast({:pong, receive_time}, state) do
+    AdaptivePingPong.pongs_received(state.device_id, receive_time, state)
+  end
+
+  def handle_cast({:ping,  data},   %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
+    bim = Bimip.MessageScheme.decode(data)
+    case bim.payload do
+      {:ping, %Bimip.Ping{} = ping} ->
+        case Bimip.Validators.PingValidator.validate(ping, eid) do
+          :ok ->
+
+          %Bimip.MessageScheme{
+            route_id: @ping_route_id,
+            payload: {:ping, Map.put(ping, :type, 2)}
+          }
+          |> Bimip.MessageScheme.encode()
+          |> then(&socket_outbound(ws_pid, &1))
 
 
+          {:error, err} ->
 
+            reason = "Field '#{err.field}' → #{err.description} #{err.code}"
+            throws = ThrowProtocolErrorSchema.build(@ping_route_id, reason,Until.UniPosTime.response_time())
+            socket_outbound(ws_pid, throws)
+        end
+        {:noreply, mark_active(state)}
+      _ ->
+        reason = "Unexpected payload received"
+        throws = ThrowProtocolErrorSchema.build(@ping_route_id, reason, Until.UniPosTime.response_time())
+        socket_outbound(ws_pid, throws)
+        {:noreply, active_last_see(state)}
+      end
+  end
 
+  def handle_cast({:native_pong_received, receive_time}, state) do
+     {:noreply, Util.Network.AdaptivePingPong.pongs_received(state.device_id, receive_time, state)}
+  end
 
-
-
-  def handle_cast({:offset_commit,  data},   %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
+  def handle_cast({:offset_commit,  data}, %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
     bim = Bimip.MessageScheme.decode(data)
     case bim.payload do
       {:offset_commit, %Bimip.OffsetCommit{} = offset_commit} ->
@@ -314,21 +309,18 @@ defmodule Bimip.SignalClient do
             |> server_inbound(:eid, :offset_commit, eid)
 
           {:error, err} ->
-            IO.inspect(1)
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"
             throws = ThrowProtocolErrorSchema.build(@commit_offset_route_id, reason,Until.UniPosTime.response_time())
             socket_outbound(ws_pid, throws)
         end
-        {:noreply, state}
+        {:noreply, active_last_see(state)}
       _ ->
-        IO.inspect(3)
         reason = "Unexpected payload received"
         throws = ThrowProtocolErrorSchema.build(@commit_offset_route_id, reason, Until.UniPosTime.response_time())
         socket_outbound(ws_pid, throws)
-        {:noreply, state}
+        {:noreply, active_last_see(state)}
       end
   end
-
 
   def handle_cast({:compose,  data},   %{eid: eid, ws_pid: ws_pid} = state) do
     bim = Bimip.MessageScheme.decode(data)
@@ -343,9 +335,9 @@ defmodule Bimip.SignalClient do
           :drop
             :noop
         end
-        {:noreply, state}
+        {:noreply, active_last_see(state)}
       _ ->
-        {:noreply, state}
+        {:noreply, active_last_see(state)}
       end
   end
 
@@ -369,13 +361,13 @@ defmodule Bimip.SignalClient do
             socket_outbound(ws_pid, throws)
 
         end
-        {:noreply, state}
+        {:noreply, active_last_see(state)}
       _ ->
 
         reason = "Unexpected payload received"
         throws = ThrowProtocolErrorSchema.build(@message_route_id, reason, Until.UniPosTime.response_time())
         socket_outbound(ws_pid, throws)
-        {:noreply, state}
+        {:noreply, active_last_see(state)}
 
       end
   end
@@ -392,6 +384,32 @@ defmodule Bimip.SignalClient do
   def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
     send(ws_pid, {:binary, binary})
     {:noreply, state}
+  end
+
+  defp active_last_see(state) do
+    state
+    |> Map.put(:last_seen, DateTime.utc_now())
+    |> Map.put(:missed_pongs, 0)
+  end
+
+  defp mark_active(state) do
+    state
+    |> Map.put(:last_seen, DateTime.utc_now())
+    |> Map.put(:missed_pongs, 0)
+    |> maybe_report_to_external_service()
+  end
+
+  defp maybe_report_to_external_service(state) do
+    now = DateTime.utc_now()
+
+    should_report = is_nil(state.last_reported_seen) or
+                    DateTime.diff(now, state.last_reported_seen, :millisecond) >= state.presence_report_interval
+    if should_report do
+      server_inbound(%{last_seen: DateTime.utc_now(), device_id: state.device_id}, :eid, :ping, state.eid)
+      %{state | last_reported_seen: now}
+    else
+      state
+    end
   end
 
 

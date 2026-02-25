@@ -115,14 +115,7 @@ message PushNotification {
 // ---------------- ErrorMessage ----------------
 
 
-// ---------------- PingPong ----------------
-message PingPong {
-  string id = 1;
-  Identity from = 2;
-  int32 type = 3;
-  int64 timestamp = 4;
-  string details = 5;
-}
+
 
 // ---------------- Contact ----------------
 message Contact {
@@ -178,6 +171,14 @@ message Body {
 
 //user protobuf
 
+// ---------------- PingPong ----------------
+message Ping {
+  string id = 1;
+  Identity from = 2;
+  int32 type = 3;
+  int64 timestamp = 4;
+}
+
 message OffsetCommit {
   Identity from = 1;
   int32 type = 2;
@@ -226,7 +227,7 @@ message MessageScheme {
   int64 route_id = 1;
   oneof payload {
     Awareness awareness = 2;
-    PingPong ping_pong = 3;
+    Ping ping = 3;
     Compose compose = 4;
     TokenAuthority token_authority = 5;
     Message message = 6;
