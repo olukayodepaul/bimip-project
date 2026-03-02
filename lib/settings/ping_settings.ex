@@ -8,7 +8,7 @@ defmodule Settings.AdaptiveNetwork do
 
   # Basic
   def default_ping_interval_ms, do: get(:default_ping_interval_ms, 10_000)
-  def max_allowed_delay_seconds, do: get(:max_allowed_delay_seconds, 45)
+  def max_allowed_delay_seconds, do: get(:max_allowed_delay_seconds, 60)
   def max_pong_retries, do: get(:max_pong_retries, 3)
   def initial_max_missed_pings, do: get(:initial_max_missed_pings, 6)
 

@@ -1,68 +1,74 @@
 defmodule Bimip.Auth.TokenVerifier do
-  # Security: JWT verification using Joken and runtime config
+  @moduledoc """
+  Handles token verification with detailed internal logging but safe external returns.
+  """
   use Joken.Config
   require Logger
-  alias Settings.Jwt
-
   alias Settings.Connections
 
-  # -------------------------------
-  # Base Claims
-  # -------------------------------
-  def base_claims do
-    default_claims(skip: [:aud])
-    |> add_claim("device_id", nil, &is_binary/1)
-    |> add_claim("eid", nil, &is_binary/1)
-    |> add_claim("uupid", nil, &is_integer/1)
-    |> add_claim("jti", fn -> System.unique_integer([:positive]) |> Integer.to_string() end, &is_binary/1)
-    |> add_claim("type", nil, &(&1 in ["access", "refresh"]))
-  end
+  # --- Key Loading ---
 
-  # -------------------------------
-  # Load Public Key at Runtime
-  # -------------------------------
   defp load_public_key do
-    Connections.jwt_public_key()
-    |> File.read!()
-    |> JOSE.JWK.from_pem()
-    |> JOSE.JWK.to_map()
-    |> elem(1)
-  end
+    path = Connections.jwt_public_key()
 
-  # -------------------------------
-  # JWT Signer (runtime-safe)
-  # -------------------------------
-  def verifier do
-    Joken.Signer.create(Connections.jwt_signing_algorithm(), load_public_key())
-  end
-
-  # -------------------------------
-  # Token Extraction
-  # -------------------------------
-  def extract_token(nil), do: {:error, :invalid_token}
-  def extract_token(""), do: {:error, :invalid_token}
-  def extract_token("Bearer " <> token) when is_binary(token), do: {:ok, token}
-  def extract_token(token) when is_binary(token), do: {:ok, token}
-
-  # -------------------------------
-  # Token Verification
-  # -------------------------------
-  def verify_token(token) do
-    case verify_and_validate(token, verifier()) do
-      {:ok, claims} ->
-        if token_revoked?(claims["jti"]) do
-          {:error, :token_invoked}
-        else
-          {:ok, claims}
-        end
-
-      {:error, _reason} ->
-        {:error, :invalid_token}
+    with {:ok, binary} <- File.read(path),
+         {:ok, jwk} <- safe_decode_pem(binary) do
+      {_type, key_map} = JOSE.JWK.to_map(jwk)
+      key_map
+    else
+      {:error, reason} ->
+        Logger.error("JWT Public Key Error [File/PEM]: #{inspect(reason)}")
+        nil
     end
   end
 
-  # -------------------------------
-  # Token Revocation Check (stub)
-  # -------------------------------
-  def token_revoked?(_jti), do: false
+  defp safe_decode_pem(binary) do
+    {:ok, JOSE.JWK.from_pem(binary)}
+  rescue
+    _e -> {:error, :corrupt_pem_format}
+  end
+
+  def get_signer do
+    algo = Connections.jwt_signing_algorithm()
+
+    case load_public_key() do
+      nil -> {:error, :key_not_available}
+      key_map ->
+        try do
+          {:ok, Joken.Signer.create(algo, key_map)}
+        rescue
+          e ->
+            Logger.error("Joken Signer Creation Failed: #{inspect(e)}")
+            {:error, :invalid_key_structure}
+        end
+    end
+  end
+
+  # --- Verification Logic ---
+
+  def verify_token(token) do
+    case get_signer() do
+      {:ok, signer} ->
+        case verify_and_validate(token, signer) do
+          {:ok, claims} ->
+            {:ok, claims}
+          {:error, reason} ->
+            # Returns the specific Joken reason (e.g., "Invalid signature", "Token expired")
+            {:error, "Token validation failed: #{inspect(reason)}"}
+        end
+
+      {:error, :invalid_key_structure } ->
+        {:error, "Internal System Error: The public key file is missing or unreadable."}
+
+      {:error, :key_not_available} ->
+        {:error, "Internal System Error: The public key is malformed or tempered with."}
+
+      {:error, _} ->
+        {:error, "Internal System Error: An unexpected security configuration error occurred."}
+    end
+  end
+
+  def verify_from_header("Bearer " <> token), do: verify_token(token)
+  def verify_from_header(token) when is_binary(token), do: verify_token(token)
+  def verify_from_header(_), do: {:error, :invalid_header}
 end

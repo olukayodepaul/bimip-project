@@ -1,31 +1,35 @@
 defmodule Device.Transmission do
-
   alias Route.Connect
 
-  def emit(eid, device_id, all_devices, payload) do
-
+  @doc """
+  Sends to other devices of the same user, excluding the sender.
+  """
+  def emit(_eid, sender_device_id, all_devices, payload) when is_binary(payload) do
+    now = System.system_time(:second)
     stale_limit = get_stale_threshold()
-    now = DateTime.utc_now()
 
-    online_devices =
-      all_devices
-      |> Enum.filter(fn {_id, dev} ->
-        DateTime.diff(now, dev.last_seen, :second) <= stale_limit and
-          dev.device_id != device_id
-      end)
-      |> Enum.map(fn {_id, dev} -> dev end)
+    Enum.each(all_devices, fn {id, dev} ->
+      if id != sender_device_id and (now - dev.last_seen) <= stale_limit do
+        Connect.outbouce(dev.device_id, payload)
+      end
+    end)
+    :ok
+  end
 
-      online_devices
-      |> Task.async_stream(
-        fn dev ->
-          Connect.outbouce(dev.device_id, payload)
-        end,
-        max_concurrency: 10,
-        ordered: false,
-        timeout: 5_000
-      )
-      |> Stream.run()
+  @doc """
+  Sends to ALL active devices in the map (Broadcast).
+  """
+  def emit_broadcast(all_devices, bin) when is_binary(bin) do
+    now = System.system_time(:second)
+    stale_limit = get_stale_threshold()
 
+    Enum.each(all_devices, fn {id, dev} ->
+      IO.inspect({id, dev})
+      if (now - dev.last_seen) <= stale_limit do
+        Connect.outbouce(dev.device_id, bin)
+      end
+    end)
+    :ok
   end
 
   defp get_stale_threshold do

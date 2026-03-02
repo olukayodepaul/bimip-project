@@ -57,7 +57,12 @@ defmodule Bimip.Application do
     # -----------------------
     children = connections_children ++
       [
-        {Phoenix.PubSub, name: Bimip.PubSub},
+        {Phoenix.PubSub,
+          name: Bimip.PubSub,
+          pool_size: 32,      # Number of concurrent registry workers
+          pool_overflow: 5,   # Extra workers if busy
+          adapter: Phoenix.PubSub.PG2
+        },
         {Redix, name: :redix},
         {Horde.Registry, name: DeviceIdRegistry, keys: :unique, members: :auto},
         {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},

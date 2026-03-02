@@ -11,7 +11,7 @@ request = %Bimip.Message{
     id: "a7c2e9d4-1f6b-4c3a-9d8e-2b5f7a1c0e33",
     from: %Bimip.Identity{eid: "a@domain.com"},
     to: %Bimip.Identity{eid: "b@domain.com"},
-    timestamp: System.system_time(:millisecond),
+    timestamp: 1772271838116,
     payload: ciphertext,
     delivery_type: 1,
     participant_role: 1,
@@ -33,6 +33,21 @@ hex    = Base.encode16(binary, case: :upper)
 
 
 
+response = %Bimip.DeliveryReceipts {
+  id: "a7c2e9d4-1f6b-4c3a-9d8e-2b5f7a1c0e33",
+  from: %Bimip.Identity{eid: "a@domain.com"},
+  to: %Bimip.Identity{eid: "b@domain.com"},
+  offset: 1,
+  timestamp: 1772271838116;
+}
+
+message = %Bimip.MessageScheme{
+    route_id: 13,
+    payload: {:message, response}
+}
+
+binary = Bimip.MessageScheme.encode(message)
+hex    = Base.encode16(binary, case: :upper)
 
 
 
@@ -41,7 +56,7 @@ request = %Bimip.Compose{
     from: %Bimip.Identity{eid: "a@domain.com"},
     to: %Bimip.Identity{eid: "b@domain.com"},
     timestamp: System.system_time(:millisecond),
-    type: 1,
+    type: 4,
 }
 
 compose = %Bimip.MessageScheme{
@@ -89,6 +104,28 @@ hex    = Base.encode16(binary, case: :upper)
 
 
 ```
+
+
+//awareness
+request = %Bimip.Awareness {
+  from: %Bimip.Identity{eid: "c@domain.com"},
+  presence: 1,
+  offset: 1,
+  broadcast: 2,
+  timestamp: System.system_time(:millisecond),
+}
+
+cf = %Bimip.MessageScheme{
+    route_id: 2,
+    payload: {:awareness, request}
+}
+
+binary = Bimip.MessageScheme.encode(cf)
+hex    = Base.encode16(binary, case: :upper)
+
+
+```
+
 
 
 
@@ -407,4 +444,200 @@ defmodule Message.Broker do
   end
 
 
+end
+
+
+
+
+
+
+
+
+
+defmodule Bimip.Socket do
+  # bimip
+
+  @behaviour :cowboy_websocket
+  @compose_route_id 4
+  @message_route_id 6
+  @ping_route_id 3
+  @commit_offset_route_id 7
+  alias Util.ConnectionsHelper
+  alias Supervisor.Server
+  alias Route.Connect
+
+
+  def init(req, _state) do
+
+    case Bimip.Auth.TokenVerifier.verify_from_header(:cowboy_req.header("token", req)) do
+      {:ok, claims} ->
+        ConnectionsHelper.accept(req, claims)
+      {:error, :revoked} ->
+        ConnectionsHelper.reject(req,  :invalid_token)
+      {:error, :invalid_token} ->
+        ConnectionsHelper.reject(req, "invalid token")
+    end
+
+  end
+
+
+  def websocket_init(%{eid: eid, device_id: device_id, exp: exp, uupid: uupid} = state) do
+    state_with_ws = Map.put(state, :ws_pid, self())
+
+    case Horde.Registry.lookup(EidRegistry, eid) do
+      [{_pid, _value}] ->
+        # pid
+        Connect.start_device({device_id, eid, exp, self(), uupid})
+      [] ->
+        Server.start_mother(state_with_ws)
+        Logger.error("Mother process for #{eid} not found in Registry")
+        nil
+    end
+    {:ok, state}
+  end
+
+
+  # client receiving awareness status from server
+  # create route binary dont
+  # send sunscriber request and subscriber reponse (Modify online queue) No file system yet only version two
+
+  def websocket_info({:binary, binary}, state) do
+    {:reply, {:binary, binary}, state}
+  end
+
+  def websocket_info({:binaries, binaries}, state) when is_list(binaries) do
+    Logger.info("Sending batch awareness frames to client")
+    frames = Enum.map(binaries, fn bin -> {:binary, bin} end)
+    {:reply, frames, state}
+  end
+
+  def websocket_handle({:binary, data}, state) do
+    if data == <<>> do
+      Logger.error("Received empty binary")
+      {:ok, state}
+    else
+      case safe_decode_route(data) do
+        {:ok, route} ->
+          dispatch_map()
+          |> Map.get(route, &default_handler/2)
+          |> then(fn handler -> handler.(state, data) end)
+
+        {:error, reason} ->
+          Logger.error("Failed to decode route: #{inspect(reason)}")
+          {:ok, state}
+      end
+    end
+  end
+
+  defp dispatch_map do
+    %{
+      # 2 => &handle_awareness/2,
+      3 => &handle_ping/2,
+      4 => &handle_compose/2,
+      6 => &handle_message/2,
+      7 => &handle_commit_offset/2,
+    }
+  end
+
+  defp default_handler(%{eid: eid, device_id: device_id} = state, data) do
+    Logger.error("Unknown route received for device #{device_id}, eid #{eid}")
+    {:ok, state}
+  end
+
+  def websocket_info(:send_ping, state) do
+    IO.inspect(1)
+    {:reply, :ping, state}
+  end
+
+  def websocket_handle(:pong,  state) do
+    IO.inspect(2)
+    case Connect.client_server_inbound({:device_id, state.device_id, :pong, DateTime.utc_now()}) do
+      :ok ->
+        {:ok, state}
+      :error ->
+        :ok
+    end
+  end
+
+  defp handle_ping(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :ping, data}) do
+      :ok ->
+        {:ok, state}
+      :error ->
+        reason = "Field '' →  Invalid ping 500"
+        throws = ThrowProtocolErrorSchema.build(@ping_route_id, reason, Until.UniPosTime.response_time())
+        send(self(), {:binary, throws})
+    end
+  end
+
+  defp handle_message(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :message, data}) do
+      :ok ->
+        {:ok, state}
+      :error ->
+        reason = "Field '' → #{} Invalid message 500"
+        throws = ThrowProtocolErrorSchema.build( @message_route_id, reason, Until.UniPosTime.response_time())
+        send(self(), {:binary, throws})
+    end
+  end
+
+  defp handle_compose(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :compose, data}) do
+      :ok ->
+        {:ok, state}
+      :error ->
+        {:ok, state}
+    end
+  end
+
+  defp handle_commit_offset(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :offset_commit, data}) do
+      :ok ->
+        {:ok, state}
+      :error ->
+        reason = "Field '' → Invalid commmit offset 500"
+        throws = ThrowProtocolErrorSchema.build(@commit_offset_route_id, reason, Until.UniPosTime.response_time())
+        send(self(), {:binary, throws})
+        {:ok, state}
+    end
+  end
+
+  # defp handle_logout(state, data) do
+  #   IO.inspect("log_out_route")
+  #   case RegistryHub.route_same_ping(state.eid, state.device_id, data) do
+  #     :ok -> {:ok, state}
+  #     :error ->
+
+  #     error_msg =
+  #     ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
+
+  #     send(self(), {:binary, error_msg})
+  #     {:ok, state}
+  #   end
+  # end
+
+  def websocket_info(:terminate_socket, state) do
+    {:stop, state}
+  end
+
+  # -----------------------
+  # Only decode the route field for fast dispatch
+  # -----------------------
+  defp safe_decode_route(data) do
+    try do
+      with %Bimip.MessageScheme{route_id: route} <- Bimip.MessageScheme.decode(data) do
+        {:ok, route}
+      else
+        _ -> {:error, :invalid_route}
+      end
+    rescue
+      e -> {:error, e}
+    end
+  end
+
+  # terminate, send offline message.......
+  def terminate(reason, _req, state) do
+    Connect.handle_terminate(reason, state)
+    :ok
+  end
 end

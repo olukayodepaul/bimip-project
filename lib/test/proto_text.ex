@@ -2,8 +2,11 @@ defmodule ProtoTest do
   def test() do
     binary =
       "
- 08 07 3A 1B 0A 0E 0A 0C 61 40 64 6F 6D 61 69 6E
- 2E 63 6F 6D 10 02 18 01 20 A7 FB 9F E9 C8 33
+08 0B 5A 41 08 06 12 36 46 69 65 6C 64 20 27 74
+6F 2E 65 69 64 27 20 E2 86 92 20 62 40 64 6F 6D
+61 69 6E 2E 63 6F 6D 20 49 6E 76 61 6C 69 64 20
+73 75 62 73 63 72 69 62 65 72 20 35 30 30 18 A1
+D2 A5 B1 C9 33
       "
       |> String.split
       |> Enum.map(&String.to_integer(&1, 16))

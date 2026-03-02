@@ -13,100 +13,6 @@ defmodule Bimip.Identity do
   field :node, 3, proto3_optional: true, type: :string
 end
 
-defmodule Bimip.Media do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :type, 1, type: :string
-  field :url, 2, type: :string
-  field :thumbnail, 3, type: :string
-  field :size, 4, type: :int64
-end
-
-defmodule Bimip.Awareness do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :id, 1, type: :string
-  field :from, 2, type: Bimip.Identity
-  field :to, 3, type: Bimip.Identity
-  field :type, 4, type: :int32
-  field :status, 5, type: :int32
-  field :location_sharing, 6, type: :int32, json_name: "locationSharing"
-  field :latitude, 7, type: :double
-  field :longitude, 8, type: :double
-  field :ttl, 9, type: :int32
-  field :details, 10, type: :string
-  field :timestamp, 11, type: :int64
-  field :visibility, 12, type: :int32
-end
-
-defmodule Bimip.OWNERS do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :from, 1, type: :string
-  field :to, 2, type: :string
-end
-
-defmodule Bimip.Signal do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :id, 1, type: :string
-  field :signal_offset, 2, type: :int32, json_name: "signalOffset"
-  field :user_offset, 3, type: :int32, json_name: "userOffset"
-  field :status, 4, type: :int32
-  field :timestamp, 5, type: :int64
-  field :from, 6, type: Bimip.Identity
-  field :to, 7, type: Bimip.Identity
-  field :type, 8, type: :int32
-  field :signal_type, 9, type: :int32, json_name: "signalType"
-  field :error, 10, proto3_optional: true, type: :string
-  field :offset_ack, 12, type: Bimip.OffsetAck, json_name: "offsetAck"
-  field :delivery_ack, 13, type: Bimip.DeliveryAck, json_name: "deliveryAck"
-  field :signal_type_ex, 14, type: :int32, json_name: "signalTypeEx"
-  field :batched_acks, 15, repeated: true, type: Bimip.BatchedOffset, json_name: "batchedAcks"
-end
-
-defmodule Bimip.OffsetAck do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :advance_offset, 1, type: :bool, json_name: "advanceOffset"
-  field :advance_offset_timestamp, 2, type: :int64, json_name: "advanceOffsetTimestamp"
-end
-
-defmodule Bimip.BatchedOffset do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :user_offset, 1, type: :int32, json_name: "userOffset"
-  field :owners, 2, type: Bimip.OWNERS
-  field :timestamp, 3, type: :int64
-  field :signal_type, 4, type: :int32, json_name: "signalType"
-  field :offset, 5, type: :int32
-end
-
-defmodule Bimip.DeliveryAck do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :sent, 1, type: :bool
-  field :delivered, 2, type: :bool
-  field :read, 3, type: :bool
-  field :sent_timestamp, 4, type: :int64, json_name: "sentTimestamp"
-  field :delivered_timestamp, 5, type: :int64, json_name: "deliveredTimestamp"
-  field :read_timestamp, 6, type: :int64, json_name: "readTimestamp"
-end
-
 defmodule Bimip.PushNotification do
   @moduledoc false
 
@@ -118,20 +24,6 @@ defmodule Bimip.PushNotification do
   field :type, 4, type: :string
   field :timestamp, 5, type: :int64
   field :payload, 6, type: :bytes
-end
-
-defmodule Bimip.Contact do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :from, 1, type: Bimip.Identity
-  field :to, 2, type: Bimip.Identity
-  field :tracking_id, 3, type: :string, json_name: "trackingId"
-  field :relationship, 4, type: :int32
-  field :action, 5, type: :int32
-  field :timestamp, 6, type: :int64
-  field :details, 7, type: :string
 end
 
 defmodule Bimip.TokenAuthority do
@@ -166,11 +58,8 @@ defmodule Bimip.Logout do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :to, 1, type: Bimip.Identity
-  field :type, 2, type: :int32
-  field :status, 3, type: :int32
+  field :from, 1, type: Bimip.Identity
   field :timestamp, 4, type: :int64
-  field :details, 5, type: :string
 end
 
 defmodule Bimip.Body do
@@ -255,6 +144,18 @@ defmodule Bimip.Compose do
   field :from, 2, type: Bimip.Identity
   field :type, 3, type: :int32
   field :timestamp, 4, type: :int64
+end
+
+defmodule Bimip.Awareness do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :from, 1, type: Bimip.Identity
+  field :presence, 2, type: :int32
+  field :offset, 3, type: :int64
+  field :broadcast, 4, type: :int32
+  field :timestamp, 5, type: :int64
 end
 
 defmodule Bimip.MessageScheme do

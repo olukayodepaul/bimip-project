@@ -5,6 +5,7 @@ defmodule Bimip.SignalClient do
   @compose_route_id 4
   @commit_offset_route_id 7
   @ping_route_id 3
+  @wareness_id 3
   alias Bimip.{MessageScheme}
   alias Supervisor.{Registry}
   alias Util.Network.AdaptivePingPong
@@ -17,12 +18,10 @@ defmodule Bimip.SignalClient do
   end
 
   def init({eid, device_id, exp, ws_pid, uupid}) do
-    now = DateTime.utc_now()
 
-    # 1. Schedule the first check
-    AdaptivePingPong.schedule_ping(device_id)
+    now_mono = System.monotonic_time(:millisecond)
+    Util.Network.AdaptivePingPong.schedule_next_ping(device_id, nil)
 
-    # 2. Return the COMPLETE state map
     {:ok,
       %{
         # Basic Info
@@ -33,15 +32,11 @@ defmodule Bimip.SignalClient do
         exp: exp,
 
         # REQUIRED for AdaptivePingPong
-        timer: now,                         # Tracks last ping attempt
-        last_seen: now,                      # Tracks last activity
-        last_rtt: nil,                       # Network speed
-        missed_pongs: 0,                     # Health check
-        pong_counter: 0,                     # Status refresh counter
-        last_state_change: now,              # For Registry updates
-        last_reported_seen: nil,             # For external presence
-        presence_report_interval: 60_000,    # 60 seconds
-        max_missed_pongs_adaptive: 3         # Initial limit
+        last_seen: now_mono,
+        last_ping_sent_at: nil,
+        last_rtt: nil,
+        missed_pongs: 0,
+        last_reported_ms: 0
       }
     }
   end
@@ -62,6 +57,10 @@ defmodule Bimip.SignalClient do
     AdaptivePingPong.pongs_received(state.device_id, receive_time, state)
   end
 
+  def handle_info(:tick_ping, state) do
+    AdaptivePingPong.handle_ping(state)
+  end
+
   def handle_cast({:ping,  data},   %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
     bim = Bimip.MessageScheme.decode(data)
     case bim.payload do
@@ -76,19 +75,19 @@ defmodule Bimip.SignalClient do
           |> Bimip.MessageScheme.encode()
           |> then(&socket_outbound(ws_pid, &1))
 
-
           {:error, err} ->
 
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"
             throws = ThrowProtocolErrorSchema.build(@ping_route_id, reason,Until.UniPosTime.response_time())
             socket_outbound(ws_pid, throws)
+
         end
-        {:noreply, mark_active(state)}
+        {:noreply, AdaptivePingPong.mark_active(state)}
       _ ->
         reason = "Unexpected payload received"
         throws = ThrowProtocolErrorSchema.build(@ping_route_id, reason, Until.UniPosTime.response_time())
         socket_outbound(ws_pid, throws)
-        {:noreply, active_last_see(state)}
+        {:noreply, AdaptivePingPong.mark_active(state)}
       end
   end
 
@@ -111,12 +110,12 @@ defmodule Bimip.SignalClient do
             throws = ThrowProtocolErrorSchema.build(@commit_offset_route_id, reason,Until.UniPosTime.response_time())
             socket_outbound(ws_pid, throws)
         end
-        {:noreply, active_last_see(state)}
+        {:noreply, mark_active(state)}
       _ ->
         reason = "Unexpected payload received"
         throws = ThrowProtocolErrorSchema.build(@commit_offset_route_id, reason, Until.UniPosTime.response_time())
         socket_outbound(ws_pid, throws)
-        {:noreply, active_last_see(state)}
+        {:noreply, mark_active(state)}
       end
   end
 
@@ -133,9 +132,9 @@ defmodule Bimip.SignalClient do
           :drop
             :noop
         end
-        {:noreply, active_last_see(state)}
+        {:noreply, mark_active(state)}
       _ ->
-        {:noreply, active_last_see(state)}
+        {:noreply, mark_active(state)}
       end
   end
 
@@ -159,14 +158,44 @@ defmodule Bimip.SignalClient do
             socket_outbound(ws_pid, throws)
 
         end
-        {:noreply, active_last_see(state)}
+        {:noreply, mark_active(state)}
       _ ->
 
         reason = "Unexpected payload received"
         throws = ThrowProtocolErrorSchema.build(@message_route_id, reason, Until.UniPosTime.response_time())
         socket_outbound(ws_pid, throws)
-        {:noreply, active_last_see(state)}
+        {:noreply, mark_active(state)}
 
+      end
+  end
+
+  def handle_cast({:awareness,  data}, %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
+    bim = Bimip.MessageScheme.decode(data)
+    case bim.payload do
+      {:awareness, %Bimip.Awareness{} = awareness} ->
+        case Bimip.Validators.AwarenessValidator.validate(awareness, eid) do
+          :ok ->
+
+            {route_type, payload} = if awareness.broadcast == 2 do
+              {:broadcast, data}
+            else
+              {:awareness, awareness}
+            end
+
+            server_inbound(payload, :eid, route_type, eid)
+
+
+          {:error, err} ->
+            reason = "Field '#{err.field}' → #{err.description} #{err.code}"
+            throws = ThrowProtocolErrorSchema.build(@wareness_id, reason,Until.UniPosTime.response_time())
+            socket_outbound(ws_pid, throws)
+        end
+        {:noreply, mark_active(state)}
+      _ ->
+        reason = "Unexpected payload received"
+        throws = ThrowProtocolErrorSchema.build(@wareness_id, reason, Until.UniPosTime.response_time())
+        socket_outbound(ws_pid, throws)
+        {:noreply, mark_active(state)}
       end
   end
 
@@ -184,31 +213,29 @@ defmodule Bimip.SignalClient do
     {:noreply, state}
   end
 
-  defp active_last_see(state) do
-    state
-    |> Map.put(:last_seen, DateTime.utc_now())
-    |> Map.put(:missed_pongs, 0)
-  end
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp mark_active(state) do
+    now = now_ms()
     state
-    |> Map.put(:last_seen, DateTime.utc_now())
+    |> Map.put(:last_seen, now)
     |> Map.put(:missed_pongs, 0)
-    |> maybe_report_to_external_service()
   end
 
-  defp maybe_report_to_external_service(state) do
-    now = DateTime.utc_now()
+  # defp maybe_report_to_external_service(state) do
+  #   now = DateTime.utc_now()
 
-    should_report = is_nil(state.last_reported_seen) or
-                    DateTime.diff(now, state.last_reported_seen, :millisecond) >= state.presence_report_interval
-    if should_report do
-      server_inbound(%{last_seen: DateTime.utc_now(), device_id: state.device_id}, :eid, :ping, state.eid)
-      %{state | last_reported_seen: now}
-    else
-      state
-    end
-  end
+  #   should_report = is_nil(state.last_reported_seen) or
+  #                   DateTime.diff(now, state.last_reported_seen, :millisecond) >= state.presence_report_interval
+  #   if should_report do
+
+  #     server_inbound(state.device_id, :eid, :ping, state.eid)
+
+  #     %{state | last_reported_seen: now}
+  #   else
+  #     state
+  #   end
+  # end
 
 
 end
