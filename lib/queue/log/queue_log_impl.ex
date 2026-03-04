@@ -222,99 +222,6 @@ defmodule Queue.QueueLogImpl do
     end)
   end
 
-  def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
-    cache = :"device_bookmarks_cache_#{state.shard}"
-    today = Date.utc_today() |> Date.to_iso8601()
-
-    # --- STEP 1: LOAD & RECONCILE ---
-    user_data = case :ets.lookup(cache, user) do
-      [{^user, %{"exp" => %{"last_check_date" => ^today}} = data}] -> data
-      [{^user, data}] ->
-        reconciled = reconcile_user_data(data, state.manifest)
-        :ets.insert(cache, {user, reconciled})
-        reconciled
-      [] ->
-        case system_recovery(user, p) do
-          :ok ->
-            [{^user, data}] = :ets.lookup(cache, user)
-            reconciled = reconcile_user_data(data, state.manifest)
-            :ets.insert(cache, {user, reconciled})
-            reconciled
-          _ -> %{}
-        end
-    end
-
-    # --- STEP 2: IDENTIFY STARTING POINT ---
-    {seg_id, last_off} = case Map.get(user_data, device_id) do
-      {s, o} -> {s, o}
-      nil ->
-        oldest_seg = find_oldest_valid_segment(user_data, state.manifest)
-
-        # 🚀 Pull the actual recorded starting offset for this specific user
-        case Map.get(user_data, "positions", %{}) |> Map.get(oldest_seg) do
-          {off, _phys} -> {oldest_seg, off}
-          _ -> {oldest_seg, 1} # Absolute fallback if map is empty
-        end
-    end
-
-    # --- STEP 3: RESOLVE PHYSICAL JUMP (Disk only) ---
-    target_base = case String.split(seg_id, "_") do
-      [base_str | _] -> String.to_integer(base_str)
-      _ -> state.active_base
-    end
-
-    gate_off = if last_off > 0, do: last_off - rem(last_off - 1, @user_stride), else: 0
-
-   {actual_seg_base, actual_phys} = case Map.get(user_data, "positions", %{}) |> Map.get(seg_id) do
-    {_off, phys} ->
-      # 🎯 SUCCESS: We jump to exactly where this user starts.
-      # If this user's first message was the 500th in the file,
-      # 'phys' might be 256000.
-      {target_base, phys}
-
-    nil ->
-      # FALLBACK: If the exact segment isn't in 'positions',
-      # we use the Stride Index (ETS) to find the closest 1,000-block.
-      gate_off = if last_off > 0, do: last_off - rem(last_off - 1, @user_stride), else: 1
-      case :ets.lookup(idx_cache(state.shard), {user, p, gate_off}) do
-        [{_, {^target_base, pos}}] -> {target_base, pos}
-        _ -> {target_base, 0}
-      end
-  end
-
-    # --- STEP 4: FETCH FROM DISK ---
-    {:ok, disk_results} = stream_messages(state, user, p, actual_seg_base, actual_phys, batch_size, [], device_id)
-
-    # --- STEP 5: FETCH FROM RAM BUFFER (Zero-Delay) ---
-    # 🚀 This is where we solve the delay. We pull from the buffer before it hits disk.
-    buffer_tab = log_buffer(state.shard)
-    raw_buffer = :ets.select(buffer_tab, [
-      {
-        {:"$1", {state.shard, :"$2", %{u: user, p: p, bin: :"$3", off: :"$4", writer_device: :"$5"}}},
-        [
-          {:>, :"$4", last_off},      # 🎯 Filter: Only newer messages
-          {:"/=", :"$5", device_id}  # 🎯 Filter: Ignore messages from this device
-        ],
-        [:"$3"] # Return the binary for decoding
-      }
-    ])
-
-    unflushed_results = Enum.map(raw_buffer, fn bin ->
-      # Decode into the same structure stream_messages returns
-      :erlang.binary_to_term(bin, [:safe])
-    end)
-
-    # --- STEP 6: MERGE & DEDUP ---
-    # Since a flush might be happening, a message could be in BOTH disk and RAM.
-    # uniq_by removes the duplicate during the 'handover' window.
-    combined = (disk_results ++ unflushed_results)
-               |> Enum.uniq_by(fn msg -> msg.offset end)
-               |> Enum.filter(fn msg -> msg.offset >= last_off end)# Safety filter
-               |> Enum.sort_by(fn msg -> msg.offset end)
-               |> Enum.take(batch_size)
-
-    {:reply, {:ok, combined}, state}
-  end
 
   defp find_oldest_valid_segment(user_data, manifest) do
     active_seg_key = "#{manifest.active_base}_#{manifest.active_ts}"
@@ -674,34 +581,115 @@ defp read_from_disk(state, base, pos) do
     end
   end
 
-  defp stream_messages(state, user, p, seg_id, phys_pos, count, acc, device_id) do
+ def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
+    cache = :"device_bookmarks_cache_#{state.shard}"
+    today = Date.utc_today() |> Date.to_iso8601()
+
+    # 1. LOAD & RECONCILE (Rule #3: Date Check)
+    user_data = case :ets.lookup(cache, user) do
+      [{^user, %{"exp" => %{"last_check_date" => ^today}} = data}] -> data
+      [{^user, data}] ->
+        reconciled = reconcile_user_data(data, state.manifest)
+        :ets.insert(cache, {user, reconciled})
+        reconciled
+      [] ->
+        case system_recovery(user, p) do
+          :ok ->
+            [{^user, d}] = :ets.lookup(cache, user)
+            reconcile_user_data(d, state.manifest)
+          _ -> %{}
+        end
+    end
+
+    # 2. IDENTIFY STARTING POINT (Rule #1 & #2)
+    # Ensure device_id is a string for the Map lookup
+    dev_key = to_string(device_id)
+    {seg_id, last_off} = case Map.get(user_data, dev_key) do
+      {s, o} -> {s, o} # Rule #2: Existing device at offset X
+      nil ->
+        # Rule #1: New device, start from the oldest position we have on record
+        old_seg = find_oldest_valid_segment(user_data, state.manifest)
+        case get_in(user_data, ["positions", old_seg]) do
+          {off, _phys} -> {old_seg, off - 1} # Start just BEFORE so we pick up 'off'
+          _ -> {old_seg, 0}
+        end
+    end
+
+    # 3. RESOLVE PHYSICAL JUMP (Rule #1)
+    [base_str | _] = String.split(seg_id, "_")
+    target_base = String.to_integer(base_str)
+
+    # Check 'positions' map for the specific physical offset of this user
+    {actual_seg_base, actual_phys} = case get_in(user_data, ["positions", seg_id]) do
+      {_l_off, p_off} when is_integer(p_off) -> {target_base, p_off}
+      _ ->
+        # Fallback to sparse index
+        gate = if last_off > 0, do: last_off - rem(last_off, @user_stride), else: 0
+        case :ets.lookup(idx_cache(state.shard), {user, p, gate}) do
+          [{_, {^target_base, pos}}] -> {target_base, pos}
+          _ -> {target_base, 0}
+        end
+    end
+
+    # 4. FETCH FROM DISK (Pass 'last_off' to skip old data)
+    {:ok, disk_results} = stream_messages(state, user, p, actual_seg_base, actual_phys, batch_size, [], dev_key, last_off)
+
+    # 5. FETCH FROM RAM (Zero-Delay)
+    buffer_tab = log_buffer(state.shard)
+    raw_buffer = :ets.select(buffer_tab, [
+      {
+        {:"$1", {state.shard, :"$2", %{u: user, p: p, bin: :"$3", off: :"$4", writer_device: :"$5"}}},
+        [
+          {:>, :"$4", last_off},
+          {:"/=", :"$5", dev_key}
+        ],
+        # Return a tuple of {binary, offset, user, writer_device}
+        [{{:"$3", :"$4", :"$5"}}]
+      }
+    ])
+
+    unflushed_results = Enum.map(raw_buffer, fn {bin, offset, writer_dev} ->
+      %{
+        u: user,
+        off: offset,
+        writer_device: writer_dev,
+        data: :erlang.binary_to_term(bin) # The decoded message struct
+      }
+    end)
+
+    # 6. MERGE & RETURN
+    combined = (disk_results ++ unflushed_results)
+               |> Enum.uniq_by(fn msg -> msg.off end)      # 🎯 Changed .offset to .off
+               |> Enum.filter(fn msg -> msg.off > last_off end) # 🎯 Changed .offset to .off
+               |> Enum.sort_by(fn msg -> msg.off end)      # 🎯 Changed .offset to .off
+               |> Enum.take(batch_size)
+
+    final_data = Enum.map(combined, fn msg -> msg.data end)
+
+    {:reply, {:ok, final_data}, state}
+
+  end
+
+  defp stream_messages(state, user, p, seg_id, phys_pos, count, acc, device_id, last_off) do
     if count <= 0 do
       {:ok, Enum.reverse(acc)}
     else
       case read_from_disk(state, seg_id, phys_pos) do
         {:ok, rec, next_pos} ->
-          # 3. Inspect the "Truth"
-          IO.inspect(rec.u, label: "DISK_USER")
-          IO.inspect(rec.p, label: "DISK_PARTITION")
-          IO.inspect(rec.writer_device, label: "DISK_DEVICE")
-
-          # 4. Compare with your query
-          IO.puts "User Match: #{rec.u == "a@domain.com"}"
-          IO.puts "Part Match: #{rec.p == 1}"
-          if rec.u == to_string(user) and rec.p == p and rec.writer_device != device_id do
-            stream_messages(state, user, p, seg_id, next_pos, count - 1, [rec.data | acc], device_id)
+          # 🎯 THE CORE FIX: Match string user, match partition, ignore same device, check offset
+          user_str = to_string(user)
+          if rec.u == user_str and rec.p == p and rec.off > last_off and to_string(rec.writer_device) != device_id do
+            stream_messages(state, user, p, seg_id, next_pos, count - 1, [rec | acc], device_id, last_off)
           else
-            stream_messages(state, user, p, seg_id, next_pos, count, acc, device_id)
+            # Skip record (wrong user, old offset, or same device) but keep scanning
+            stream_messages(state, user, p, seg_id, next_pos, count, acc, device_id, last_off)
           end
         {:error, :eof} ->
-          IO.inspect("eDISK_USER")
           case find_next_segment(state, seg_id) do
-            {:ok, next} -> stream_messages(state, user, p, next, 0, count, acc, device_id)
+            {:ok, next} -> stream_messages(state, user, p, next, 0, count, acc, device_id, last_off)
             _ -> {:ok, Enum.reverse(acc)}
           end
-        error ->
-          IO.inspect(error, label: "READ_FAILURE_REASON")
-          {:ok, Enum.reverse(acc)}
+        _ -> {:ok, Enum.reverse(acc)}
       end
     end
   end
