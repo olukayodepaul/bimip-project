@@ -76,17 +76,19 @@ end)
 Queue.QueueLogImpl.system_recovery("user57@domain.com", 1)
 Queue.QueueLogImpl.system_recovery("user1@domain.com", 1)
 Queue.QueueLogImpl.system_recovery("user30@domain.com", 1)
-Queue.QueueLogImpl.acknowledge("user57@domain.com", 2, 10)
+Queue.QueueLogImpl.acknowledge("a@domain.com", 1, 1)
 
-{:ok, messages} = Queue.QueueLogImpl.fetch_batch("user57@domain.com", 1, 2, 20)
+{:ok, messages} = Queue.QueueLogImpl.fetch_batch("a@domain.com", 1, 2, 20)
 {:ok, messages} = Queue.QueueLogImpl.fetch_batch("user1@domain.com", "partition", "device_id", 20)
 {:ok, messages} = Queue.QueueLogImpl.fetch_batch("user57@domain.com", 1, 2, 20)
 
 
-:ets.tab2list(:device_bookmarks_cache_18)
+Queue.QueueLogImpl.fetch_batch("a@domain.com", 1, 2, 20)
+Queue.QueueLogImpl.acknowledge("a@domain.com", uuid, offset)
+:ets.tab2list(:device_bookmarks_cache_14)
 :ets.tab2list(:bimip_user_offsets_18)
 
-shard = 37
+shard = 14
 bookmark_path = "data/device_bookmarks/#{shard}.bin"
 case File.read(bookmark_path) do
   {:ok, binary} when binary != <<>> ->

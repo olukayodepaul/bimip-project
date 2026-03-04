@@ -4,6 +4,7 @@ defmodule Bimip.SignalServer do
   require Logger
   @partition 1
   @message_route_id 6
+  @range 100
   alias Supervisor.{Registry, Client}
 
 
@@ -51,11 +52,11 @@ defmodule Bimip.SignalServer do
           token_expiration: exp
         }
 
-        # new_sub_set = subc |> BimipSubscribers.Handler.extract_eids() |> MapSet.new()
+        new_sub_set = subc |> BimipSubscribers.Handler.extract_eids() |> MapSet.new()
 
         new_state =
           state
-          # |> Map.put(:sub, new_sub_set) # Replaces the old subscriber set
+          |> Map.put(:sub, new_sub_set) # Replaces the old subscriber set
           |> update_in([:devices, device_id], fn
             nil ->
               device_info
@@ -86,7 +87,7 @@ defmodule Bimip.SignalServer do
     uupid: _uupid } = message_builder}, state
     ) do
 
-    case subscribers_validation(message.to.eid) do
+    case subscribers_validation(message.to.eid, state.sub) do
       {:ok, :success} ->
          Task.Supervisor.start_child(Message.TaskSupervisor, fn ->
           t1 = Task.async(fn -> Message.Broker.sender(message_builder, state.devices) end)
@@ -104,13 +105,16 @@ defmodule Bimip.SignalServer do
   end
 
   #subscribers_validation is next and asfter complating the ping
-  defp subscribers_validation(subscriber_eid) do
-    validate = 1
-    if validate == 1 do
+  defp subscribers_validation(subscriber_eid, sub) do
+    if  subscriber_eid in sub do
       {:ok, :success}
     else
       {:error, :failed}
     end
+  end
+
+  defp fetch_online_message(eid, uuid) do
+    {:ok, messages} = Queue.QueueLogImpl.fetch_batch(eid, @partition , uuid, @range)
   end
 
   @impl true

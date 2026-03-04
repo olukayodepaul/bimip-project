@@ -34,7 +34,7 @@ defmodule Queue.DeviceBookmark do
   Updates the sparse positions map for a user.
   Keeps the minimal offset per segment (sparse indexing).
   """
-  def mark_position(user, file_id, off) do
+  def mark_position(user, file_id, off, phys) do # 🚀 Added phys parameter
     cache = cache_name(shard_for(user))
 
     user_map =
@@ -45,8 +45,13 @@ defmodule Queue.DeviceBookmark do
 
     positions = Map.get(user_map, "positions", %{})
 
+    # 🚀 Logic Change: Store the tuple {off, phys}
+    # If a record already exists, we keep the one with the smaller offset
+    # to ensure the anchor stays at the beginning of the user's data in this segment.
     updated_positions =
-      Map.update(positions, file_id, off, fn existing -> min(existing, off) end)
+      Map.update(positions, file_id, {off, phys}, fn {existing_off, _} = existing ->
+        if off < existing_off, do: {off, phys}, else: existing
+      end)
 
     updated_map = Map.put(user_map, "positions", updated_positions)
     :ets.insert(cache, {user, updated_map})

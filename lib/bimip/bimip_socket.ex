@@ -85,6 +85,7 @@ defmodule Bimip.Socket do
   end
 
   def websocket_info(:send_ping, state) do
+     IO.inspect(1)
     {:reply, :ping, state}
   end
 

@@ -16,7 +16,6 @@ defmodule Queue.QueueLogImpl do
   @max_messages_per_seg 1_000_000
   @user_stride 1_000
   @max_buffer_per_shard 10_000_000
-
   @checkpoints_prefix :bimip_segment_checkpoints_
   @user_offsets_prefix :bimip_user_offsets_
   @user_segment_counts_prefix :bimip_user_segment_counts_
@@ -25,6 +24,8 @@ defmodule Queue.QueueLogImpl do
   @stable_limit 50_000
   @flush_state :flush_state
   @retention_seconds 60 * 60 * 24 * 1
+
+  @partition 1
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -61,34 +62,48 @@ defmodule Queue.QueueLogImpl do
     :ok
   end
 
-  def write(message_builder) do
-    # partition_id, sender_uid, recipient_uid, device_id, type, payload_ctx, payload, message_id, ts
-    # shard = :erlang.phash2(recipient_uid, @num_shards)
-    # buf = log_buffer(shard)
+  # user1 = "user1@domain.com"
+  # user2 = "user57@domain.com"  # same shard 18
+  # Queue.QueueLogImpl.write(1, user1, user1, "1", 1, 1, msg1, unique_id, System.system_time(:millisecond))
 
-    # if :ets.info(buf, :size) > @max_buffer_per_shard do
-    #   {:error, :backpressure}
-    # else
-    #   # 🚀 FIX: Get both offsets atomically from the ShardServer
-    #   {offset, shard_offset} = Queue.ShardServer.get_next_offsets(shard, recipient_uid)
-    #   data = Queue.Persist.build(%{payload: payload}, offset , shard_offset, recipient_uid, type, payload_ctx)
+  def write(%{
+    delim: delim,
+    uuid: uupid,
+    ts: ts,
+    message_builder:  %Bimip.Message{} = mbuilder }) do
 
-    #   record = %{
-    #     u: recipient_uid,
-    #     s: sender_uid,
-    #     p: partition_id,
-    #     off: offset,
-    #     mid: message_id,
-    #     msg_count: shard_offset, # This is now perfectly synced with 'off'
-    #     writer_device: to_string(device_id),
-    #     bin: :erlang.term_to_binary(data, [:compressed]),
-    #     ts: ts
-    #   }
+    {owners, owner_uupid} = if delim == :sender do
+      {mbuilder.from.eid, uupid}
+    else
+      {mbuilder.to.eid, -1}
+    end
 
-    #   :ets.insert(buf, {shard_offset, {shard, offset, record}})
-    #   {:ok, offset}
-    # end
-    {:ok, 10}
+    shard = :erlang.phash2(owners, @num_shards)
+    buf = log_buffer(shard)
+
+    if :ets.info(buf, :size) > @max_buffer_per_shard do
+      {:error, :backpressure}
+    else
+      # 🚀 FIX: Get both offsets atomically from the ShardServer
+      {offset, shard_offset} = Queue.ShardServer.get_next_offsets(shard, owners)
+      data = Queue.Persist.build(mbuilder, offset)
+
+      record = %{
+        u: owners,
+        s: owners,
+        p:  @partition,
+        off: offset,
+        mid: mbuilder.id,
+        msg_count: shard_offset,
+        writer_device: to_string(owner_uupid),
+        bin: :erlang.term_to_binary(data, [:compressed]),
+        ts: ts
+      }
+
+      :ets.insert(buf, {shard_offset, {shard, offset, record}})
+      {:ok, offset}
+    end
+
   end
 
   def fetch_batch(user, partition_id, device_id, batch_size \\ 50) do
@@ -232,7 +247,14 @@ defmodule Queue.QueueLogImpl do
     # --- STEP 2: IDENTIFY STARTING POINT ---
     {seg_id, last_off} = case Map.get(user_data, device_id) do
       {s, o} -> {s, o}
-      nil -> {find_oldest_valid_segment(user_data, state.manifest), 0}
+      nil ->
+        oldest_seg = find_oldest_valid_segment(user_data, state.manifest)
+
+        # 🚀 Pull the actual recorded starting offset for this specific user
+        case Map.get(user_data, "positions", %{}) |> Map.get(oldest_seg) do
+          {off, _phys} -> {oldest_seg, off}
+          _ -> {oldest_seg, 1} # Absolute fallback if map is empty
+        end
     end
 
     # --- STEP 3: RESOLVE PHYSICAL JUMP (Disk only) ---
@@ -243,10 +265,22 @@ defmodule Queue.QueueLogImpl do
 
     gate_off = if last_off > 0, do: last_off - rem(last_off - 1, @user_stride), else: 0
 
-    {actual_seg_base, actual_phys} = case :ets.lookup(idx_cache(state.shard), {user, p, gate_off}) do
-      [{_, {^target_base, pos}}] -> {target_base, pos}
-      _ -> {target_base, 0}
-    end
+   {actual_seg_base, actual_phys} = case Map.get(user_data, "positions", %{}) |> Map.get(seg_id) do
+    {_off, phys} ->
+      # 🎯 SUCCESS: We jump to exactly where this user starts.
+      # If this user's first message was the 500th in the file,
+      # 'phys' might be 256000.
+      {target_base, phys}
+
+    nil ->
+      # FALLBACK: If the exact segment isn't in 'positions',
+      # we use the Stride Index (ETS) to find the closest 1,000-block.
+      gate_off = if last_off > 0, do: last_off - rem(last_off - 1, @user_stride), else: 1
+      case :ets.lookup(idx_cache(state.shard), {user, p, gate_off}) do
+        [{_, {^target_base, pos}}] -> {target_base, pos}
+        _ -> {target_base, 0}
+      end
+  end
 
     # --- STEP 4: FETCH FROM DISK ---
     {:ok, disk_results} = stream_messages(state, user, p, actual_seg_base, actual_phys, batch_size, [], device_id)
@@ -275,7 +309,7 @@ defmodule Queue.QueueLogImpl do
     # uniq_by removes the duplicate during the 'handover' window.
     combined = (disk_results ++ unflushed_results)
                |> Enum.uniq_by(fn msg -> msg.offset end)
-               |> Enum.filter(fn msg -> msg.offset > last_off end) # Safety filter
+               |> Enum.filter(fn msg -> msg.offset >= last_off end)# Safety filter
                |> Enum.sort_by(fn msg -> msg.offset end)
                |> Enum.take(batch_size)
 
@@ -346,18 +380,23 @@ defmodule Queue.QueueLogImpl do
             {bin_packet, p_size} = encode_packet(rec, rec.off, state)
 
             # STRIDE LOGIC: Check boundary (1, 1001, 2001...)
-            {new_i_acc, new_upd} =
-              if rem(new_u_count - 1, @user_stride) == 0 do
-                u_bin = to_string(rec.u)
-                idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, rec.off::64, state.active_base::64, curr_phys::64>>
+           {new_i_acc, new_upd} =
+            if rem(new_u_count - 1, @user_stride) == 0 do
+              u_bin = to_string(rec.u)
 
-                # Update index cache for immediate reads
-                :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, rec.off}, {state.active_base, curr_phys}})
+              # 🚀 MOVE THIS UP (Calculated before use)
+              gate = if rec.off > 0, do: rec.off - rem(rec.off - 1, @user_stride), else: 0
 
-                {[i_acc | idx_entry], [{rec.u, rec.off} | upd]}
-              else
-                {i_acc, upd}
-              end
+              # ✅ NOW use 'gate' in the binary index entry
+              idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, gate::64, state.active_base::64, curr_phys::64>>
+
+              # Update index cache for immediate reads using 'gate'
+              :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, gate}, {state.active_base, curr_phys}})
+
+              {[i_acc | idx_entry], [{rec.u, rec.off, curr_phys} | upd]}
+            else
+              {i_acc, upd}
+            end
 
               new_l_map = Map.put(l_map, rec.u, rec.off)
 
@@ -404,8 +443,8 @@ defmodule Queue.QueueLogImpl do
         end
       end)
 
-      Enum.each(updates, fn {u, off} ->
-        Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off)
+      Enum.each(updates, fn {u, off, phys} ->
+        Queue.DeviceBookmark.mark_position(u, "#{state.active_base}_#{state.active_ts}", off, phys)
       end)
 
       new_state = %{state | msg_count: final_count, current_size: final_phys}
@@ -600,6 +639,7 @@ defp read_from_disk(state, base, pos) do
     if path do
       # 1. Read the fixed-size header
       case Queue.FDPoolShard.pread(state.shard, path, pos, @header_size) do
+
         {:ok, <<0xEE, size::32, stored_crc::32, ulen::16, dlen::16, _ts::64>>} ->
 
           # 2. Read the variable-length body
@@ -612,11 +652,12 @@ defp read_from_disk(state, base, pos) do
               # 🚀 CRC Validation
               if :erlang.crc32(body) == stored_crc do
                 try do
-                  decoded_data = :erlang.binary_to_term(body, [:safe])
+                  decoded_data = :erlang.binary_to_term(body)
                   new_pos = pos + @header_size + total_body_size
                   {:ok, %{u: u, writer_device: d, p: p, off: off, data: decoded_data}, new_pos}
                 rescue
-                  _ -> {:error, :term_decode_failed}
+                  _ ->
+                    {:error, :term_decode_failed}
                 end
               else
                 Logger.error("💾 CRC Mismatch at shard #{state.shard}, pos #{pos}. Data corrupted.")
@@ -639,17 +680,28 @@ defp read_from_disk(state, base, pos) do
     else
       case read_from_disk(state, seg_id, phys_pos) do
         {:ok, rec, next_pos} ->
+          # 3. Inspect the "Truth"
+          IO.inspect(rec.u, label: "DISK_USER")
+          IO.inspect(rec.p, label: "DISK_PARTITION")
+          IO.inspect(rec.writer_device, label: "DISK_DEVICE")
+
+          # 4. Compare with your query
+          IO.puts "User Match: #{rec.u == "a@domain.com"}"
+          IO.puts "Part Match: #{rec.p == 1}"
           if rec.u == to_string(user) and rec.p == p and rec.writer_device != device_id do
             stream_messages(state, user, p, seg_id, next_pos, count - 1, [rec.data | acc], device_id)
           else
             stream_messages(state, user, p, seg_id, next_pos, count, acc, device_id)
           end
         {:error, :eof} ->
+          IO.inspect("eDISK_USER")
           case find_next_segment(state, seg_id) do
             {:ok, next} -> stream_messages(state, user, p, next, 0, count, acc, device_id)
             _ -> {:ok, Enum.reverse(acc)}
           end
-        _ -> {:ok, Enum.reverse(acc)}
+        error ->
+          IO.inspect(error, label: "READ_FAILURE_REASON")
+          {:ok, Enum.reverse(acc)}
       end
     end
   end
@@ -744,8 +796,7 @@ defp read_from_disk(state, base, pos) do
     end
   end
 
-  defp perform_recovery(user, partition_id, cache, data) do
-
+ defp perform_recovery(user, partition_id, cache, data) do
     shard = :erlang.phash2(user, @num_shards)
     u_offsets = user_offsets_tab(shard)
     u_counts = user_segment_counts_tab(shard)
@@ -754,23 +805,29 @@ defp read_from_disk(state, base, pos) do
     :ets.insert(cache, {user, data})
 
     if positions = Map.get(data, "positions") do
-      Enum.each(positions, fn {seg_key, user_off} ->
+      # Inside perform_recovery (Line 482 area)
+      Enum.each(positions, fn {seg_key, pos_val} ->
         [base_str | _] = String.split(seg_key, "_")
         base = String.to_integer(base_str)
-        # Put the sparse index back so 'fetch_batch' is fast
-        :ets.insert(idx_tab, {{user, partition_id, user_off}, {base, 0}})
+
+        {user_off, phys_pos} = case pos_val do
+          {off, phys} -> {off, phys}
+          off -> {off, 0}
+        end
+
+        # 🚀 THE FIX: Calculate the 'gate_off' the same way Fetch does
+        # This ensures the key in ETS matches the key the Fetcher searches for.
+        actual_gate = if user_off > 0, do: user_off - rem(user_off - 1, @user_stride), else: 0
+
+        :ets.insert(idx_tab, {{user, partition_id, actual_gate}, {base, phys_pos}})
       end)
     end
 
     if anchor = data["__anchor__"] do
       {_seg_key, off} = anchor
       key = {user, partition_id}
-
-      # This part is CRITICAL. It tells ETS: "This user is already at 11"
-      # If this fails, the next update_counter starts at 1.
       :ets.insert(u_offsets, {key, off})
 
-      # Recalculate stride
       manifest = get_manifest_cached(shard)
       count_in_seg = max(0, off - (manifest.active_base - 1))
       :ets.insert(user_segment_counts_tab(shard), {user, count_in_seg})
@@ -979,6 +1036,7 @@ def handle_cast({:ack, user, device_id, ack_offset}, state) do
 
       # 3. Commit
       :ets.insert(cache, {user, updated_user_data})
+
       Logger.debug("Ack processed: #{user} on #{device_id} -> Seg #{resolved_seg}")
 
     [] ->
@@ -990,7 +1048,7 @@ def handle_cast({:ack, user, device_id, ack_offset}, state) do
         "positions" => %{},
         "__anchor__" => {file_id, ack_offset} # 🚀 CRITICAL for Step 5 Recovery
       }
-      :ets.insert(cache, {user, new_user_data})
+      # :ets.insert(cache, {user, new_user_data})
       Logger.info("Created new bookmark record for user: #{user} via Ack")
   end
 
@@ -998,23 +1056,28 @@ def handle_cast({:ack, user, device_id, ack_offset}, state) do
 end
 
   # Helper to find the "Landing Zone" for an offset
-  defp find_segment_for_offset(positions, ack_offset, active_base) do
-    if positions == %{} do
-      # Fallback if no history exists
-      "#{active_base}"
-    else
-      # Find the highest base_offset that is <= our ack_offset
-      best_seg =
-        positions
-        |> Enum.filter(fn {_seg_key, start_off} -> start_off <= ack_offset end)
-        |> Enum.max_by(fn {_seg_key, start_off} -> start_off end, fn -> nil end)
+defp find_segment_for_offset(positions, ack_offset, active_base) do
+  positions
+  |> Enum.reduce(nil, fn {seg_key, _}, acc ->
+    {base_num, _} = Integer.parse(seg_key)
 
-      case best_seg do
-        {seg_id, _start_off} -> seg_id
-        nil -> "#{active_base}"
+    # Check if this base is a valid candidate (<= ack_offset)
+    if base_num <= ack_offset do
+      case acc do
+        # If it's the first candidate or closer to ack_offset than the previous best
+        nil -> {seg_key, base_num}
+        {_, best_val} when base_num > best_val -> {seg_key, base_num}
+        _ -> acc
       end
+    else
+      acc
     end
+  end)
+  |> case do
+    {seg_id, _} -> seg_id
+    nil -> "#{active_base}"
   end
+end
 
   def acknowledge(user, device_id, last_seen_offset) do
     shard = :erlang.phash2(user, @num_shards)

@@ -21,13 +21,15 @@ defmodule Message.Broker do
       "#{message.id}"
     end
 
-    case Queue.MessageTracker.check_and_insert(shard, message.from.eid, device_id, message_id, %{message_builder: message_builder, delim: :sender}) do
+    result =
+      message
+      |> Map.put(:participant_role, 2)
+
+    case Queue.MessageTracker.check_and_insert(shard, message.from.eid, device_id, message_id, %{message_builder: result, delim: :sender, uuid: uupid, ts: System.system_time(:millisecond)}) do
       {:ok, :inserted, sender_offset} ->
 
-        message
+        result
         |> Map.put(:offset, sender_offset)
-        |> Map.put(:participant_role, 2)
-        |> Map.put(:delivery_type, 1)
         |> ThrowMessageSchema.build_message()
         |> then(&Device.Transmission.emit(message.from.eid, device_id, all_devices, &1))
 
@@ -40,7 +42,7 @@ defmodule Message.Broker do
 
   def recv(
     %{
-      message: %Bimip.Message{from: from_eid, to: to_eid} = message,
+      message: %Bimip.Message{from: from_eid, to: to_eid, delivery_type: delv_type} = message,
       device_id: device_id,
       uupid: uupid
     } = message_builder
@@ -55,15 +57,19 @@ defmodule Message.Broker do
       "#{message.id}"
     end
 
-    case Queue.MessageTracker.check_and_insert(shard, message.to.eid, device_id, message_id, %{message_builder: message_builder, delim: :sender}) do
+    result =
+      message
+      |> Map.put(:participant_role, 3)
+
+    case Queue.MessageTracker.check_and_insert(shard, message.to.eid, device_id, message_id, %{message_builder: result, delim: :recv, uuid: uupid, device_id: 0, ts: System.system_time(:millisecond)}) do
       {:ok, :inserted, receiver_offset} ->
 
-        message
+        if delv_type == 1 do
+          result
           |> Map.put(:offset, receiver_offset)
-          |> Map.put(:participant_role, 3)
-          |> Map.put(:delivery_type, 1)
           |> ThrowMessageSchema.build_message()
           |> then(&Connect.client_server_inbound({:eid, message.to.eid, :message_transmiter, &1}))
+        end
 
       {:error, :already_exists, offset} ->
        :ok

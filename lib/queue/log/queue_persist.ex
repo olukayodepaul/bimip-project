@@ -7,11 +7,9 @@ defmodule Queue.Persist do
 
   @delivery_type 2
 
-  def build(%{payload: %Bimip.Message{} = payload}, next_offset, participant_role) do
+  def build(%Bimip.Message{} = payload, next_offset) do
     payload
     |> Map.put(:offset, next_offset)
-    |> Map.put(:delivery_type, @delivery_type)
-    |> Map.put(:participant_role, participant_role)
   end
 
 end
