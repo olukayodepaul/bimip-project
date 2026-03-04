@@ -334,33 +334,41 @@ defmodule Queue.QueueLogImpl do
     end
   end
 
- defp reconcile_user_data(user_data, manifest) do
+defp reconcile_user_data(user_data, manifest) do
   today = Date.utc_today() |> Date.to_iso8601()
   last_check = get_in(user_data, ["exp", "last_check_date"]) || "1970-01-01"
 
   if last_check < today do
-    # 1. Define the "White List" of valid segments
+    # 1. Source of Truth: Only the ACTIVE segment is valid for bookmarks.
+    # If it's in the 'expired' map, it's archived, and we don't want users on it.
     active_seg = "#{manifest.active_base}_#{manifest.active_ts}"
-    expired_map = manifest.expired || %{}
 
-    # A segment is valid ONLY if it's the active one OR listed in the expired map
-    is_valid? = fn seg -> seg == active_seg or Map.has_key?(expired_map, seg) end
+    # Simple check: Is the segment currently the active one?
+    is_valid? = fn seg -> seg == active_seg end
 
-    # 2. Clean 'positions' - Remove anything not in manifest
+    # 2. Clean 'positions'
+    # (We still keep the list of where they've been, but filtered for active only)
     new_positions =
       (user_data["positions"] || %{})
       |> Enum.filter(fn {seg, _} -> is_valid?.(seg) end)
       |> Map.new()
 
-    # 3. Clean 'device settings' (anchors) and other dynamic keys
+    # 3. Clean device bookmarks (Strict Ejection)
     cleaned_map = Enum.reduce(user_data, %{}, fn
-      # Match any key where the value is {segment, offset}
-      {k, {seg, off}}, acc when is_binary(k) and k not in ["exp", "positions", "__anchor__"] ->
-        if is_valid?.(seg), do: Map.put(acc, k, {seg, off}), else: acc
-
-      # Match the global anchor specifically
+      # Match the global anchor
       {"__anchor__", {seg, off}}, acc ->
         if is_valid?.(seg), do: Map.put(acc, "__anchor__", {seg, off}), else: acc
+
+      # Match device-specific bookmarks
+      {k, {seg, off}}, acc when is_binary(k) and k not in ["exp", "positions", "__anchor__"] ->
+        if is_valid?.(seg) do
+          Map.put(acc, k, {seg, off})
+        else
+          # EJECTED: The segment has been archived/expired.
+          # The device record is removed so it resets to the head on next connect.
+          Logger.info("Device #{k} ejected: Segment #{seg} is now archived.")
+          acc
+        end
 
       {k, v}, acc -> Map.put(acc, k, v)
     end)
@@ -743,7 +751,7 @@ end
   end
 
   defp perform_archival(state, manifest, expired_ids) do
-    # 1. Setup Archive Path (e.g., data/archive/37)
+
     archive_dir = Path.join("data/archive", "#{state.shard}")
 
     case File.mkdir_p(archive_dir) do
@@ -752,14 +760,16 @@ end
     end
 
     Enum.each(expired_ids, fn seg_id ->
-      Logger.info("🧹 Processing archival for Shard #{state.shard}, Segment #{seg_id}")
 
-      # A. Close the File Descriptors in the FDPool
-      # This prevents 'stale file handle' errors during the move
-      Queue.FDPoolShard.close_fd(state.shard, seg_id)
+      # --- A. NEW EJECTION LOGIC ---
+      # Extract the base_id (e.g., "100" from "100_1769445066")
+      # We use this to purge the LRU cache of ALL file types related to this segment.
+      [base_str | _] = String.split(seg_id, "_")
+
+      # This call triggers the select/delete logic in your FDPoolShard
+      Queue.FDPoolShard.eject_segment(state.shard, base_str)
 
       # B. Build the Search Pattern
-      # Matches: data/bimip/37/37_1_1769445066.*
       search_pattern = Path.join(state.shard_dir, "#{state.shard}_#{seg_id}.*")
 
       case Path.wildcard(search_pattern) do
@@ -772,6 +782,7 @@ end
             new_path = Path.join(archive_dir, filename)
 
             # C. Physically move the file from Primary to Archive
+            # Now safe because the LRU has released all handles
             case File.rename(old_path, new_path) do
               :ok ->
                 Logger.info("✅ Successfully archived: #{filename}")
@@ -782,12 +793,7 @@ end
       end
 
       # D. Cleanup the Index Cache (ETS)
-      # We remove any sparse index pointers for this segment so the Reader
-      # doesn't try to read archived files from the primary folder.
-      [base_str | _] = String.split(seg_id, "_")
       base_id = String.to_integer(base_str)
-
-      # This matches any key {user, partition, offset} where the value is {base_id, _}
       :ets.match_delete(idx_cache(state.shard), {{:"$1", :"$2", :"$3"}, {base_id, :"$4"}})
     end)
 
@@ -801,34 +807,41 @@ end
     GenServer.cast(worker_name(shard), {:ack, user, to_string(device_id), last_seen_offset})
   end
 
-  @impl true
-  def handle_cast({:ack, user, device_id, ack_offset}, state) do
+@impl true
+def handle_cast({:ack, user, device_id, ack_offset}, state) do
   cache = :"device_bookmarks_cache_#{state.shard}"
 
   case :ets.lookup(cache, user) do
     [{^user, user_data}] ->
-      # 1. Resolve Segment
-      positions = Map.get(user_data, "positions", %{})
-      resolved_seg = find_segment_for_offset(positions, ack_offset, state.active_base)
+      # --- COMPARISON ADDED HERE ---
+      {_old_seg, old_offset} = Map.get(user_data, device_id, {nil, -1})
 
-      # 2. Update/Create the device entry
-      updated_user_data = Map.put(user_data, device_id, {resolved_seg, ack_offset})
+      if ack_offset > old_offset do
+        # 1. Resolve Segment
+        positions = Map.get(user_data, "positions", %{})
+        resolved_seg = find_segment_for_offset(positions, ack_offset, state.active_base)
 
-      # 3. Commit
-      :ets.insert(cache, {user, updated_user_data})
+        # 2. Update/Create the device entry
+        updated_user_data = Map.put(user_data, device_id, {resolved_seg, ack_offset})
 
-      Logger.debug("Ack processed: #{user} on #{device_id} -> Seg #{resolved_seg}")
+        # 3. Commit
+        :ets.insert(cache, {user, updated_user_data})
+
+        Logger.debug("Ack processed: #{user} on #{device_id} -> Seg #{resolved_seg}")
+      else
+        # If the incoming offset is not greater than the existing one, we do nothing.
+        Logger.debug("Stale Ack ignored for #{device_id}: current #{old_offset}, received #{ack_offset}")
+      end
 
     [] ->
       # This is likely a truly new user.
-      # We create a minimal record so the Ack isn't lost.
       file_id = "#{state.active_base}_#{state.active_ts}"
       new_user_data = %{
         device_id => {file_id, ack_offset},
         "positions" => %{},
-        "__anchor__" => {file_id, ack_offset} # 🚀 CRITICAL for Step 5 Recovery
+        "__anchor__" => {file_id, ack_offset}
       }
-      # :ets.insert(cache, {user, new_user_data})
+      :ets.insert(cache, {user, new_user_data})
       Logger.info("Created new bookmark record for user: #{user} via Ack")
   end
 

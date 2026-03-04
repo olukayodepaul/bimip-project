@@ -111,7 +111,7 @@ hex    = Base.encode16(binary, case: :upper)
 request = %Bimip.Awareness {
   from: %Bimip.Identity{eid: "a@domain.com"},
   presence: 1,
-  offset: 1,
+  offset: 0,
   broadcast: 2,
   timestamp: System.system_time(:millisecond),
 }

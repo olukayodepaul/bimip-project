@@ -170,8 +170,9 @@ defmodule Bimip.SignalServer do
   end
 
   defp push_message(eid, uupid, offset, device_id) do
+    IO.inspect({eid, uupid, offset, device_id})
     # 3. Synchronous Ack and Fetch from the Log (Protected by Mother's mailbox)
-    Queue.QueueLogImpl.acknowledge(eid, uupid, offset)
+    IO.inspect(Queue.QueueLogImpl.acknowledge(eid, uupid, offset))
 
     case Queue.QueueLogImpl.fetch_batch(eid, @partition, uupid, @pull_limit) do
       {:ok, []} ->
