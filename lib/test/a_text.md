@@ -48,45 +48,27 @@ case File.read(manifest_path) do
   {:error, reason} -> IO.puts "❌ Could not open manifest: #{reason}"
 end
 
-shard = 37
-folder_path = "data/bimip/#{shard}"
-idx_files = Path.wildcard("#{folder_path}/#{shard}_*.idx") |> Enum.sort()
-
-IO.puts "📚 Found #{Enum.count(idx_files)} index files in #{folder_path}\n"
-
-Enum.each(idx_files, fn path ->
-  IO.puts "------------------------------------------------"
-  IO.puts "📂 FILE: #{Path.basename(path)}"
-  
-  case File.read(path) do
-    {:ok, binary} ->
-      parse_idx = fn
-        recursive, <<ulen::16, user_bin::binary-size(ulen), _p::32, off::64, seg::64, phys::64, rest::binary>> ->
-          IO.puts "📍 [#{user_bin}] Offset: #{off} | Seg: #{seg} | Pos: #{phys} bytes"
-          recursive.(recursive, rest)
-        _, <<>> -> IO.puts "🏁 End of file reached."
-        _, rest -> IO.puts "⚠️ Partial entry: #{byte_size(rest)} bytes remaining."
-      end
-      parse_idx.(parse_idx, binary)
-    {:error, reason} -> IO.puts "❌ Could not read file: #{reason}"
-  end
-end)
 
 
 Queue.QueueLogImpl.system_recovery("user57@domain.com", 1)
 Queue.QueueLogImpl.system_recovery("user1@domain.com", 1)
 Queue.QueueLogImpl.system_recovery("user30@domain.com", 1)
-Queue.QueueLogImpl.acknowledge("a@domain.com", 1, 1)
+Queue.QueueLogImpl.acknowledge("a@domain.com", 1, 2)   .    . 18
 
 {:ok, messages} = Queue.QueueLogImpl.fetch_batch("a@domain.com", 1, 2, 20)
 {:ok, messages} = Queue.QueueLogImpl.fetch_batch("user1@domain.com", "partition", "device_id", 20)
-{:ok, messages} = Queue.QueueLogImpl.fetch_batch("user57@domain.com", 1, 2, 20)
+{:ok, messages} = Queue.QueueLogImpl.fetch_batch("user57@domain.com", 1, 1, 20)
 
 
 Queue.QueueLogImpl.fetch_batch("a@domain.com", 1, 2, 20)
 Queue.QueueLogImpl.acknowledge("a@domain.com", uuid, offset)
-:ets.tab2list(:device_bookmarks_cache_14)
+
+Queue.QueueLogImpl.acknowledge("a@domain.com", 2, 2)
+:ets.tab2list(:device_bookmarks_cache_18)
 :ets.tab2list(:bimip_user_offsets_18)
+:ets.tab2list(:bimip_buf_18)
+:ets.tab2list(:bimip_user_offsets_18)
+
 
 shard = 14
 bookmark_path = "data/device_bookmarks/#{shard}.bin"

@@ -93,7 +93,7 @@
 
 # # {:ok, messages} = Queue.QueueLogImpl.fetch_batch("user1@domain.com", 1, 1, 20)
 # #  Queue.QueueLogImpl.write(1, user1, user1, "1", 1, 1, msg1, unique_id, System.system_time(:millisecond))
-# #   Queue.QueueLogImpl.write(1, user2, user2, "1", 1, 1, msg2, unique_id, System.system_time(:millisecond))
+# #  Queue.QueueLogImpl.write(1, user2, user2, "1", 1, 1, msg2, unique_id, System.system_time(:millisecond))
 
 # # shard_to_check = 37
 # # table_name = :"bimip_buf_#{shard_to_check}"

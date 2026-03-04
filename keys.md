@@ -9,7 +9,7 @@ ciphertext = mac
     timestamp: System.system_time(:millisecond),
 
 request = %Bimip.Message{
-    id: "f7b29ac3-5d1e-4a82-96f4-c30d5218b7e2",
+    id: "3e8291f4-7b6a-4d32-bc91-e82a5c4d0f7a",
     from: %Bimip.Identity{eid: "a@domain.com"},
     to: %Bimip.Identity{eid: "b@domain.com"},
     timestamp: System.system_time(:millisecond),

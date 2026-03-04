@@ -179,13 +179,12 @@ defmodule Bimip.SignalClient do
           :ok ->
 
             {route_type, payload} = if awareness.broadcast == 2 do
-              {:broadcast, data}
+              {:broadcast, {data, uupid, awareness.offset, awareness.presence, device_id}}
             else
-              {:awareness, awareness}
+              {:awareness, {awareness.presence,  device_id}}
             end
 
             server_inbound(payload, :eid, route_type, eid)
-
 
           {:error, err} ->
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"

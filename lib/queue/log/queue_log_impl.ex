@@ -858,7 +858,6 @@ defp find_segment_for_offset(positions, ack_offset, active_base) do
   end
 end
 
-
   @impl true
   def terminate(reason, state) do
     Logger.info("🛑 [Shard #{state.shard}] Shutdown initiated (Reason: #{inspect(reason)})")
