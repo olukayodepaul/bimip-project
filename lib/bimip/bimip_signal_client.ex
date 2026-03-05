@@ -43,7 +43,6 @@ defmodule Bimip.SignalClient do
   end
 
   def handle_cast({:send_terminate_signal_to_client, {device_id, eid}}, state) do
-    # RegistryHub.send_terminate_signal_to_server({device_id, eid})
     {:stop, :normal, state}
   end
 
@@ -60,7 +59,18 @@ defmodule Bimip.SignalClient do
   end
 
   def handle_info(:tick_ping, state) do
-    AdaptivePingPong.handle_ping(state)
+    # You MUST capture the result and return it as the second element of the tuple
+    case AdaptivePingPong.handle_ping(state) do
+      {:noreply, new_state} ->
+        {:noreply, new_state}
+
+      {:stop, reason, new_state} ->
+        {:stop, reason, new_state}
+
+      # Handle the 'hibernate' case if you decide to use it later
+      {:noreply, new_state, :hibernate} ->
+        {:noreply, new_state, :hibernate}
+    end
   end
 
   def handle_cast({:ping,  data},   %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
@@ -70,12 +80,17 @@ defmodule Bimip.SignalClient do
         case Bimip.Validators.PingValidator.validate(ping, eid) do
           :ok ->
 
-          %Bimip.MessageScheme{
-            route_id: @ping_route_id,
-            payload: {:ping, Map.put(ping, :type, 2)}
-          }
-          |> Bimip.MessageScheme.encode()
-          |> then(&socket_outbound(ws_pid, &1))
+            %Bimip.MessageScheme{
+              route_id: @ping_route_id,
+              payload: {:ping, Map.put(ping, :type, 2)}
+            }
+            |> Bimip.MessageScheme.encode()
+            |> then(&socket_outbound(ws_pid, &1))
+
+            %{
+              device_id: device_id
+            }
+            |> server_inbound(:eid, :update_device_last_seen, eid)
 
           {:error, err} ->
 
@@ -214,6 +229,9 @@ defmodule Bimip.SignalClient do
     {:noreply, state}
   end
 
+  def f do
+    IO.inspect("u")
+  end
 
 
 end

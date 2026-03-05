@@ -63,14 +63,14 @@ Queue.QueueLogImpl.acknowledge("a@domain.com", 1, 2)   .    . 18
 Queue.QueueLogImpl.fetch_batch("a@domain.com", 1, 2, 20)
 Queue.QueueLogImpl.acknowledge("a@domain.com", uuid, offset)
 
-Queue.QueueLogImpl.acknowledge("a@domain.com", 2, 2)
+Queue.QueueLogImpl.acknowledge("a@domain.com", 2, 0)
 :ets.tab2list(:device_bookmarks_cache_18)
 :ets.tab2list(:bimip_user_offsets_18)
 :ets.tab2list(:bimip_buf_18)
 :ets.tab2list(:bimip_user_offsets_18)
 
 
-shard = 14
+shard = 18
 bookmark_path = "data/device_bookmarks/#{shard}.bin"
 case File.read(bookmark_path) do
   {:ok, binary} when binary != <<>> ->

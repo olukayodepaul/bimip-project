@@ -137,25 +137,18 @@ defmodule Bimip.SignalServer do
   end
 
   @impl true
-  def handle_cast({:ping, device_id}, state) do
-    now = System.system_time(:second)
-    case Map.fetch(state.devices, device_id) do
-    {:ok, device} ->
-
-      updated_device = %{device | last_seen: now}
-      updated_devices = Map.put(state.devices, device_id, updated_device)
-
-      {:noreply, %{state | devices: updated_devices}}
-    :error ->
-      {:noreply, state}
-    end
+  def handle_cast({:terminate, device_id}, state) do
+    # check if all device are idle before terminating the server.
+     {:stop, :normal, state}
   end
 
+  @impl true
   def handle_cast(:awareness, {presence, device_id}, state) do
     new_state = update_device_presence(state, device_id, presence)
     {:noreply, new_state}
   end
 
+  @impl true
   def handle_cast( {:broadcast, {bin,  uupid, offset, presence, device_id}}, state) do
     # 1. Immediate broadcast to other devices/users
     Bimip.Broker.Server.broadcast_to_user(state.eid, {:presence_update, bin})
@@ -169,15 +162,18 @@ defmodule Bimip.SignalServer do
     {:noreply, new_state}
   end
 
+  @impl true
+  def handle_cast({:update_device_last_seen, %{device_id: device_id}}, state) do
+    new_state = update_last_seen(state, device_id)
+    {:noreply, new_state}
+  end
+
   defp push_message(eid, uupid, offset, device_id) do
-    IO.inspect({eid, uupid, offset, device_id})
-    # 3. Synchronous Ack and Fetch from the Log (Protected by Mother's mailbox)
-    IO.inspect(Queue.QueueLogImpl.acknowledge(eid, uupid, offset))
+
+    Queue.QueueLogImpl.acknowledge(eid, uupid, offset)
 
     case Queue.QueueLogImpl.fetch_batch(eid, @partition, uupid, @pull_limit) do
-      {:ok, []} ->
-        # No messages to send, we stop here (Handles your "Empty" check)
-        :ok
+      {:ok, []} -> :ok
 
       {:ok, messages} ->
         # 4. Data exists! Encode and push to the specific device socket
@@ -194,10 +190,10 @@ defmodule Bimip.SignalServer do
         |> Bimip.MessageScheme.encode()
         |> then(&Connect.outbouce(device_id, &1))
 
-      _error ->
-        :error
+      _error -> :error
     end
   end
+
 
   defp update_device_presence(state, device_id, presence) do
     now = System.system_time(:second)
@@ -214,13 +210,9 @@ defmodule Bimip.SignalServer do
 
   defp update_last_seen(state, device_id) do
     now = System.system_time(:second)
-
-    # update_in will do nothing if the device_id doesn't exist in the map
     update_in(state, [:devices, device_id], fn
       nil -> nil
-      device -> %{device |
-                  last_seen: now
-                }
+      device -> %{device | last_seen: now }
     end)
   end
 

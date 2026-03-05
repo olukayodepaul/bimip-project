@@ -85,12 +85,10 @@ defmodule Bimip.Socket do
   end
 
   def websocket_info(:send_ping, state) do
-     IO.inspect(1)
     {:reply, :ping, state}
   end
 
   def websocket_handle(:pong,  state) do
-    IO.inspect(2)
     case Connect.client_server_inbound({:device_id, state.device_id, :pong, DateTime.utc_now()}) do
       :ok ->
         {:ok, state}
@@ -154,21 +152,8 @@ defmodule Bimip.Socket do
     end
   end
 
-  # defp handle_logout(state, data) do
-  #   IO.inspect("log_out_route")
-  #   case RegistryHub.route_same_ping(state.eid, state.device_id, data) do
-  #     :ok -> {:ok, state}
-  #     :error ->
-
-  #     error_msg =
-  #     ThrowErrorScheme.error(503, "Service temporarily unavailable", 10)
-
-  #     send(self(), {:binary, error_msg})
-  #     {:ok, state}
-  #   end
-  # end
-
   def websocket_info(:terminate_socket, state) do
+    IO.inspect("T1")
     {:stop, state}
   end
 
@@ -187,9 +172,28 @@ defmodule Bimip.Socket do
     end
   end
 
-  # terminate, send offline message.......
+  # 1. Handle empty strings explicitly (ignore them)
+  def websocket_handle({:text, ""}, state), do: {:ok, state}
+  def websocket_handle({:text, message}, state), do: {:ok, state}
+  def websocket_handle(_frame, state), do: {:ok, state}
+
   def terminate(reason, _req, state) do
-    Connect.handle_terminate(reason, state)
+    case reason do
+      # Group A: Expected Clean Exits
+      r when r in [:stop, :normal] ->
+        Logger.info("[PingPong] SESSION EXPIRED: Device #{state.device_id} reached idle limit.")
+
+      {:remote, 1000, _} ->
+        Logger.info("[PingPong] DISCONNECT: Device #{state.device_id} closed the connection (Postman/Client).")
+
+      {:shutdown, :closed} ->
+        Logger.info("[PingPong] TCP CLOSED: Connection lost for device #{state.device_id}.")
+
+      # Group B: Unexpected Crashes
+      other_reason ->
+        Logger.error("[PingPong] REAL CRASH: Device #{state.device_id} died unexpectedly. Reason: #{inspect(other_reason)}")
+    end
     :ok
   end
+
 end
