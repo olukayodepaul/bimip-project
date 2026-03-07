@@ -9,7 +9,7 @@ defmodule Device.Transmission do
     stale_limit = get_stale_threshold()
 
     Enum.each(all_devices, fn {id, dev} ->
-      if id != sender_device_id and (now - dev.last_seen) <= stale_limit do
+      if id != sender_device_id and (now - dev.last_seen) <= stale_limit and dev.presence in [1] do
         Connect.outbouce(dev.device_id, payload)
       end
     end)
@@ -24,8 +24,7 @@ defmodule Device.Transmission do
     stale_limit = get_stale_threshold()
 
     Enum.each(all_devices, fn {id, dev} ->
-      IO.inspect({id, dev})
-      if (now - dev.last_seen) <= stale_limit do
+      if (now - dev.last_seen) <= stale_limit and dev.presence in [1] do
         Connect.outbouce(dev.device_id, bin)
       end
     end)

@@ -11,7 +11,6 @@ defmodule Bimip.SignalClient do
   alias Util.Network.AdaptivePingPong
   alias Route.Connect
 
-
   # Start GenServer for device session
   def start_link({_eid, device_id, _exp, _ws_pid, _uupid} = state) do
     GenServer.start_link(__MODULE__, state, name: Registry.via_registry(device_id))
@@ -136,12 +135,17 @@ defmodule Bimip.SignalClient do
       end
   end
 
-  def handle_cast({:compose,  data},   %{eid: eid, ws_pid: ws_pid} = state) do
+  def handle_cast({:compose,  data},   %{eid: eid, ws_pid: ws_pid, device_id: device_id} = state) do
     bim = Bimip.MessageScheme.decode(data)
     case bim.payload do
       {:compose, %Bimip.Compose{} = compose} ->
         case Bimip.Validators.ComposeValidator.validate(compose, eid) do
           :ok ->
+
+            %{
+              device_id: device_id
+            }
+            |> server_inbound(:eid, :update_device_last_seen, eid)
 
             data
             |> server_inbound(:eid, :compose, compose.to.eid)
@@ -196,7 +200,7 @@ defmodule Bimip.SignalClient do
             {route_type, payload} = if awareness.broadcast == 2 do
               {:broadcast, {data, uupid, awareness.offset, awareness.presence, device_id}}
             else
-              {:awareness, {awareness.presence,  device_id}}
+              {:awareness, {uupid, awareness.offset, awareness.presence, device_id}}
             end
 
             server_inbound(payload, :eid, route_type, eid)
@@ -227,10 +231,6 @@ defmodule Bimip.SignalClient do
   def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
     send(ws_pid, {:binary, binary})
     {:noreply, state}
-  end
-
-  def f do
-    IO.inspect("u")
   end
 
 

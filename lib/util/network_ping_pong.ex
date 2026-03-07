@@ -8,7 +8,7 @@ defmodule Util.Network.AdaptivePingPong do
   @max_silence_ms 1000
 
   # Session lifetime (3 minutes) - Trigger for Hard Termination & Compaction
-  @max_idle_ms 180_000
+  @max_idle_ms 3600_000
 
   # Federation/Report heartbeat (1 minute)
   @report_interval_ms 60_000

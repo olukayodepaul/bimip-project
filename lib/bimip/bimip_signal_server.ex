@@ -133,17 +133,23 @@ defmodule Bimip.SignalServer do
   @impl true
   def handle_cast({:offset_commit, data}, state) do
     Commit.Offset.offset_commit(data)
+    new_state = update_last_seen(state, data.device_id)
     {:noreply, state}
   end
 
   @impl true
   def handle_cast({:terminate, device_id}, state) do
     # check if all device are idle before terminating the server.
-     {:stop, :normal, state}
+    {:stop, :normal, state}
   end
 
   @impl true
-  def handle_cast(:awareness, {presence, device_id}, state) do
+  def handle_cast(:awareness, {uupid, offset, presence, device_id}, state) do
+
+    if presence == 1 do
+      push_message(state.eid, uupid, offset, device_id)
+    end
+
     new_state = update_device_presence(state, device_id, presence)
     {:noreply, new_state}
   end
@@ -193,7 +199,6 @@ defmodule Bimip.SignalServer do
       _error -> :error
     end
   end
-
 
   defp update_device_presence(state, device_id, presence) do
     now = System.system_time(:second)

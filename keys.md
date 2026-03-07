@@ -9,7 +9,7 @@ ciphertext = mac
     timestamp: System.system_time(:millisecond),
 
 request = %Bimip.Message{
-    id: "3e8291f4-7b6a-4d32-bc91-e82a5c4d0f7a",
+    id: "3e8291f4-7b6a-4d31-bc91-e82a5c4d0f7a",
     from: %Bimip.Identity{eid: "a@domain.com"},
     to: %Bimip.Identity{eid: "b@domain.com"},
     timestamp: System.system_time(:millisecond),
@@ -68,7 +68,7 @@ compose = %Bimip.MessageScheme{
 binary = Bimip.MessageScheme.encode(compose)
 hex    = Base.encode16(binary, case: :upper)
 
-
+08073A1B0A0E0A0C6140646F6D61696E2E636F6D10011801209D9FAA9DCC33
 //commit offset
 request = %Bimip.OffsetCommit{
     from: %Bimip.Identity{eid: "a@domain.com"},

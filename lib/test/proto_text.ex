@@ -1,4 +1,4 @@
-defmodule ProtoTest do
+defmodule ProtoTests do
   def test() do
     binary =
       "
@@ -18,7 +18,7 @@ D2 A5 B1 C9 33
 
   end
 end
- ProtoTest.test()
+ ProtoTests.test()
 
 # JWT.generate_tokens(%{device_id: "bbbbb1", eid: "b@domain.com", user_id: "1"})
 # Here’s the cleaned-up version with all offsets (`00000000:`) and right-side ASCII removed, keeping only the center data:

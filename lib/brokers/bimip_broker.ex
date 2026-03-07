@@ -7,7 +7,6 @@ defmodule Bimip.Broker.Server do
   """
   def user_topic(eid) when is_binary(eid), do: "user:" <> eid
 
-
   @doc """
   Subscribe the calling process to a list of users' topics.
   """
