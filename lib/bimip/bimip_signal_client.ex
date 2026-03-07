@@ -1,52 +1,49 @@
 defmodule Bimip.SignalClient do
   # bimip
   use GenServer
+  @message_route_id 6
+  @compose_route_id 4
+  @commit_offset_route_id 7
+  @ping_route_id 3
+  @wareness_id 3
+  alias Bimip.{MessageScheme}
   alias Supervisor.{Registry}
-  alias Settings.AdaptiveNetwork
   alias Util.Network.AdaptivePingPong
   alias Route.Connect
-  alias ThrowErrorScheme
-  alias ThrowLogouResponseSchema
-  alias ThrowPingPongSchema
-  alias Bimip.Validators.PingPongValidator
-  alias Bimip.PingPong
 
   # Start GenServer for device session
-  def start_link({_eid, device_id, _exp, _ws_pid} = state) do
+  def start_link({_eid, device_id, _exp, _ws_pid, _uupid} = state) do
     GenServer.start_link(__MODULE__, state, name: Registry.via_registry(device_id))
   end
 
-  @impl true
-  def init({eid, device_id, exp, ws_pid}) do
+  def init({eid, device_id, exp, ws_pid, uupid}) do
 
-    AdaptivePingPong.schedule_ping(device_id)
+    now = System.monotonic_time(:millisecond)
+    Util.Network.AdaptivePingPong.schedule_next_ping(device_id, nil)
 
     {:ok,
       %{
-        missed_pongs: 0,
-        pong_counter: 0,
-        timer: DateTime.utc_now(),
+        # Basic Info
         eid: eid,
         device_id: device_id,
-        exp_time: exp, #token expiration time
-        token_state: :active, # token state...
+        uupid: uupid,
         ws_pid: ws_pid,
-        last_rtt: nil,
-        max_missed_pongs_adaptive: AdaptiveNetwork.initial_max_missed_pings(),
-        last_send_ping: nil,
-        last_state_change: DateTime.utc_now(),
+        exp: exp,
 
-        # nested device state (replacement for ETS)
-        device_state: %{
-          device_status: "ONLINE",  # pick one as default
-          last_change_at: nil,
-          last_seen: nil,
-          last_activity: DateTime.utc_now()
-        }
-      }}
+        # REQUIRED for AdaptivePingPong
+        last_seen: now,
+        last_user_activity: now,
+        last_ping_sent_at: nil, # Must exist to be updated later
+        missed_pongs: 0,
+        last_rtt: nil,
+        last_reported_ms: 0
+      }
+    }
   end
 
-
+  def handle_cast({:send_terminate_signal_to_client, {device_id, eid}}, state) do
+    {:stop, :normal, state}
+  end
 
   # Handle ping/pong
   @impl true
@@ -55,314 +52,185 @@ defmodule Bimip.SignalClient do
   end
 
   @impl true
-  def handle_cast({:received_pong, {device_id, receive_time}}, state) do
-    AdaptivePingPong.pongs_received(device_id, receive_time, state)
+  def handle_cast({:pong, receive_time}, state) do
+    new_state = AdaptivePingPong.pong_received(state)
+    {:noreply, new_state}
   end
 
-  def handle_cast({:send_terminate_signal_to_client, {device_id, eid}}, state) do
-    # RegistryHub.send_terminate_signal_to_server({device_id, eid})
-    {:stop, :normal, state}
+  def handle_info(:tick_ping, state) do
+    # You MUST capture the result and return it as the second element of the tuple
+    case AdaptivePingPong.handle_ping(state) do
+      {:noreply, new_state} ->
+        {:noreply, new_state}
+
+      {:stop, reason, new_state} ->
+        {:stop, reason, new_state}
+
+      # Handle the 'hibernate' case if you decide to use it later
+      {:noreply, new_state, :hibernate} ->
+        {:noreply, new_state, :hibernate}
+    end
   end
 
-  def handle_cast(
-        {:route_awareness, _eid, _device_id, data},
-        %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state
-      ) do
-
-    msg = Bimip.MessageScheme.decode(data)
-
-    case msg.payload do
-      {:awareness, %Bimip.Awareness{} = awareness_msg} ->
-        # Validate the Awareness message
-        case Bimip.Validators.AwarenessValidator.validate_awareness(awareness_msg) do
+  def handle_cast({:ping,  data},   %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
+    bim = Bimip.MessageScheme.decode(data)
+    case bim.payload do
+      {:ping, %Bimip.Ping{} = ping} ->
+        case Bimip.Validators.PingValidator.validate(ping, eid) do
           :ok ->
 
-            encoded_message = ThrowAwarenessSchema.success(
-              awareness_msg.from.eid,
-              awareness_msg.from.connection_resource_id,
-              awareness_msg.to.eid,
-              awareness_msg.to.connection_resource_id,
-              awareness_msg.status,
-              awareness_msg.location_sharing,
-              awareness_msg.latitude,
-              awareness_msg.longitude,
-              awareness_msg.ttl,
-              awareness_msg.details,
-              awareness_msg.id
-            )
-
-            RegistryHub.route_awareness_to_server(
-              awareness_msg.from.eid,
-              awareness_msg.from.connection_resource_id,
-              awareness_msg.to.eid,
-              awareness_msg.to.connection_resource_id,
-              awareness_msg.status,
-              encoded_message
-            )
-
-            {:noreply,
-              %{
-                state
-                | device_state: %{
-                    state.device_state
-                    | last_seen: DateTime.utc_now(),
-                      last_activity: DateTime.utc_now(),
-                      last_change_at: DateTime.utc_now()
-                  }
-              }
+            %Bimip.MessageScheme{
+              route_id: @ping_route_id,
+              payload: {:ping, Map.put(ping, :type, 2)}
             }
+            |> Bimip.MessageScheme.encode()
+            |> then(&socket_outbound(ws_pid, &1))
+
+            %{
+              device_id: device_id
+            }
+            |> server_inbound(:eid, :update_device_last_seen, eid)
 
           {:error, err} ->
 
-            reason = "Field '#{err.field}' → #{err.description}"
-
-            error_binary = ThrowAwarenessSchema.error(
-              awareness_msg.from.eid,
-              awareness_msg.from.connection_resource_id,
-              reason
-            )
-
-            send(ws_pid, {:binary, error_binary})
-            {:noreply, state}
+            reason = "Field '#{err.field}' → #{err.description} #{err.code}"
+            throws = ThrowProtocolErrorSchema.build(@ping_route_id, reason,Until.UniPosTime.response_time())
+            socket_outbound(ws_pid, throws)
 
         end
-
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
       _ ->
-
-        reason = "Invalid payload: expected Awareness message"
-        error_binary = ThrowAwarenessSchema.error(eid, device_id, reason)
-        send(ws_pid, {:binary, error_binary})
-        {:noreply, state}
-
-    end
+        reason = "Unexpected payload received"
+        throws = ThrowProtocolErrorSchema.build(@ping_route_id, reason, Until.UniPosTime.response_time())
+        socket_outbound(ws_pid, throws)
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
+      end
   end
 
-  def handle_cast({:logout, _eid, _device_id, data}, %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state) do
-    msg = Bimip.MessageScheme.decode(data)
-
-    case msg.payload do
-      {:logout, %Bimip.Logout{} = logout_msg} ->
-        case Bimip.Validators.LogoutValidator.validate_logout(logout_msg, eid, device_id) do
-          :ok ->
-            # Check if request is truly from this session
-            if logout_msg.to.eid == eid and logout_msg.to.connection_resource_id == device_id do
-              success = ThrowLogouResponseSchema.logout(eid, device_id, 2, 1)
-              send(ws_pid, {:binary, success})
-              send(ws_pid, :terminate_socket)
-            else
-              fail = ThrowLogouResponseSchema.logout(eid, device_id, 3, 2, "Invalid user session credentials")
-              send(ws_pid, {:binary, fail})
-              send(ws_pid, :terminate_socket)
-            end
-
-          {:error, err} ->
-            reason = "Field '#{err.field}' → #{err.description}"
-            fail = ThrowLogouResponseSchema.logout(eid, device_id, 3, 2, reason)
-            send(ws_pid, {:binary, fail})
-        end
-
-        {:noreply, state}
-
-      _ ->
-        # Invalid stanza or wrong payload type
-        invalid = ThrowLogouResponseSchema.logout(eid, device_id, 3, 2, "Invalid logout stanza")
-        send(ws_pid, {:binary, invalid})
-        {:noreply, state}
-    end
-  end
-
-  def handle_cast(
-      {:ping_pong, _eid, _device_id, data},
-      %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state
-    ) do
-
-    msg = Bimip.MessageScheme.decode(data)
-
-    case msg.payload do
-      {:ping_pong, %Bimip.PingPong{} = pingpong_msg} ->
-        # ✅ Validate PingPong message
-        case Bimip.Validators.PingPongValidator.validate_pingpong(pingpong_msg, eid, device_id) do
+  def handle_cast({:offset_commit,  data}, %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
+    bim = Bimip.MessageScheme.decode(data)
+    case bim.payload do
+      {:offset_commit, %Bimip.OffsetCommit{} = offset_commit} ->
+        case Bimip.Validators.OffsetCommitValidator.validate(offset_commit, eid) do
           :ok ->
 
-            pong = ThrowPingPongSchema.success(
-              pingpong_msg.from.eid,
-              pingpong_msg.from.connection_resource_id,
-              pingpong_msg.id,
-              2
-            )
-
-            send(ws_pid, {:binary, pong})
-
-            RegistryHub.route_ping_pong_to_server(
-              pingpong_msg.from.eid,
-              pingpong_msg.from.connection_resource_id
-            )
-
-            {:noreply,
-              %{
-                state
-                | device_state: %{
-                    state.device_state
-                    | last_seen: DateTime.utc_now(),
-                      last_activity: DateTime.utc_now(),
-                      last_change_at: DateTime.utc_now()
-                  }
-              }
+            %{
+              offset_commit: bim,
+              device_id: device_id,
+              uupid: uupid
             }
+            |> server_inbound(:eid, :offset_commit, eid)
 
           {:error, err} ->
-
-            reason = "Field '#{err.field}' → #{err.description}"
-
-            error_binary = ThrowPingPongSchema.error(
-              pingpong_msg.from.eid,
-              device_id,
-              pingpong_msg.id,
-              reason
-            )
-
-            send(ws_pid, {:binary, error_binary})
-            {:noreply, state}
+            reason = "Field '#{err.field}' → #{err.description} #{err.code}"
+            throws = ThrowProtocolErrorSchema.build(@commit_offset_route_id, reason,Until.UniPosTime.response_time())
+            socket_outbound(ws_pid, throws)
         end
-
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
       _ ->
-        reason = "Invalid payload: expected PingPong message"
-        error_binary = ThrowPingPongSchema.error(eid, device_id, 0, reason)
-        send(ws_pid, {:binary, error_binary})
-        {:noreply, state}
-    end
+        reason = "Unexpected payload received"
+        throws = ThrowProtocolErrorSchema.build(@commit_offset_route_id, reason, Until.UniPosTime.response_time())
+        socket_outbound(ws_pid, throws)
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
+      end
   end
 
-  def handle_cast(
-        {:client_awareness_visibility, _eid, _device_id, data},
-        %{ws_pid: ws_pid, eid: eid, device_id: device_id} = state
-      ) do
-
-    msg = Bimip.MessageScheme.decode(data)
-
-    case msg.payload do
-      {:awareness_visibility, %Bimip.AwarenessVisibility{} = visibility_msg} ->
-        # ✅ Validate the AwarenessVisibility message
-        case Bimip.Validators.AwarenessVisibilityValidator.validate(visibility_msg, eid, device_id) do
+  def handle_cast({:compose,  data},   %{eid: eid, ws_pid: ws_pid, device_id: device_id} = state) do
+    bim = Bimip.MessageScheme.decode(data)
+    case bim.payload do
+      {:compose, %Bimip.Compose{} = compose} ->
+        case Bimip.Validators.ComposeValidator.validate(compose, eid) do
           :ok ->
 
-            post = %{
-              id: visibility_msg.id,
-              eid: visibility_msg.from.eid,
-              device_id: visibility_msg.from.connection_resource_id,
-              type: visibility_msg.type,
-              timestamp: visibility_msg.timestamp
+            %{
+              device_id: device_id
             }
+            |> server_inbound(:eid, :update_device_last_seen, eid)
 
-            RegistryHub.route_awareness_visibility_to_server(post)
+            data
+            |> server_inbound(:eid, :compose, compose.to.eid)
 
-            {:noreply,
-              %{
-                state
-                | device_state: %{
-                    state.device_state
-                    | last_seen: DateTime.utc_now(),
-                      last_activity: DateTime.utc_now(),
-                      last_change_at: DateTime.utc_now()
-                  }
-              }
-            }
-
-          {:error, err} ->
-            reason = "Field '#{err.field}' → #{err.description}"
-
-            error_binary = ThrowAwarenessVisibilitySchema.error(
-              eid,
-              device_id,
-              visibility_msg.id,
-              reason
-            )
-
-            send(ws_pid, {:binary, error_binary})
-            {:noreply, state}
+          :drop
+            :noop
         end
-
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
       _ ->
-        # ❌ Unexpected payload type
-        reason = "Invalid payload: expected AwarenessVisibility message"
-        error_binary = ThrowAwarenessVisibilitySchema.error(eid, device_id, 0, reason)
-        send(ws_pid, {:binary, error_binary})
-        {:noreply, state}
-    end
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
+      end
   end
 
-
-
-
-  #--- WORKING
-
-  # validation next
-  def handle_cast({:signal_to_client, payload}, %{eid: state_eid, device_id: device_id} = state) do
-
-    msg = Bimip.MessageScheme.decode(payload)
-
-    case msg.payload do
-      {:signal, %Bimip.Signal{} = signal} ->
-
-        new_to = if signal.to != nil do
-              %Chat.EntityStruct{eid: signal.to.eid, connection_resource_id: signal.to.connection_resource_id}
-            else
-              %Chat.EntityStruct{}
-            end
-
-        new_from = if signal.from != nil do
-              %Chat.EntityStruct{eid: signal.from.eid, connection_resource_id: signal.from.connection_resource_id}
-            else
-              %Chat.EntityStruct{}
-            end
-
-        %Chat.SignalStruct{
-          id: signal.id,
-          from: new_from,
-          to: new_to,
-          status: signal.status,
-          type: signal.type,
-          signal_offset: signal.signal_offset,
-          user_offset: signal.user_offset,
-          signal_type: signal.signal_type,
-          eid: state_eid,
-          device: device_id,
-          signal_type_ex: signal.signal_type_ex,
-          batched_acks: signal.batched_acks
-        }
-        |> server_route(:eid, :signal_to_server, state_eid)
-      _ ->
-        :ok
-    end
-    {:noreply, state}
-  end
-
-  def handle_cast({:chat_message,  data}, %{device_id: device_id, eid: eid} = state) do
+  def handle_cast({:message,  data}, %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
     msg = Bimip.MessageScheme.decode(data)
     case msg.payload do
       {:message, %Bimip.Message{} = message} ->
         case Bimip.Validators.MessageValidator.validate(message) do
           :ok ->
-            Chat.PrcMessage.prc_message({message, device_id, eid})
-            |> server_route(:eid, :route_message, eid)
+            %{
+              message: message,
+              device_id: device_id,
+              uupid: uupid
+            }
+            |> server_inbound(:eid, :message, eid)
+
+          {:error, err} ->
+
+            reason = "Field '#{err.field}' → #{err.description} #{err.code}"
+            throws = ThrowProtocolErrorSchema.build(@message_route_id, reason,Until.UniPosTime.response_time())
+            socket_outbound(ws_pid, throws)
+
+        end
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
+      _ ->
+
+        reason = "Unexpected payload received"
+        throws = ThrowProtocolErrorSchema.build(@message_route_id, reason, Until.UniPosTime.response_time())
+        socket_outbound(ws_pid, throws)
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
+
+      end
+  end
+
+  def handle_cast({:awareness,  data}, %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
+    bim = Bimip.MessageScheme.decode(data)
+    case bim.payload do
+      {:awareness, %Bimip.Awareness{} = awareness} ->
+        case Bimip.Validators.AwarenessValidator.validate(awareness, eid) do
+          :ok ->
+
+            {route_type, payload} = if awareness.broadcast == 2 do
+              {:broadcast, {data, uupid, awareness.offset, awareness.presence, device_id}}
+            else
+              {:awareness, {uupid, awareness.offset, awareness.presence, device_id}}
+            end
+
+            server_inbound(payload, :eid, route_type, eid)
+
           {:error, err} ->
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"
-            IO.inspect(reason)
+            throws = ThrowProtocolErrorSchema.build(@wareness_id, reason,Until.UniPosTime.response_time())
+            socket_outbound(ws_pid, throws)
         end
-        {:noreply, state}
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
       _ ->
-        {:noreply, state}
+        reason = "Unexpected payload received"
+        throws = ThrowProtocolErrorSchema.build(@wareness_id, reason, Until.UniPosTime.response_time())
+        socket_outbound(ws_pid, throws)
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
       end
+  end
+
+  defp socket_outbound(ws_pid, binary) do
+    send(ws_pid, {:binary, binary})
+  end
+
+  defp server_inbound(payload, chanel, signal_to_server, eid) do
+    {chanel, eid, signal_to_server, payload}
+    |> Connect.client_server_inbound()
   end
 
   def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
     send(ws_pid, {:binary, binary})
     {:noreply, state}
-  end
-
-  defp server_route(payload, chanel, signal_to_server, eid) do
-    {chanel, eid, signal_to_server, payload}
-    |> Connect.handle_inbouce_signal()
   end
 
 

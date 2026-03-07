@@ -1,90 +1,59 @@
 defmodule ThrowMessageSchema do
-
-  alias Bimip.{Message, MessageScheme, Identity, Body, OWNERS}
+  alias Bimip.{Message, MessageScheme, Identity, Body}
   @route 6
+  @bulk_route 10
 
-    def build_bulk_message(message_list) when is_list(message_list) do
+  def build_bulk_message(message_list, timestamp) when is_list(message_list) do
 
     body = %Body{
-      route: 6,
+      route_id: @route,
       messages: message_list,
-      timestamp: Until.UniPosTime.uni_pos_time()
+      timestamp: timestamp
     }
 
     %MessageScheme{
-      route: 10,
+      route_id: @bulk_route,
       payload: {:body, body}
     }
-    |> MessageScheme.encode()
+    |>MessageScheme.encode()
+
   end
 
-  # ------------------------------------------------------------------------
-  # SUCCESS / NORMAL MESSAGE
-  # ------------------------------------------------------------------------
-  def build_message(
-    %{
-      peer_uid: peer_uid,
+  def build_message(%{
+    id: id,
+    from: from,
+    to: to,
+    offset: offset,
+    timestamp: timestamp,
+    payload: payload,
+    delivery_type: delivery_type,
+    participant_role: participant_role,
+    content_type: content_type,
+    ephemeral_public_key: ephemeral_public_key,
+    mac: mac,
+    message_type: message_type
+  }) do
+
+    message = %Message{
+      id: id,
+      from: from,
+      to: to,
       offset: offset,
       timestamp: timestamp,
-      type: type,
-      signature: signature,
-      to: %{eid: from_eid, connection_resource_id: from_device_id},
-      from: %{eid: to_eid, connection_resource_id: to_device_id},
       payload: payload,
-      encryption_type: encryption_type,
-      encrypted: encrypted,
-      transmission_mode: transmission_mode,
-      peer_eid: peer_to
-    }) do
-
-    message =  %Bimip.Message {
-        peer_uid: peer_uid,
-        from: %Bimip.Identity{eid: from_eid, connection_resource_id: from_device_id},
-        to: %Bimip.Identity{eid: to_eid, connection_resource_id: to_device_id},
-        timestamp: timestamp,
-        payload: payload,
-        encryption_type: encryption_type,
-        encrypted: encrypted,
-        signature: signature,
-        type: type,
-        transmission_mode: transmission_mode,
-        peer_eid: peer_to,
-        offset: offset
-      }
-
-    %Bimip.MessageScheme{
-      route: 6,
-      payload: {:message, message}
-    }
-    |> Bimip.MessageScheme.encode()
-  end
-
-
-  # ------------------------------------------------------------------------
-  # ERROR MESSAGE
-  # ------------------------------------------------------------------------
-  def error(
-        id,
-        from_eid,
-        from_device_id,
-        description,
-        to_eid \\ "",
-        to_device_id \\ ""
-      ) do
-    message = %Message{
-      peer_uid: id,
-      from: %Identity{eid: from_eid, connection_resource_id: from_device_id},
-      timestamp: Until.UniPosTime.uni_pos_time(),
-      payload: Jason.encode!(%{error: description}),
-      encryption_type: "none",
-      encrypted: "",
-      signature: "",
+      delivery_type: delivery_type,
+      participant_role: participant_role,
+      content_type: content_type,
+      ephemeral_public_key: ephemeral_public_key,
+      mac: mac,
+      message_type: message_type
     }
 
     %MessageScheme{
-      route: @route,
+      route_id: @route,
       payload: {:message, message}
     }
-    |> MessageScheme.encode()
+    |>MessageScheme.encode()
+
   end
 end

@@ -9,124 +9,8 @@ message Identity {
   optional string node = 3;                             // System node handling this entity (cluster context)
 }
 
-// ---------------- Media ----------------
-message Media {
-  string type = 1;         // "image" | "video" | "audio" | "file"
-  string url = 2;          // URL of the media
-  string thumbnail = 3;    // Thumbnail URL (optional)
-  int64 size = 4;          // Size in bytes
-}
 
 
-// ---------------- Awareness ----------------
-message Awareness {
-  string id = 1;
-  Identity from = 2;
-  Identity to = 3;
-  int32 type = 4;
-  int32 status = 5;
-  int32 location_sharing = 6;
-  double latitude = 7;
-  double longitude = 8;
-  int32 ttl = 9;
-  string details = 10;
-  int64 timestamp = 11;
-  int32 visibility = 12;
-}
-
-message OWNERS {
-  string from = 1;                              // User’s global identifier (e.g., account ID or JID)
-  string to = 2; 
-}
-
-  message Message {
-    string peer_uid = 1;
-    Identity from = 2;
-    Identity to = 3;
-    int64 timestamp = 4;
-    bytes payload = 5;
-    string encryption_type = 6;
-    string encrypted = 7;
-    string signature = 8;
-    optional int32 type = 9;         
-    optional int32 transmission_mode = 10; 
-    optional string peer_eid = 11;
-    optional int64 offset = 12;
-  }
-
-  message MessagePeerAckSignal {
-    Identity to = 1;
-    Identity from = 2;
-    string peer_uid = 3;
-    int32 method = 4;
-    int64 timestamp = 5;  
-    int32 status_code = 6; 
-    string peer_eid = 7;
-    int64 offset = 8;
-  }
-
-
-// when Device receive sent ack. it update the local message with 
-// signal_offset and user_offset.
-
-// -------------------------------------------------------------
-// status defines the real-time user activity or system state
-// -------------------------------------------------------------
-// 1 = ACKNOWLEDMENT  → User is actively chatting
-// 2 = RECORDING      → User is recording audio/video
-// 3 = PLAYED/VIEWED  → Media or message has been viewed/played
-// 4 = TYPING         → User is typing
-// 5 = PAUSED         → Typing/recording paused
-// 6 = CANCELLED      → Action cancelled
-// 7 = RESUME         → Action resumed
-// 8 = NOTIFICATION   → System/app notification (non-chat event)
-// -------------------------------------------------------------
-// ---------------- Signal ----------------
-// Used by both client and server to reconcile message status.
-// Supports dual reference (id + signal_id) for precise synchronization.
-message Signal {
-  string id = 1;            // client/queue message ID
-  int32 signal_offset = 2; // server-assigned global ID (monotonic or unique)
-  int32 user_offset = 3;   // server-assigned global ID (monotonic or unique)
-  int32 status = 4;     
-  int64 timestamp = 5;      // epoch ms
-  Identity from = 6;        // who sent the ACK
-  Identity to = 7;          // who receives the ACK
-  int32 type = 8;           // 1=REQUEST, 2=RESPONSE, 3=ERROR
-  int32 signal_type = 9;    // 1=SENDER  2=DEVICE  3=RECEIVER
-  optional string error = 10;// optional error message if type=3
-  OffsetAck offset_ack = 12;
-  DeliveryAck delivery_ack = 13;
-  int32 signal_type_ex = 14; // 1=FORWARD_OFFSET, 2=READ_STATUS, 3=DELIVERED_STATUS
-
-  // NEW FIELD: This repeated field handles the batching for STATUS_ACKs (types 2 and 3).
-  // It allows the client to send a list of offsets and their senders efficiently.
-  repeated BatchedOffset batched_acks = 15;
-}
-
-message OffsetAck {
-  bool advance_offset = 1;
-  int64 advance_offset_timestamp = 2;          // time of offset advancement
-}
-
-message BatchedOffset {
-  // The actual offset being acknowledged
-  int32 user_offset = 1;
-  // The unique ID of the sender/owner of the message (crucial optimization)
-  OWNERS owners = 2;
-  int64 timestamp = 3; 
-  int32 signal_type = 4;
-  int32 offset = 5;
-}
-
-message DeliveryAck {
-  bool sent = 1;
-  bool delivered = 2;
-  bool read = 3;
-  int64 sent_timestamp = 4;
-  int64 delivered_timestamp = 5;
-  int64 read_timestamp = 6;
-}
 
 // ---------------- PushNotification ----------------
 message PushNotification {
@@ -138,42 +22,7 @@ message PushNotification {
   bytes payload = 6;
 }
 
-// ---------------- ErrorMessage ----------------
-message ErrorMessage {
-  int32 code = 1;
-  int32 error_origin = 2;
-  string details = 3;
-  int64 timestamp = 4;
-}
 
-// ---------------- PingPong ----------------
-message PingPong {
-  string id = 1;
-  Identity from = 2;
-  int32 type = 3;
-  int64 timestamp = 4;
-  string details = 5;
-}
-
-// ---------------- Contact ----------------
-message Contact {
-  Identity from = 1;
-  Identity to = 2;
-  string tracking_id = 3;
-  int32 relationship = 4;
-  int32 action = 5;
-  int64 timestamp = 6;
-  string details = 7;
-}
-
-// ---------------- AwarenessVisibility ----------------
-message AwarenessVisibility {
-  string id = 1;
-  Identity from = 2;
-  int32 type = 3;
-  int64 timestamp = 4;
-  string details = 5;
-}
 
 // ---------------- TokenAuthority ----------------
 message TokenAuthority {
@@ -196,39 +45,102 @@ message LocationStream {
   int64 timestamp = 7;
 }
 
-// ---------------- Logout ----------------
+
+
+
+//user protobuf
+
 message Logout {
-  Identity to = 1;
-  int32 type = 2;
-  int32 status = 3;
+  Identity from = 1;
   int64 timestamp = 4;
-  string details = 5;
 }
 
-// ---------------- Body ----------------
+
+
 message Body {
-  uint32 route = 1;
+  int32 route_id = 1;
   repeated Message messages = 2;
   int64 timestamp = 3;
 }
 
+
+message Ping {
+  string id = 1;
+  Identity from = 2;
+  int32 type = 3;
+  int64 timestamp = 4;
+}
+
+message OffsetCommit {
+  Identity from = 1;
+  int32 type = 2;
+  int64 offset = 3;
+  int64 timestamp = 4;
+}
+
+message ProtocolError {
+  int32 route_id = 1;
+  string details = 2;
+  int64 timestamp = 3;
+}
+
+message MessageDeliveryReceipts {
+  string id = 1;
+  Identity from = 2;
+  Identity to = 3;
+  int64 offset = 4;
+  int64 timestamp = 5;
+}
+
+message Message {
+  string id = 1;
+  Identity from = 2;
+  Identity to = 3;
+  optional int64 offset = 4;
+  int64 timestamp = 5;
+  bytes payload = 6;
+  optional int32 delivery_type = 7;
+  int32 participant_role = 8;
+  int32 content_type = 9;
+  bytes ephemeral_public_key = 10;
+  bytes mac = 11;
+  int32 message_type = 12;
+}
+
+message Compose {
+  Identity to = 1;
+  Identity from = 2;
+  int32 type = 3;
+  int64 timestamp = 4;
+}
+
+message Awareness {
+  Identity from = 1;
+  int32 presence = 2;
+  int64 offset = 3;
+  int32 broadcast = 4;
+  int64 timestamp = 5;
+}
+
 // ---------------- MessageScheme ----------------
 message MessageScheme {
-  int64 route = 1;
+  int64 route_id = 1;
   oneof payload {
     Awareness awareness = 2;
-    PingPong ping_pong = 3;
-    AwarenessVisibility awareness_visibility = 4;
+    Ping ping = 3;
+    Compose compose = 4;
     TokenAuthority token_authority = 5;
     Message message = 6;
-    Signal signal = 7;
+    OffsetCommit offset_commit = 7;
     PushNotification push_notification = 8;
     LocationStream location_stream = 9;
     Body body = 10;
-    ErrorMessage error = 11;
+    ProtocolError protocol_error = 11;
     Logout logout = 12;
-    MessagePeerAckSignal message_peer_ack_signal = 13;
+    MessageDeliveryReceipts message_delivery_receipts = 13;
   }
 }
+  
+
 
   

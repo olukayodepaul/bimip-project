@@ -5,4 +5,9 @@ defmodule Until.UniPosTime do
     |> DateTime.to_unix(:millisecond)
   end
 
+  def response_time do
+    DateTime.utc_now()
+    |> DateTime.to_unix(:millisecond)
+  end
+
 end

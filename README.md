@@ -92,3 +92,7 @@ export BIMIP_PUBLIC_KEY_PATH=/etc/bimip/keys/public.pem
 export BIMIP_CERT_FILE=/etc/bimip/keys/cert.pem
 export BIMIP_KEY_FILE=/etc/bimip/keys/key.pem
 export BIMIP_PORT=4040
+
+
+check data side
+du -sh data/bimip
