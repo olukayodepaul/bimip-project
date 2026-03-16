@@ -1,17 +1,7 @@
 defmodule Util.Network.AdaptivePingPong do
   require Logger
-  alias Settings.AdaptiveNetwork
   alias Route.Connect
 
-  # Absolute network silence threshold (1 second)
-  # NOTE: In production, consider 5000ms to avoid excessive log noise.
-  @max_silence_ms 1000
-
-  # Session lifetime (3 minutes) - Trigger for Hard Termination & Compaction
-  @max_idle_ms 3600_000
-
-  # Federation/Report heartbeat (1 minute)
-  @report_interval_ms 60_000
 
   # ==============================
   # PUBLIC API
@@ -38,7 +28,7 @@ defmodule Util.Network.AdaptivePingPong do
 
     cond do
       # PRIORITY 1: User Idle Logout (The Hard Stop)
-      ms_since_user > @max_idle_ms ->
+      ms_since_user > max_idle_ms() ->
         Logger.info("[PingPong] LOGOUT: User idle limit reached.", device_id: state.device_id)
 
         # 2026-03-04 Logic: Notify service to look into manifest,
@@ -52,7 +42,7 @@ defmodule Util.Network.AdaptivePingPong do
 
       # PRIORITY 2: Network Issues (Zombie or Missed Pongs)
       # We check this before the standard interval to catch silent connections.
-      ms_since_seen > @max_silence_ms or state.missed_pongs >= max_missed ->
+      ms_since_seen > max_silence_ms() or state.missed_pongs >= max_missed ->
         if state.missed_pongs > 2 do
           Logger.warning("[PingPong] LIMPING: #{state.device_id} missed #{state.missed_pongs} pongs.")
         end
@@ -128,7 +118,7 @@ defmodule Util.Network.AdaptivePingPong do
     now = now_ms()
     last_report = Map.get(state, :last_reported_ms, 0)
 
-    if state.missed_pongs == 0 and (now - last_report) >= @report_interval_ms do
+    if state.missed_pongs == 0 and (now - last_report) >= report_interval_ms() do
       Map.put(state, :last_reported_ms, now)
     else
       state
@@ -140,10 +130,10 @@ defmodule Util.Network.AdaptivePingPong do
   defp silence_duration(_now, nil), do: 9_999_999
   defp silence_duration(now, last_time), do: now - last_time
 
-  defp adaptive_interval(nil), do: AdaptiveNetwork.default_ping_interval_ms()
+  defp adaptive_interval(nil), do: default_ping_interval_ms()
   defp adaptive_interval(rtt) do
-    thresholds = AdaptiveNetwork.rtt_thresholds()
-    intervals = AdaptiveNetwork.ping_intervals()
+    thresholds = rtt_thresholds()
+    intervals = ping_intervals()
     cond do
       rtt > thresholds.high -> intervals.high_rtt
       rtt < thresholds.low -> intervals.default
@@ -151,10 +141,11 @@ defmodule Util.Network.AdaptivePingPong do
     end
   end
 
-  defp adaptive_max_missed(nil), do: AdaptiveNetwork.max_missed_pongs().default
+
+  defp adaptive_max_missed(nil), do: max_missed_pongs().default
   defp adaptive_max_missed(rtt) do
-    thresholds = AdaptiveNetwork.rtt_thresholds()
-    max_m = AdaptiveNetwork.max_missed_pongs()
+    thresholds = rtt_thresholds()
+    max_m = max_missed_pongs()
     cond do
       rtt > thresholds.high -> max_m.high
       rtt < thresholds.low -> max_m.low
@@ -179,4 +170,15 @@ defmodule Util.Network.AdaptivePingPong do
       send(ws_pid, :terminate_socket)
     end
   end
+
+  defp max_silence_ms, do: Application.Config.max_silence_ms()
+  defp max_idle_ms,    do: Application.Config.max_idle_ms()
+  defp report_interval_ms, do: Application.Config.report_interval_ms()
+
+  def rtt_thresholds, do: Application.Config.rtt_thresholds()
+  def ping_intervals, do: Application.Config.ping_intervals()
+  def max_missed_pongs, do: Application.Config.max_missed_pongs()
+  def default_ping_interval_ms, do: Application.Config.default_ping_interval_ms()
+
+
 end

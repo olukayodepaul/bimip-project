@@ -4,7 +4,6 @@
 defmodule Bimip.Application do
   use Application
 
-  alias Settings.Connections
   require Logger
 
   @impl true
@@ -17,7 +16,7 @@ defmodule Bimip.Application do
 
     # TLS server
     connections_children =
-      if Connections.secure_tls?() do
+      if  Application.Config.secure_tls?() do
         tls_child = %{
           id: :https,
           start:
@@ -25,11 +24,12 @@ defmodule Bimip.Application do
              [
                :https,
                [
-                 port: Connections.tls_port(),
-                 certfile: Connections.cert_file(),
-                 keyfile: Connections.key_file()
+                 port: Application.Config.tls_port(),
+                 certfile: Application.Config.cert_file(),
+                 keyfile: Application.Config.key_file()
                ],
-               %{env: %{dispatch: dispatch()}}
+               # Hand over the resource_path to the dispatch function
+               %{env: %{dispatch: dispatch(Application.Config.resource_path())}}
              ]}
         }
 
@@ -45,8 +45,9 @@ defmodule Bimip.Application do
         {:cowboy, :start_clear,
          [
            :http,
-           [port: Connections.clear_port()],
-           %{env: %{dispatch: dispatch()}}
+           [port: Application.Config.clear_port()],
+           # Hand over the resource_path to the dispatch function
+           %{env: %{dispatch: dispatch(Application.Config.resource_path())}}
          ]}
     }
 
@@ -66,6 +67,7 @@ defmodule Bimip.Application do
         {Redix, name: :redix},
         {Horde.Registry, name: DeviceIdRegistry, keys: :unique, members: :auto},
         {Horde.Registry, name: EidRegistry, keys: :unique, members: :auto},
+        %{id: :pg, start: {:pg, :start_link, [BimipGroups]}},
         {Supervisor.Server, []},
         {Supervisor.Client, []},
         {Queue.BimipSupervisor, []},
@@ -80,9 +82,10 @@ defmodule Bimip.Application do
   # -----------------------
   # COWBOY DISPATCH
   # -----------------------
-  defp dispatch do
+  # Accept the path as an argument to resolve the "undefined variable" error
+  defp dispatch(path) do
     :cowboy_router.compile([
-      {:_, [{Connections.resource_path(), Bimip.Socket, []}]}
+      {:_, [{path, Bimip.Socket, []}]}
     ])
   end
 end

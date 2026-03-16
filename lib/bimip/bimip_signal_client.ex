@@ -19,6 +19,8 @@ defmodule Bimip.SignalClient do
   def init({eid, device_id, exp, ws_pid, uupid}) do
 
     now = System.monotonic_time(:millisecond)
+    :ok = :pg.join(BimipGroups, "device_#{eid}", self())
+    :ok = :pg.join(BimipGroups, "device_#{device_id}_#{eid}", self())
     Util.Network.AdaptivePingPong.schedule_next_ping(device_id, nil)
 
     {:ok,
@@ -117,7 +119,8 @@ defmodule Bimip.SignalClient do
             %{
               offset_commit: bim,
               device_id: device_id,
-              uupid: uupid
+              uupid: uupid,
+              eid: eid
             }
             |> server_inbound(:eid, :offset_commit, eid)
 
@@ -228,10 +231,9 @@ defmodule Bimip.SignalClient do
     |> Connect.client_server_inbound()
   end
 
-  def handle_cast({:outbouce,  binary}, %{ws_pid: ws_pid} = state) do
+  def handle_info({:outbound,  binary}, %{ws_pid: ws_pid} = state) do
     send(ws_pid, {:binary, binary})
     {:noreply, state}
   end
-
 
 end

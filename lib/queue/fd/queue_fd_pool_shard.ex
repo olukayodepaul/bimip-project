@@ -2,9 +2,6 @@ defmodule Queue.FDPoolShard do
   use GenServer
   require Logger
 
-  # Limits open FDs to 11 per shard (64 shards * 11 = 704 total, well under 1024 limit)
-  @max_read_fds 11
-
   def start_link(shard_id), do: GenServer.start_link(__MODULE__, shard_id, name: via(shard_id))
 
   # --- Client API ---
@@ -116,7 +113,7 @@ defmodule Queue.FDPoolShard do
 
   defp evict_if_needed(table) do
     current_size = :ets.info(table, :size) || 0
-    if div(current_size, 2) >= @max_read_fds do
+    if div(current_size, 2) >= max_read_fds() do
       first_key = :ets.first(table)
       case first_key do
         {:evict, ts, path} ->
@@ -170,4 +167,6 @@ defmodule Queue.FDPoolShard do
   end
 
   defp via(s), do: {:via, Registry, {Queue.FDPoolRegistry, s}}
+  defp max_read_fds, do: Application.Config.max_read_fds()
+
 end

@@ -12,27 +12,19 @@ message Identity {
 
 
 
+
+//user protobuf
+
 // ---------------- PushNotification ----------------
 message PushNotification {
   string id = 1;
   Identity from = 2;
-  Identity to = 3;
-  string type = 4;
-  int64 timestamp = 5;
-  bytes payload = 6;
+  string category = 3;
+  int64 timestamp = 4;
+  bytes payload = 5;
 }
-
-
 
 // ---------------- TokenAuthority ----------------
-message TokenAuthority {
-  Identity to = 1;
-  string token = 2;
-  int32 type = 3;
-  int32 task = 4;
-  int64 timestamp = 5;
-  string details = 6;
-}
 
 // ---------------- LocationStream ----------------
 message LocationStream {
@@ -46,12 +38,21 @@ message LocationStream {
 }
 
 
+// type 1: revoke, 2-accept, 3-reject
+message Token {
+  string id = 1;
+  Identity from = 2;
+  string token = 3;
+  int32 type = 4; 
+  int64 timestamp = 5;
+}
 
 
-//user protobuf
-
-message Logout {
-  Identity from = 1;
+// type 1: terminate, 2-accept, 3-reject
+message Login {
+  string id = 1;
+  Identity from = 2;
+  int32 type = 3; 
   int64 timestamp = 4;
 }
 
@@ -138,9 +139,20 @@ message MessageScheme {
     ProtocolError protocol_error = 11;
     Logout logout = 12;
     MessageDeliveryReceipts message_delivery_receipts = 13;
+    Subscriber Subscriber = 14;
   }
 }
   
+
+message Subscriber {
+  int64 route_id = 14;
+   oneof payload {
+      Subscribed subscribed = 2;
+      
+   }
+
+}
+
 
 
   

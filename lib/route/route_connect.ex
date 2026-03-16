@@ -25,6 +25,30 @@ defmodule Route.Connect do
     end
   end
 
+  # version two
+  # def client_server_inbound({identifier, registry_id, resource_finder, payload}, eid \\ nil) do
+  #   group_name = case identifier do
+  #     # Pattern 1: Uses registry_id (which is the EID)
+  #     :eid ->
+  #       "eid_#{registry_id}"
+
+  #     # Pattern 2: Uses registry_id (device_id) + the provided EID
+  #     :device_id ->
+  #       "device_#{registry_id}_#{eid}"
+  #   end
+
+  #   # Perform O(1) cluster-wide lookup and forward
+  #   case :pg.get_members(@pg_scope, group_name) do
+  #     [pid | _] ->
+  #       # The BEAM handles the 'Forward' hop across machines via the PID
+  #       GenServer.cast(pid, {resource_finder, payload})
+  #       :ok
+  #     [] ->
+  #       Logger.warning("No :pg member found for #{group_name}. Signal dropped.")
+  #       :error
+  #   end
+  # end
+
   def start_device({device_id, eid, exp, ws_pid, uupid, subc}) do
     case Horde.Registry.lookup(EidRegistry, eid) do
       [{pid, _}] ->
@@ -33,16 +57,6 @@ defmodule Route.Connect do
       []->
         Logger.warning("No registry entry for #{device_id}, cannot maybe_start_mother")
         {:error}
-    end
-  end
-
-  def outbouce(device_id, binary) do
-    case Horde.Registry.lookup(@deviceid_registry, device_id) do
-      [{pid, _}] ->
-        GenServer.cast(pid, {:outbouce,  binary})
-        :ok
-      [] ->
-        :error
     end
   end
 

@@ -10,12 +10,7 @@ defmodule Commit.Offset do
   @ack_type 2
   @reject_type 3
 
-  @spec offset_commit(%{
-          offset_commit: MessageScheme.t(),
-          device_id: String.t(),
-          uupid: any()
-        }) :: any()
-  def offset_commit(%{offset_commit: offset_commit, device_id: device_id, uupid: uupid}) do
+  def offset_commit(%{offset_commit: offset_commit, device_id: device_id, uupid: uupid, eid: eid}) do
     {:offset_commit, %OffsetCommit{} = data} = offset_commit.payload
 
     type =
@@ -28,7 +23,7 @@ defmodule Commit.Offset do
     |> update_type(type)
     |> build_message()
     |> MessageScheme.encode()
-    |> then(&Connect.outbouce(device_id, &1))
+    |> then(&Device.Transmission.emit_single(device_id, eid, &1))
   end
 
   defp update_type(%OffsetCommit{} = payload, type) when type in [@ack_type, @reject_type] do

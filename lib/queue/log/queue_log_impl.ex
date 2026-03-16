@@ -10,22 +10,15 @@ defmodule Queue.QueueLogImpl do
   # CONFIG
   # ------------------------------------------------------------------
   @base_dir "data/bimip"
-  @num_shards 64
   @header_size 21
-  @flush_interval 60_000
-  @max_messages_per_seg 1_000_000
-  @user_stride 1_000
-  @max_buffer_per_shard 10_000_000
   @checkpoints_prefix :bimip_segment_checkpoints_
   @user_offsets_prefix :bimip_user_offsets_
   @user_segment_counts_prefix :bimip_user_segment_counts_
   @idx_cache_prefix :"bimip_idx_"
   @log_buffer_prefix :"bimip_buf_"
-  @stable_limit 50_000
   @flush_state :flush_state
-  @retention_seconds 60 * 60 * 24 * 1
-
   @partition 1
+  @num_shards 64
 
   # ------------------------------------------------------------------
   # PUBLIC API
@@ -75,7 +68,7 @@ defmodule Queue.QueueLogImpl do
     shard = :erlang.phash2(owners, @num_shards)
     buf = log_buffer(shard)
 
-    if :ets.info(buf, :size) > @max_buffer_per_shard do
+    if :ets.info(buf, :size) > max_buffer_per_shard() do
       {:error, :backpressure}
     else
       {offset, shard_offset} = Queue.ShardServer.get_next_offsets(shard, owners)
@@ -208,7 +201,7 @@ defmodule Queue.QueueLogImpl do
         [base_str | _] = String.split(seg_key, "_")
         base = String.to_integer(base_str)
         {u_off, p_pos} = case pos_val do {o, p} -> {o, p}; o -> {o, 0} end
-        gate = if u_off > 0, do: u_off - rem(u_off - 1, @user_stride), else: 0
+        gate = if u_off > 0, do: u_off - rem(u_off - 1, user_stride()), else: 0
         :ets.insert(idx_tab, {{user, @partition, gate}, {base, p_pos}})
       end)
     end
@@ -253,7 +246,7 @@ defmodule Queue.QueueLogImpl do
   end
 
   defp process_batch(state, items, depth) do
-    space_left = @max_messages_per_seg - state.msg_count
+    space_left = max_seg() - state.msg_count
     {to_write, leftovers} = Enum.split(items, space_left)
     u_counts_tab = user_segment_counts_tab(state.shard)
 
@@ -275,9 +268,9 @@ defmodule Queue.QueueLogImpl do
             {bin_packet, p_size} = encode_packet(rec, rec.off, state)
 
            {new_i_acc, new_upd} =
-            if rem(new_u_count - 1, @user_stride) == 0 do
+            if rem(new_u_count - 1, user_stride()) == 0 do
               u_bin = to_string(rec.u)
-              gate = if rec.off > 0, do: rec.off - rem(rec.off - 1, @user_stride), else: 0
+              gate = if rec.off > 0, do: rec.off - rem(rec.off - 1, user_stride()), else: 0
               idx_entry = <<byte_size(u_bin)::16, u_bin::binary, rec.p::32, gate::64, state.active_base::64, curr_phys::64>>
               :ets.insert(idx_cache(state.shard), {{rec.u, rec.p, gate}, {state.active_base, curr_phys}})
               {[i_acc | idx_entry], [{rec.u, rec.off, curr_phys} | upd]}
@@ -322,7 +315,7 @@ defmodule Queue.QueueLogImpl do
       end)
 
       new_state = %{state | msg_count: final_count, current_size: final_phys}
-      if new_state.msg_count >= @max_messages_per_seg do
+      if new_state.msg_count >= max_seg() do
         snapshot_bin(new_state)
         rotated_state = rotate_segment(new_state)
         process_batch(rotated_state, leftovers, depth + 1)
@@ -528,7 +521,7 @@ end
     {actual_seg_base, actual_phys} = case get_in(user_data, ["positions", seg_id]) do
       {_l_off, p_off} when is_integer(p_off) -> {target_base, p_off}
       _ ->
-        gate = if last_off > 0, do: last_off - rem(last_off, @user_stride), else: 0
+        gate = if last_off > 0, do: last_off - rem(last_off, user_stride()), else: 0
         case :ets.lookup(idx_cache(state.shard), {user, p, gate}) do
           [{_, {^target_base, pos}}] -> {target_base, pos}
           _ -> {target_base, 0}
@@ -645,7 +638,7 @@ end
     current_head = :ets.lookup_element(u_offsets, {:shard_offset, state.shard}, 2)
 
     start_idx = last_ptr + 1
-    end_idx = min(start_idx + @stable_limit - 1, current_head)
+    end_idx = min(start_idx + stable_limit() - 1, current_head)
 
     if start_idx > current_head do finish_flush(state)
     else
@@ -720,7 +713,7 @@ end
         # 4. Filter based on retention
         expired_ids =
           manifest.expired
-          |> Enum.filter(fn {_id, ts} -> (now - ts) > @retention_seconds end)
+          |> Enum.filter(fn {_id, ts} -> (now - ts) > retention_seconds() end)
           |> Enum.map(fn {id, _ts} -> id end)
 
         if expired_ids == [] do
@@ -906,5 +899,12 @@ end
   defp log_buffer(s), do: :"#{@log_buffer_prefix}#{s}"
   defp idx_cache(s), do: :"#{@idx_cache_prefix}#{s}"
   defp worker_name(s), do: :"bimip_shard_#{s}"
-  defp schedule_flush, do: Process.send_after(self(), :flush, @flush_interval + :rand.uniform(10_000))
+  defp schedule_flush, do: Process.send_after(self(), :flush, flush_interval() + :rand.uniform(10_000))
+  defp flush_interval, do: Application.Config.flush_interval_ms()
+  defp max_seg, do: Application.Config.max_messages_per_seg()
+  defp user_stride, do: Application.Config.user_stride()
+  defp retention_seconds, do: Application.Config.retention_seconds()
+  defp max_buffer_per_shard, do: Application.Config.max_buffer_per_shard()
+  defp stable_limit, do: Application.Config.stable_limit()
+
 end

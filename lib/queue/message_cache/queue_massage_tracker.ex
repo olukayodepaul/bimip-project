@@ -4,11 +4,12 @@ defmodule Queue.MessageTracker do
   """
   require Logger
 
-  @shard_count 64
+  @default_ttl 120 * 60
+  @offset_time 60 * 60
+
   @partitions_per_shard 2
-  @default_ttl 43_200 # 12 hours
   @meta_table :message_tracker_metadata
-  @offset_time 1800
+  @shard_count 64
 
   def init do
     if :ets.info(@meta_table) == :undefined do
@@ -19,7 +20,6 @@ defmodule Queue.MessageTracker do
       :ets.insert_new(@meta_table, {shard, 0})
       init_shard_tables(shard)
     end
-    Logger.info("[MessageTracker] Initialized #{@shard_count} Shards.")
     :ok
   end
 
@@ -98,7 +98,6 @@ defmodule Queue.MessageTracker do
           table_to_clear = table_name(shard, new_gen, p)
           :ets.delete_all_objects(table_to_clear)
         end
-        Logger.info("[MessageTracker] SHARD #{shard} Rotated.")
     end
   end
 

@@ -1,5 +1,5 @@
 defmodule ThrowMessageSchema do
-  alias Bimip.{Message, MessageScheme, Identity, Body}
+  alias Bimip.{Message, MessageScheme,  Body}
   @route 6
   @bulk_route 10
 

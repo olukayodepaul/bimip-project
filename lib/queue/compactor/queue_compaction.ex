@@ -10,21 +10,10 @@ defmodule Queue.BimipCompactor do
   2. Dispatch: Sends a :trigger_maintenance signal to each Shard GenServer.
   3. Safety: Uses `GenServer.cast` so it doesn't block if a Shard is busy flushing.
   4. Offloading: Physical file moves, FD closing, and Manifest updates happen
-     inside the Shard process to respect the :busy/:idle lifecycle.
+    inside the Shard process to respect the :busy/:idle lifecycle.
   """
   use GenServer
-  require Logger
-
   @num_shards 64
-  # Frequency of maintenance cycles
-  @check_interval :timer.minutes(30)
-  # @check_interval :timer.hours(4)
-  # Root directory for archived data
-  @archive_root "data/archive"
-
-  # ------------------------------------------------------------------
-  # CLIENT API
-  # ------------------------------------------------------------------
 
   def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
@@ -39,18 +28,16 @@ defmodule Queue.BimipCompactor do
 
   def init(state) do
     # Ensure the central archive folder exists at startup
-    File.mkdir_p!(@archive_root)
+    File.mkdir_p!(archive_root())
 
     # Schedule the recurring check
     schedule_check()
 
-    Logger.info("🚀 [Compactor] Scheduler v4.0 initialized. Interval: 4 hours.")
     {:ok, state}
   end
 
   def handle_info(:check, state) do
     start_time = System.monotonic_time(:millisecond)
-    Logger.info("🧹 [Compactor] Dispatching maintenance signals to #{@num_shards} shards...")
 
     # Iterate through shard IDs and signal their respective GenServers
     for s <- 0..(@num_shards - 1) do
@@ -69,7 +56,6 @@ defmodule Queue.BimipCompactor do
     end
 
     elapsed = System.monotonic_time(:millisecond) - start_time
-    Logger.info("✅ [Compactor] Maintenance signals dispatched in #{elapsed}ms.")
 
     # Re-schedule for the next 4-hour window
     schedule_check()
@@ -80,7 +66,14 @@ defmodule Queue.BimipCompactor do
   # PRIVATE HELPERS
   # ------------------------------------------------------------------
   defp schedule_check do
-    Process.send_after(self(), :check, @check_interval)
+    Process.send_after(self(), :check, check_interval())
   end
+
+  defp check_interval do
+  hours = Application.Config.compact_interval_hours()
+  :timer.hours(hours)
+  end
+
+  defp archive_root, do: Application.Config.archive_root()
 
 end
