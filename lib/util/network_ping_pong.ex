@@ -72,6 +72,20 @@ defmodule Util.Network.AdaptivePingPong do
     |> Map.put(:last_reported_ms, now)
   end
 
+  @doc """
+  CALL THIS when real user data is received.
+  It resets both the idle timer and the network ping timer.
+  """
+  def mark_user_activity_by_location_stream(state) do
+    now = now_ms()
+    state
+    |> Map.put(:last_user_activity, now)
+    |> Map.put(:last_seen, now)
+    |> Map.put(:missed_pongs, 0)
+    |> Map.put(:last_reported_ms, now)
+    |> Map.put(:last_location_stream, now)
+  end
+
   def mark_active(state) do
     # Instead of jumping to 0, we move 1 step closer to healthy.
     # This makes the "Zombie" detection more persistent on bad networks.

@@ -18,6 +18,7 @@ defmodule Bimip.Validators.OffsetCommitValidator do
 
   # ---------------- Protocol Constraints ----------------
   @commit_type 1
+  @clock_window_ms 60_000
 
   # ---------------- Public API ----------------
   @spec validate(OffsetCommit.t(), String.t()) :: :ok | {:error, map()}
@@ -63,7 +64,15 @@ defmodule Bimip.Validators.OffsetCommitValidator do
     do: error(@status_bad_request, "offset must be non-negative int64", "offset")
 
   # ---------------- Timestamp ----------------
-  defp validate_timestamp(timestamp) when is_integer(timestamp) and timestamp > 0, do: :ok
+  defp validate_timestamp(timestamp) when is_integer(timestamp) and timestamp > 0 do
+    now = System.system_time(:millisecond)
+
+    if abs(now - timestamp) <= @clock_window_ms do
+      :ok
+    else
+      error(@status_bad_request, "Timestamp clock skew too high (Unix ms)", "timestamp")
+    end
+  end
 
   defp validate_timestamp(_),
     do: error(@status_bad_request, "timestamp must be positive int64 (Unix ms)", "timestamp")

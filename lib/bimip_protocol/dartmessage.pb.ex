@@ -20,23 +20,9 @@ defmodule Bimip.PushNotification do
 
   field :id, 1, type: :string
   field :from, 2, type: Bimip.Identity
-  field :to, 3, type: Bimip.Identity
-  field :type, 4, type: :string
-  field :timestamp, 5, type: :int64
-  field :payload, 6, type: :bytes
-end
-
-defmodule Bimip.TokenAuthority do
-  @moduledoc false
-
-  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
-
-  field :to, 1, type: Bimip.Identity
-  field :token, 2, type: :string
-  field :type, 3, type: :int32
-  field :task, 4, type: :int32
-  field :timestamp, 5, type: :int64
-  field :details, 6, type: :string
+  field :category, 3, type: :string
+  field :timestamp, 4, type: :int64
+  field :payload, 5, type: :bytes
 end
 
 defmodule Bimip.LocationStream do
@@ -44,13 +30,24 @@ defmodule Bimip.LocationStream do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
+  field :from, 1, type: Bimip.Identity
+  field :to, 2, type: Bimip.Identity
+  field :latitude, 3, type: :double
+  field :longitude, 4, type: :double
+  field :altitude, 5, proto3_optional: true, type: :double
+  field :timestamp, 6, type: :int64
+end
+
+defmodule Bimip.Token do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
   field :id, 1, type: :string
   field :from, 2, type: Bimip.Identity
-  field :to, 3, type: Bimip.Identity
-  field :latitude, 4, type: :double
-  field :longitude, 5, type: :double
-  field :altitude, 6, proto3_optional: true, type: :double
-  field :timestamp, 7, type: :int64
+  field :token, 3, type: :string
+  field :type, 4, type: :int32
+  field :timestamp, 5, type: :int64
 end
 
 defmodule Bimip.Logout do
@@ -58,7 +55,9 @@ defmodule Bimip.Logout do
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
 
-  field :from, 1, type: Bimip.Identity
+  field :id, 1, type: :string
+  field :from, 2, type: Bimip.Identity
+  field :type, 3, type: :int32
   field :timestamp, 4, type: :int64
 end
 
@@ -158,6 +157,14 @@ defmodule Bimip.Awareness do
   field :timestamp, 5, type: :int64
 end
 
+defmodule Bimip.Subscriber do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :route_id, 14, type: :int64, json_name: "routeId"
+end
+
 defmodule Bimip.MessageScheme do
   @moduledoc false
 
@@ -169,7 +176,7 @@ defmodule Bimip.MessageScheme do
   field :awareness, 2, type: Bimip.Awareness, oneof: 0
   field :ping, 3, type: Bimip.Ping, oneof: 0
   field :compose, 4, type: Bimip.Compose, oneof: 0
-  field :token_authority, 5, type: Bimip.TokenAuthority, json_name: "tokenAuthority", oneof: 0
+  field :token, 5, type: Bimip.Token, oneof: 0
   field :message, 6, type: Bimip.Message, oneof: 0
   field :offset_commit, 7, type: Bimip.OffsetCommit, json_name: "offsetCommit", oneof: 0
 
@@ -187,4 +194,6 @@ defmodule Bimip.MessageScheme do
     type: Bimip.MessageDeliveryReceipts,
     json_name: "messageDeliveryReceipts",
     oneof: 0
+
+  field :Subscriber, 14, type: Bimip.Subscriber, oneof: 0
 end

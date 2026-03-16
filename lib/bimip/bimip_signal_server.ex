@@ -115,7 +115,7 @@ defmodule Bimip.SignalServer do
   end
 
   @impl true
-  def handle_cast({:compose, binary}, state) do
+  def handle_cast({:compose_location_stream, binary}, state) do
     Device.Transmission.emit(state.eid, 0, state.devices, binary)
     {:noreply, state}
   end

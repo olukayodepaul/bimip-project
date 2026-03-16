@@ -15,6 +15,7 @@ defmodule Bimip.Validators.ComposeValidator do
   alias Bimip.Identity
 
   @allowed_types [1, 2, 3, 4]
+  @clock_window_ms 60_000
 
   @spec validate(Compose.t(), String.t()) :: :ok | :drop
   def validate(%Compose{} = msg, eid) when is_binary(eid) do
@@ -45,7 +46,16 @@ defmodule Bimip.Validators.ComposeValidator do
   defp validate_type(_), do: :error
 
   # ---------------- Timestamp ----------------
-  defp validate_timestamp(ts) when is_integer(ts) and ts > 0, do: :ok
+  defp validate_timestamp(ts) when is_integer(ts) and ts > 0 do
+    now = System.system_time(:millisecond)
+
+    if abs(now - ts) <= @clock_window_ms do
+      :ok
+    else
+      :error
+    end
+  end
+
   defp validate_timestamp(_), do: :error
 
   # ---------------- Sender EID Check ----------------

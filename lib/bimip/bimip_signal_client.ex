@@ -38,7 +38,10 @@ defmodule Bimip.SignalClient do
         last_ping_sent_at: nil, # Must exist to be updated later
         missed_pongs: 0,
         last_rtt: nil,
-        last_reported_ms: 0
+        last_reported_ms: 0,
+
+        # LOCATION STREAM
+        last_location_stream: 0
       }
     }
   end
@@ -151,7 +154,7 @@ defmodule Bimip.SignalClient do
             |> server_inbound(:eid, :update_device_last_seen, eid)
 
             data
-            |> server_inbound(:eid, :compose, compose.to.eid)
+            |> server_inbound(:eid, :compose_location_stream, compose.to.eid)
 
           :drop
             :noop
@@ -160,6 +163,34 @@ defmodule Bimip.SignalClient do
       _ ->
         {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
       end
+  end
+
+  def handle_cast({:location_stream, data}, %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid, last_location_stream: last_location_stream} = state) do
+    bim = Bimip.MessageScheme.decode(data)
+    case bim.payload do
+      {:location_stream, %Bimip.LocationStream{} = location_stream} ->
+
+         case Bimip.Validators.LocationStreamValidator.validate(location_stream, eid, last_location_stream) do
+          :ok ->
+
+            %{
+              device_id: device_id
+            }
+            |> server_inbound(:eid, :update_device_last_seen, eid)
+
+            data
+            |> server_inbound(:eid, :compose_location_stream, location_stream.to.eid)
+
+          {:error, err} ->
+            reason = "Field '#{err.field}' → #{err.description} #{err.code}"
+            throws = ThrowProtocolErrorSchema.build(@message_route_id, reason, Until.UniPosTime.response_time())
+            socket_outbound(ws_pid, throws)
+         end
+
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity_by_location_stream(state)}
+      _ ->
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
+    end
   end
 
   def handle_cast({:message,  data}, %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do

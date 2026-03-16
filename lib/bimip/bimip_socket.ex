@@ -7,6 +7,7 @@ defmodule Bimip.Socket do
   @ping_route_id 3
   @commit_offset_route_id 7
   @wareness_id 2
+  @location_stream 9
 
   alias Bimip.Auth.TokenVerifier
   alias Util.{ConnectionsHelper, TokenRevoked}
@@ -111,6 +112,7 @@ defmodule Bimip.Socket do
       4 => &handle_compose/2,
       6 => &handle_message/2,
       7 => &handle_commit_offset/2,
+      9 => &handle_location_stream/2
     }
   end
 
@@ -159,6 +161,18 @@ defmodule Bimip.Socket do
       :error ->
         reason = "Field '' → Invalid commmit offset 500"
         throws = ThrowProtocolErrorSchema.build(@commit_offset_route_id, reason, Until.UniPosTime.response_time())
+        send(self(), {:binary, throws})
+        {:ok, state}
+    end
+  end
+
+  defp handle_location_stream(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :location_stream, data}) do
+      :ok ->
+        {:ok, state}
+      :error ->
+        reason = "Field '' → Invalid location stream 500"
+        throws = ThrowProtocolErrorSchema.build(@location_stream, reason, Until.UniPosTime.response_time())
         send(self(), {:binary, throws})
         {:ok, state}
     end

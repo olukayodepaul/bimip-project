@@ -20,6 +20,7 @@ defmodule Bimip.Validators.MessageValidator do
   # ---------------- Protocol Constraints ----------------
   @max_payload_size 1_048_576        # 1 MB
   @replay_window_ms 300_000          # 5 minutes
+  @clock_future_tolerance 10_000     # 10 seconds
   @uuid_v4_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
   # ---------------- Public API ----------------
@@ -76,18 +77,28 @@ defmodule Bimip.Validators.MessageValidator do
 
   defp validate_from_to_not_same(_, _), do: :ok
 
-  # ---------------- Replay Window ----------------
+  # ---------------- Replay Window (Unix Epoch) ----------------
   defp validate_timestamp(timestamp) when is_integer(timestamp) do
     now = System.system_time(:millisecond)
-    max_age = 30 * 60 * 1000  # 30 minutes
+    diff = timestamp - now
 
-    if now - timestamp > max_age do
-      error(@status_out_of_order, "timestamp expired (older than 30 minutes)", "timestamp")
-    else
-      :ok
+    cond do
+      # Client is in the future
+      diff > @clock_future_tolerance ->
+        error(@status_out_of_order, "timestamp is from the future", "timestamp")
+
+      # Client is too old (Stale)
+      (now - timestamp) > @replay_window_ms ->
+        error(@status_out_of_order, "timestamp expired (older than 5 minutes)", "timestamp")
+
+      # Positive check
+      timestamp <= 0 ->
+        error(@status_bad_request, "timestamp must be positive", "timestamp")
+
+      true ->
+        :ok
     end
   end
-
 
   defp validate_timestamp(_),
     do: error(@status_bad_request, "timestamp must be positive int64", "timestamp")

@@ -10,11 +10,6 @@ message Identity {
 }
 
 
-
-
-
-//user protobuf
-
 // ---------------- PushNotification ----------------
 message PushNotification {
   string id = 1;
@@ -24,17 +19,15 @@ message PushNotification {
   bytes payload = 5;
 }
 
-// ---------------- TokenAuthority ----------------
 
 // ---------------- LocationStream ----------------
 message LocationStream {
-  string id = 1;
-  Identity from = 2;
-  Identity to = 3;
-  double latitude = 4;
-  double longitude = 5;
-  optional double altitude = 6;
-  int64 timestamp = 7;
+  Identity from = 1;
+  Identity to = 2;
+  double latitude = 3;
+  double longitude = 4;
+  optional double altitude = 5;
+  int64 timestamp = 6;
 }
 
 
@@ -49,21 +42,18 @@ message Token {
 
 
 // type 1: terminate, 2-accept, 3-reject
-message Login {
+message Logout {
   string id = 1;
   Identity from = 2;
   int32 type = 3; 
   int64 timestamp = 4;
 }
 
-
-
 message Body {
   int32 route_id = 1;
   repeated Message messages = 2;
   int64 timestamp = 3;
 }
-
 
 message Ping {
   string id = 1;
@@ -123,6 +113,12 @@ message Awareness {
   int64 timestamp = 5;
 }
 
+message Subscriber {
+  int64 route_id = 14;
+ 
+}
+
+
 // ---------------- MessageScheme ----------------
 message MessageScheme {
   int64 route_id = 1;
@@ -130,7 +126,7 @@ message MessageScheme {
     Awareness awareness = 2;
     Ping ping = 3;
     Compose compose = 4;
-    TokenAuthority token_authority = 5;
+    Token token = 5;
     Message message = 6;
     OffsetCommit offset_commit = 7;
     PushNotification push_notification = 8;
@@ -144,14 +140,6 @@ message MessageScheme {
 }
   
 
-message Subscriber {
-  int64 route_id = 14;
-   oneof payload {
-      Subscribed subscribed = 2;
-      
-   }
-
-}
 
 
 
