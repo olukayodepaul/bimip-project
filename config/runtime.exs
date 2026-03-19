@@ -101,3 +101,34 @@ config :bimips, :network,
   reply_window: String.to_integer(System.get_env("BIMIP_VALIDATOR_REPLAY_WINDOW_MS") || "30000"),
 
   future_tolerance: String.to_integer(System.get_env("BIMIP_VALIDATOR_CLOCK_FUTURE_TOLERANCE_MS") || "10000")
+
+
+# -------------------------------------------------------------------------
+# 6. PUSH NOTIFICATION CONFIGURATION (PIGEON)
+# -------------------------------------------------------------------------
+
+# --- APNS (Apple Push Notification Service) ---
+# Note: You typically use EITHER a certificate (.pem) OR a token (.p8).
+config :pigeon, :apns,
+  apns_default: %{
+    # Option A: Certs
+    cert: System.get_env("BIMIP_APNS_CERT_PATH"),
+    key: System.get_env("BIMIP_APNS_KEY_PATH"),
+
+    # Option B: Tokens (Will be nil if commented out in .env)
+    key_id: System.get_env("BIMIP_APNS_KEY_ID"),
+    team_id: System.get_env("BIMIP_APNS_TEAM_ID"),
+    p8_file: System.get_env("BIMIP_APNS_P8_PATH"),
+
+    mode: String.to_atom(System.get_env("BIMIP_APNS_MODE") || "dev")
+  }
+
+# --- FCM (Firebase Cloud Messaging for Android) ---
+config :pigeon, :fcm,
+  fcm_default: %{
+    # For FCM V1 (Recommended), you use a service account JSON file
+    service_account_json: System.get_env("BIMIP_FCM_SERVICE_ACCOUNT_PATH") || "priv/fcm/service_account.json"
+
+    # For Legacy FCM (Old), you use a server key
+    # key: System.get_env("BIMIP_FCM_SERVER_KEY")
+  }

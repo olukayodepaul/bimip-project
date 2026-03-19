@@ -55,6 +55,9 @@ defmodule Bimip.MixProject do
       {:ecto_sql, "~> 3.11"},
       {:postgrex, ">= 0.0.0"},
       {:mongodb_driver, "~> 1.0"},
+
+      {:pigeon, "~> 1.6"},
+      {:kadabra, "~> 0.6.0"},
     ]
   end
 end
