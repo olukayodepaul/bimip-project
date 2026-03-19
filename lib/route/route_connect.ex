@@ -49,10 +49,10 @@ defmodule Route.Connect do
   #   end
   # end
 
-  def start_device({device_id, eid, exp, ws_pid, uupid, subc}) do
+  def start_device({device_id, eid, exp, ws_pid, uupid}) do
     case Horde.Registry.lookup(EidRegistry, eid) do
       [{pid, _}] ->
-        GenServer.cast(pid, {:start_device, {eid, device_id, exp, ws_pid, uupid, subc}})
+        GenServer.cast(pid, {:start_device, {eid, device_id, exp, ws_pid, uupid}})
         :ok
       []->
         Logger.warning("No registry entry for #{device_id}, cannot maybe_start_mother")

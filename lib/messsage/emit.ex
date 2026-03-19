@@ -38,7 +38,7 @@ defmodule Device.Transmission do
   # Internal helper to find PIDs for non-stale/active devices
   defp build_valid_pid_set(all_devices, exclude_id, eid) do
     now = System.system_time(:second)
-    stale_limit = Settings.Connections.stale_threshold_seconds()
+    stale_limit = Application.Config.stale_threshold_seconds()
 
     all_devices
     |> Enum.reduce(MapSet.new(), fn {id, dev}, acc ->

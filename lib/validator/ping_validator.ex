@@ -24,8 +24,6 @@ defmodule Bimip.Validators.PingValidator do
   @expected_type 1
   @allowed_types [1, 2]
   @uuid_v4_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-  @replay_window_ms 300_000  # 5 minutes
-  @clock_future_tolerance 10_000 # 10 seconds
 
   # ---------------- Public API ----------------
   @spec validate(Ping.t(), String.t()) :: :ok | {:error, map()}
@@ -89,12 +87,12 @@ defmodule Bimip.Validators.PingValidator do
         error(@status_bad_request, "timestamp must be positive int64", "timestamp")
 
       # Future check
-      diff > @clock_future_tolerance ->
+      diff > Application.Config.future_tolerance() ->
         error(@status_out_of_order, "timestamp is from the future", "timestamp")
 
       # Stale check
-      (now - timestamp) > @replay_window_ms ->
-        error(@status_out_of_order, "timestamp outside allowed replay window (5 mins)", "timestamp")
+      (now - timestamp) > Application.Config.reply_window() ->
+        error(@status_out_of_order, "timestamp outside allowed replay window (#{Application.Config.reply_window()}ms)", "timestamp")
 
       true ->
         :ok

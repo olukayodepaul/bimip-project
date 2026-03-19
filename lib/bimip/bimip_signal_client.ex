@@ -41,7 +41,7 @@ defmodule Bimip.SignalClient do
         last_reported_ms: 0,
 
         # LOCATION STREAM
-        last_location_stream: 0
+        last_location_stream: now
       }
     }
   end
@@ -145,6 +145,7 @@ defmodule Bimip.SignalClient do
     bim = Bimip.MessageScheme.decode(data)
     case bim.payload do
       {:compose, %Bimip.Compose{} = compose} ->
+
         case Bimip.Validators.ComposeValidator.validate(compose, eid) do
           :ok ->
 
@@ -154,10 +155,9 @@ defmodule Bimip.SignalClient do
             |> server_inbound(:eid, :update_device_last_seen, eid)
 
             data
-            |> server_inbound(:eid, :compose_location_stream, compose.to.eid)
+            |> server_inbound(:eid, :data_stream, compose.to.eid)
 
-          :drop
-            :noop
+          :drop -> :ok
         end
         {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
       _ ->
@@ -179,7 +179,7 @@ defmodule Bimip.SignalClient do
             |> server_inbound(:eid, :update_device_last_seen, eid)
 
             data
-            |> server_inbound(:eid, :compose_location_stream, location_stream.to.eid)
+            |> server_inbound(:eid, :data_stream, location_stream.to.eid)
 
           {:error, err} ->
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"

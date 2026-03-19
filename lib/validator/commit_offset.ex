@@ -66,10 +66,12 @@ defmodule Bimip.Validators.OffsetCommitValidator do
   # ---------------- Timestamp ----------------
   defp validate_timestamp(timestamp) when is_integer(timestamp) and timestamp > 0 do
     now = System.system_time(:millisecond)
+    diff = abs(now - timestamp)
 
-    if abs(now - timestamp) <= @clock_window_ms do
+    if diff <= @clock_window_ms do
       :ok
     else
+      IO.inspect("Validation Failed: Diff is #{diff}ms. Server: #{now}, Client: #{timestamp}")
       error(@status_bad_request, "Timestamp clock skew too high (Unix ms)", "timestamp")
     end
   end

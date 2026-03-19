@@ -58,14 +58,8 @@ hex    = Base.encode16(binary, case: :upper)
 
 
 
-//compose
-request = 
 
-compose = 
-
-
-
-Bimip.MessageScheme.encode(
+binary = Bimip.MessageScheme.encode(
   %Bimip.MessageScheme{
       route_id: 4,
       payload: {:compose, 
@@ -78,31 +72,22 @@ Bimip.MessageScheme.encode(
       }
   }
 )
-hex    = Base.encode16(binary, case: :upper)
 
-08073A1B0A0E0A0C6140646F6D61696E2E636F6D10011801209D9FAA9DCC33
-//commit offset
-request = %Bimip.OffsetCommit{
-    from: %Bimip.Identity{eid: "a@domain.com"},
-    type: 1,
-    offset: 1,
-    timestamp: System.system_time(:millisecond),
-}
-
-cf = %Bimip.MessageScheme{
-    route_id: 7,
-    payload: {:offset_commit, request}
-}
-
-binary = Bimip.MessageScheme.encode(cf)
-hex    = Base.encode16(binary, case: :upper)
-
-
-
-//ping
-request = 
-
-cf = 
+binary = Bimip.MessageScheme.encode(
+  %Bimip.MessageScheme{
+      route_id: 9,
+      payload: {:location_stream, 
+        %Bimip.LocationStream{
+          from: %Bimip.Identity{eid: "a@domain.com"},
+          to: %Bimip.Identity{eid: "b@domain.com"},
+          latitude: 0.1088882,
+          longitude: 10.9909882,
+          altitude: 13.009272,
+          timestamp: System.system_time(:millisecond)
+        }
+      }
+  }
+)
 
 binary = Bimip.MessageScheme.encode(
   %Bimip.MessageScheme{
@@ -117,17 +102,6 @@ binary = Bimip.MessageScheme.encode(
     }
   }
 )
-
-hex    = Base.encode16(binary, case: :upper)
-
-
-```
-
-
-//awareness
-request = 
-
-cf = 
 
 binary = Bimip.MessageScheme.encode(
   %Bimip.MessageScheme{
@@ -144,13 +118,21 @@ binary = Bimip.MessageScheme.encode(
   }
 )
 
-
 hex    = Base.encode16(binary, case: :upper)
 
+08073A1B0A0E0A0C6140646F6D61696E2E636F6D10011801209D9FAA9DCC33
+//commit offset
+request = %Bimip.OffsetCommit{
+    from: %Bimip.Identity{eid: "a@domain.com"},
+    type: 1,
+    offset: 1,
+    timestamp: System.system_time(:millisecond),
+}
 
-
-
-
+cf = %Bimip.MessageScheme{
+    route_id: 7,
+    payload: {:offset_commit, request}
+}
 
 
 Bimip.MessageScheme.encode(
@@ -166,7 +148,6 @@ Bimip.MessageScheme.encode(
       }
   }
 )
-
 hex    = Base.encode16(binary, case: :upper)
 
 
@@ -1916,3 +1897,22 @@ end
   end
 end
 
+
+
+
+
+
+binary = Bimip.MessageScheme.encode(
+  %Bimip.MessageScheme{
+    route_id: 3,
+    payload: {:ping, 
+      %Bimip.Ping{
+        id: "a7c2e9d4-1f6b-4c3a-9d8e-2b5f7a1c0e33",
+        from: %Bimip.Identity{eid: "b@domain.com"},
+        type: 1,
+        timestamp: System.system_time(:millisecond)
+      }
+    }
+  }
+)
+ hex    = Base.encode16(binary, case: :upper)

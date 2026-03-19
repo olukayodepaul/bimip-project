@@ -23,6 +23,12 @@ defmodule Application.Config do
     |> parse_int(Application.get_env(:bimips, :connections, [])[:idle_timeout] || 60_000)
   end
 
+  def stale_threshold_seconds do
+     System.get_env("BIMIP_DEVICE_STALE_THRESHOLD_SECONDS")
+    |> parse_int(Application.get_env(:bimips, :connections, [])[:stale_threshold_seconds] || 600)
+  end
+
+
   # -----------------------
   # Section 2: Security & TLS
   # -----------------------
@@ -60,6 +66,7 @@ defmodule Application.Config do
       Application.get_env(:bimips, :auth, [])[:signing_algorithm] ||
       "RS256"
   end
+
 
   # -----------------------
   # Section 3 & 4: Queue & Storage
@@ -150,6 +157,18 @@ defmodule Application.Config do
   def idle_timeout do
     System.get_env("BIMIP_NETWORK_IDLE_TIMEOUT_MS")
     |> parse_int(Application.get_env(:bimips, :network, [])[:idle_timeout] || 60_000)
+  end
+
+  # Idle timeout
+  def reply_window do
+    System.get_env("BIMIP_VALIDATOR_REPLAY_WINDOW_MS")
+    |> parse_int(Application.get_env(:bimips, :network, [])[:reply_window] || 30000)
+  end
+
+  # Idle timeout
+  def future_tolerance do
+    System.get_env("BIMIP_VALIDATOR_CLOCK_FUTURE_TOLERANCE_MS")
+    |> parse_int(Application.get_env(:bimips, :network, [])[:future_tolerance] || 10000)
   end
 
   # Adaptive Network Logic

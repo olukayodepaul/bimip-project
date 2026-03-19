@@ -10,7 +10,7 @@ defmodule Util.ConnectionsHelper do
 
   def accept(req, claims) do
     opts = %{idle_timeout: Application.Config.idle_timeout()}
-    state = %{ eid: claims["eid"], device_id: claims["device_id"], exp: claims["exp"], uupid: claims["uupid"], subc: claims["subc"]}
+    state = %{ eid: claims["eid"], device_id: claims["device_id"], exp: claims["exp"], uupid: claims["uupid"]}
     {:cowboy_websocket, :cowboy_req.set_resp_headers(response_header(req, 101, "connected", "Successful"), req) , state ,opts}
   end
 

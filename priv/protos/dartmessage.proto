@@ -11,7 +11,7 @@ message Identity {
 
 
 // ---------------- PushNotification ----------------
-message PushNotification {
+message PushStatus {
   string id = 1;
   Identity from = 2;
   string category = 3;
@@ -129,7 +129,7 @@ message MessageScheme {
     Token token = 5;
     Message message = 6;
     OffsetCommit offset_commit = 7;
-    PushNotification push_notification = 8;
+    PushStatus push_status = 8;
     LocationStream location_stream = 9;
     Body body = 10;
     ProtocolError protocol_error = 11;

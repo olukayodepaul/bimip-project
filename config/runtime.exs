@@ -42,7 +42,9 @@ config :bimips, :connections,
   cert_file: System.get_env("BIMIP_SSL_CERT_PATH") || "priv/cert/selfsigned.pem",
   key_file: System.get_env("BIMIP_SSL_KEY_PATH") || "priv/cert/selfsigned_key.pem",
   resource_path: System.get_env("BIMIP_RESOURCE_PATH") || "/",
-  clear_port: String.to_integer(System.get_env("BIMIP_NONE_TLS_PORT") || "4000")
+  clear_port: String.to_integer(System.get_env("BIMIP_NONE_TLS_PORT") || "4000"),
+  stale_threshold_seconds: String.to_integer(System.get_env("BIMIP_DEVICE_STALE_THRESHOLD_SECONDS") || 600)
+
 
 
 # -------------------------------------------------------------------------
@@ -94,4 +96,8 @@ config :bimips, :network,
 
   ping_intervals: %{high_rtt: 20_000, medium_rtt: 15_000, default: 10_000},
 
-  max_missed_pongs: %{high: 8, low: 3, default: 5}
+  max_missed_pongs: %{high: 8, low: 3, default: 5},
+
+  reply_window: String.to_integer(System.get_env("BIMIP_VALIDATOR_REPLAY_WINDOW_MS") || "30000"),
+
+  future_tolerance: String.to_integer(System.get_env("BIMIP_VALIDATOR_CLOCK_FUTURE_TOLERANCE_MS") || "10000")

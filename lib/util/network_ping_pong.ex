@@ -27,32 +27,38 @@ defmodule Util.Network.AdaptivePingPong do
     interval = adaptive_interval(state.last_rtt)
 
     cond do
-      # PRIORITY 1: User Idle Logout (The Hard Stop)
+      # PRIORITY 1: User Idle Logout (Unchanged)
       ms_since_user > max_idle_ms() ->
         Logger.info("[PingPong] LOGOUT: User idle limit reached.", device_id: state.device_id)
-
-        # 2026-03-04 Logic: Notify service to look into manifest,
-        # remove list from positions, and delete device settings.
         server_inbound(state.device_id, :eid, :terminate, state.eid)
-
-        # Kill the websocket process
         socket_terminate(state.ws_pid)
-
         {:stop, :normal, state}
 
-      # PRIORITY 2: Network Issues (Zombie or Missed Pongs)
-      # We check this before the standard interval to catch silent connections.
-      ms_since_seen > max_silence_ms() or state.missed_pongs >= max_missed ->
-        if state.missed_pongs > 2 do
-          Logger.warning("[PingPong] LIMPING: #{state.device_id} missed #{state.missed_pongs} pongs.")
+      # PRIORITY 2: THE TERMINATOR (Network Death)
+      # If we hit the limit, we stop trying to ping and close the shop.
+      state.missed_pongs >= max_missed ->
+        Logger.error("[PingPong] DEAD SOCKET: #{state.device_id} missed #{state.missed_pongs} pongs. Closing connection.")
+
+        # Notify the system this device is now "Offline/FCM-Only"
+        # This allows your Fan-out to know: "Don't look for a socket, send an FCM."
+        server_inbound(state.device_id, :eid, :connection_lost, state.eid)
+
+        socket_terminate(state.ws_pid)
+        {:stop, :normal, state}
+
+      # PRIORITY 3: LIMPING (Warning but still trying)
+      # We check silence or partial misses and send a probe.
+      ms_since_seen > max_silence_ms() or state.missed_pongs > 0 ->
+        if state.missed_pongs > 1 do
+          Logger.warning("[PingPong] LIMPING: #{state.device_id} missed #{state.missed_pongs} pongs. Probing...")
         end
         perform_ping_sequence(state, now)
 
-      # PRIORITY 3: Standard Adaptive Ping Probe
+      # PRIORITY 4: Standard Adaptive Ping Probe (Healthy)
       ms_since_any_activity >= interval and ms_since_last_ping >= interval ->
         perform_ping_sequence(state, now)
 
-      # PRIORITY 4: Healthy / Active
+      # PRIORITY 5: Healthy / Active
       true ->
         schedule_next_ping(state.device_id, state.last_rtt)
         {:noreply, state}

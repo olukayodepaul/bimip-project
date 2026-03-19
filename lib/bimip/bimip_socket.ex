@@ -31,11 +31,11 @@ defmodule Bimip.Socket do
     end
   end
 
-  def websocket_init(%{eid: eid, device_id: device_id, exp: exp, uupid: uupid, subc: subc} = state) do
+  def websocket_init(%{eid: eid, device_id: device_id, exp: exp, uupid: uupid} = state) do
     state_with_ws = Map.put(state, :ws_pid, self())
     case Horde.Registry.lookup(EidRegistry, eid) do
       [{_pid, _value}] ->
-        Connect.start_device({device_id, eid, exp, self(), uupid, subc})
+        Connect.start_device({device_id, eid, exp, self(), uupid})
       [] ->
         Server.start_mother(state_with_ws)
         Logger.error("Mother process for #{eid} not found in Registry")
