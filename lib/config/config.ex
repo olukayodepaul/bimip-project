@@ -24,7 +24,7 @@ defmodule Application.Config do
   end
 
   def stale_threshold_seconds do
-     System.get_env("BIMIP_DEVICE_STALE_THRESHOLD_SECONDS")
+    System.get_env("BIMIP_DEVICE_STALE_THRESHOLD_SECONDS")
     |> parse_int(Application.get_env(:bimips, :connections, [])[:stale_threshold_seconds] || 600)
   end
 
@@ -169,6 +169,12 @@ defmodule Application.Config do
   def future_tolerance do
     System.get_env("BIMIP_VALIDATOR_CLOCK_FUTURE_TOLERANCE_MS")
     |> parse_int(Application.get_env(:bimips, :network, [])[:future_tolerance] || 10000)
+  end
+
+  # Idle timeout
+  def flow_rate_limit do
+    System.get_env("BIMIP_FLOW_STANZA_RATE_LIMIT_MS")
+    |> parse_int(Application.get_env(:bimips, :network, [])[:flow_rate_limit] || 5000)
   end
 
   # Adaptive Network Logic

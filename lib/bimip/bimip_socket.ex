@@ -8,6 +8,7 @@ defmodule Bimip.Socket do
   @commit_offset_route_id 7
   @wareness_id 2
   @location_stream 9
+  @flow 8
 
   alias Bimip.Auth.TokenVerifier
   alias Util.{ConnectionsHelper, TokenRevoked}
@@ -112,6 +113,7 @@ defmodule Bimip.Socket do
       4 => &handle_compose/2,
       6 => &handle_message/2,
       7 => &handle_commit_offset/2,
+      8 => &handle_flow/2,
       9 => &handle_location_stream/2
     }
   end
@@ -185,6 +187,18 @@ defmodule Bimip.Socket do
       :error ->
         reason = "Field '' → Invalid awareness 500"
         throws = ThrowProtocolErrorSchema.build(@wareness_id, reason, Until.UniPosTime.response_time())
+        send(self(), {:binary, throws})
+        {:ok, state}
+    end
+  end
+
+  defp handle_flow(state, data) do
+    case Connect.client_server_inbound({:device_id, state.device_id, :flow, data}) do
+      :ok ->
+        {:ok, state}
+      :error ->
+        reason = "Field '' → Invalid flow 500"
+        throws = ThrowProtocolErrorSchema.build(@flow, reason, Until.UniPosTime.response_time())
         send(self(), {:binary, throws})
         {:ok, state}
     end

@@ -5,22 +5,27 @@ defmodule Route.Connect do
   @eid_registry EidRegistry
 
 
-  def client_server_inbound({identifier, registry_id, resouce_finder, payload}) do
+  def client_server_inbound({identifier, registry_id, resouce_finder, payload}, roster \\ %{}) do
     case identifier do
       :eid ->
-        consolidated_route({@eid_registry, registry_id, resouce_finder, payload})
+        consolidated_route({@eid_registry, registry_id, resouce_finder, payload}, roster)
       :device_id ->
-        consolidated_route({@deviceid_registry, registry_id, resouce_finder, payload})
+        consolidated_route({@deviceid_registry, registry_id, resouce_finder, payload}, roster)
     end
   end
 
-  defp consolidated_route({lookup_via_registry, registry_id, resouce_finder, payload}) do
+  defp consolidated_route({lookup_via_registry, registry_id, resouce_finder, payload}, roster \\ %{}) do
     case Horde.Registry.lookup(lookup_via_registry, registry_id) do
       [{pid, _}] ->
         GenServer.cast(pid, {resouce_finder, payload})
         :ok
       [] ->
-        Logger.warning("No registry entry for, cannot maybe_start_mother")
+
+        # if resouce_finder == :message_transmiter do
+        #   [{eid_domain, roster_details}] = Map.to_list(roster)
+        #   Bimip.Push.Dispatcher.send_wake_signal(roster_details, eid_domain)
+        # end
+
         :error
     end
   end

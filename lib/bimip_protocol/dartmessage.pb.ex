@@ -13,7 +13,7 @@ defmodule Bimip.Identity do
   field :node, 3, proto3_optional: true, type: :string
 end
 
-defmodule Bimip.PushNotification do
+defmodule Bimip.Flow do
   @moduledoc false
 
   use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
@@ -23,6 +23,8 @@ defmodule Bimip.PushNotification do
   field :category, 3, type: :string
   field :timestamp, 4, type: :int64
   field :payload, 5, type: :bytes
+  field :signature, 6, type: :bytes
+  field :ttl, 7, proto3_optional: true, type: :int64
 end
 
 defmodule Bimip.LocationStream do
@@ -68,7 +70,8 @@ defmodule Bimip.Body do
 
   field :route_id, 1, type: :int32, json_name: "routeId"
   field :messages, 2, repeated: true, type: Bimip.Message
-  field :timestamp, 3, type: :int64
+  field :flow, 3, repeated: true, type: Bimip.Flow
+  field :timestamp, 4, type: :int64
 end
 
 defmodule Bimip.Ping do
@@ -179,12 +182,7 @@ defmodule Bimip.MessageScheme do
   field :token, 5, type: Bimip.Token, oneof: 0
   field :message, 6, type: Bimip.Message, oneof: 0
   field :offset_commit, 7, type: Bimip.OffsetCommit, json_name: "offsetCommit", oneof: 0
-
-  field :push_notification, 8,
-    type: Bimip.PushNotification,
-    json_name: "pushNotification",
-    oneof: 0
-
+  field :flow, 8, type: Bimip.Flow, oneof: 0
   field :location_stream, 9, type: Bimip.LocationStream, json_name: "locationStream", oneof: 0
   field :body, 10, type: Bimip.Body, oneof: 0
   field :protocol_error, 11, type: Bimip.ProtocolError, json_name: "protocolError", oneof: 0

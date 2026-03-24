@@ -56,7 +56,7 @@ defmodule Bimip.MixProject do
       {:postgrex, ">= 0.0.0"},
       {:mongodb_driver, "~> 1.0"},
 
-      {:pigeon, "~> 1.6"},
+      {:pigeon, "~> 2.0.0"},
       {:kadabra, "~> 0.6.0"},
     ]
   end

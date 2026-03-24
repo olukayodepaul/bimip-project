@@ -42,7 +42,7 @@ defmodule Device.Transmission do
 
     all_devices
     |> Enum.reduce(MapSet.new(), fn {id, dev}, acc ->
-      if id != exclude_id and (now - dev.last_seen) <= stale_limit and dev.presence == 1 do
+      if id != exclude_id and (now - dev.last_seen) <= stale_limit do
         # Get PIDs for this specific device and add to the set
         pids = :pg.get_members(BimipGroups, "device_#{dev.device_id}_#{eid}")
         Enum.reduce(pids, acc, fn pid, set_acc -> MapSet.put(set_acc, pid) end)
@@ -53,7 +53,6 @@ defmodule Device.Transmission do
   end
 
   def emit_single(target_device_id, eid, payload) when is_binary(payload) do
-    # Direct lookup in the cluster-wide process group
     BimipGroups
     |> :pg.get_members("device_#{target_device_id}_#{eid}")
     |> Enum.each(fn pid ->
@@ -61,5 +60,7 @@ defmodule Device.Transmission do
     end)
     :ok
   end
+
+
 
 end

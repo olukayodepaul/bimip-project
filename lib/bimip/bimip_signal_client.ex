@@ -5,7 +5,9 @@ defmodule Bimip.SignalClient do
   @compose_route_id 4
   @commit_offset_route_id 7
   @ping_route_id 3
-  @wareness_id 3
+  @wareness_id 2
+  @flow_id 8
+
   alias Bimip.{MessageScheme}
   alias Supervisor.{Registry}
   alias Util.Network.AdaptivePingPong
@@ -41,7 +43,11 @@ defmodule Bimip.SignalClient do
         last_reported_ms: 0,
 
         # LOCATION STREAM
-        last_location_stream: now
+        last_location_stream: 0,
+
+        # FLOW
+        last_flow_sent_at: now - Application.Config.flow_rate_limit()
+
       }
     }
   end
@@ -71,7 +77,6 @@ defmodule Bimip.SignalClient do
       {:stop, reason, new_state} ->
         {:stop, reason, new_state}
 
-      # Handle the 'hibernate' case if you decide to use it later
       {:noreply, new_state, :hibernate} ->
         {:noreply, new_state, :hibernate}
     end
@@ -231,13 +236,7 @@ defmodule Bimip.SignalClient do
         case Bimip.Validators.AwarenessValidator.validate(awareness, eid) do
           :ok ->
 
-            {route_type, payload} = if awareness.broadcast == 2 do
-              {:broadcast, {data, uupid, awareness.offset, awareness.presence, device_id}}
-            else
-              {:awareness, {uupid, awareness.offset, awareness.presence, device_id}}
-            end
-
-            server_inbound(payload, :eid, route_type, eid)
+            server_inbound({data, uupid, awareness.offset, awareness.presence, device_id, awareness.broadcast}, :eid, :broadcast, eid)
 
           {:error, err} ->
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"
@@ -251,6 +250,37 @@ defmodule Bimip.SignalClient do
         socket_outbound(ws_pid, throws)
         {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
       end
+  end
+
+  def handle_cast({:flow, data}, %{eid: eid, device_id: device_id, last_flow_sent_at: last_flow_sent_at, ws_pid: ws_pid} = state) do
+    bim = Bimip.MessageScheme.decode(data)
+
+    case bim.payload do
+      {:flow, %Bimip.Flow{} = flow} ->
+        case Bimip.Validators.FlowValidator.validate(flow, eid, last_flow_sent_at) do
+          :ok ->
+
+            %{
+              flow: flow,
+              device_id: device_id
+            }
+            |> server_inbound(:eid, :flow, eid)
+
+            {:noreply, Util.Network.AdaptivePingPong.mark_user_activity_by_flow(state)}
+
+          {:error, err} ->
+            reason = "Field '#{err.field}' → #{err.description} #{err.code}"
+            throws = ThrowProtocolErrorSchema.build(@flow_id, reason,Until.UniPosTime.response_time())
+            socket_outbound(ws_pid, throws)
+            {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
+        end
+
+      _ ->
+        reason = "Unexpected payload received"
+        throws = ThrowProtocolErrorSchema.build(@flow_id, reason, Until.UniPosTime.response_time())
+        socket_outbound(ws_pid, throws)
+        {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
+    end
   end
 
   defp socket_outbound(ws_pid, binary) do

@@ -10,15 +10,16 @@ message Identity {
 }
 
 
-// ---------------- PushNotification ----------------
-message PushStatus {
+// ---------------- Flow ----------------
+message Flow {
   string id = 1;
   Identity from = 2;
   string category = 3;
   int64 timestamp = 4;
   bytes payload = 5;
+  bytes signature = 6; // Proof that 'from' actually sent this
+  optional int64 ttl = 7;
 }
-
 
 // ---------------- LocationStream ----------------
 message LocationStream {
@@ -52,7 +53,8 @@ message Logout {
 message Body {
   int32 route_id = 1;
   repeated Message messages = 2;
-  int64 timestamp = 3;
+  repeated Flow flow = 3;
+  int64 timestamp = 4;
 }
 
 message Ping {
@@ -129,7 +131,7 @@ message MessageScheme {
     Token token = 5;
     Message message = 6;
     OffsetCommit offset_commit = 7;
-    PushStatus push_status = 8;
+    Flow flow = 8;
     LocationStream location_stream = 9;
     Body body = 10;
     ProtocolError protocol_error = 11;

@@ -57,8 +57,9 @@ defmodule Message.Broker do
             %Bimip.Message{from: _from_eid, to: _to_eid, delivery_type: delv_type} = message,
           device_id: device_id,
           uupid: uupid
-        } = _message_builder
+        } = _message_builder, roster
       ) do
+
     shard = :erlang.phash2(message.to.eid, @num_shards)
     suffix = :crypto.strong_rand_bytes(8) |> Base.encode16()
 
@@ -85,7 +86,7 @@ defmodule Message.Broker do
           result
           |> Map.put(:offset, receiver_offset)
           |> ThrowMessageSchema.build_message()
-          |> then(&Connect.client_server_inbound({:eid, message.to.eid, :message_transmiter, &1}))
+          |> then(&Connect.client_server_inbound({:eid, message.to.eid, :message_transmiter, &1}, roster))
         end
 
       {:error, :already_exists, _offset} ->

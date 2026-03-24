@@ -1,42 +1,40 @@
-```
-ephemeral_public_key = :crypto.strong_rand_bytes(32)  # 32 bytes
-mac = :crypto.strong_rand_bytes(32)                   # 32 bytes
+shared_secret = :crypto.strong_rand_bytes(32) 
+plaintext = "your-encrypted-payload"
+aad = "Bimip-V1"
+iv = :crypto.strong_rand_bytes(12)
+ephemeral_public_key = :crypto.strong_rand_bytes(32)
 
-shared_secret = "some-shared-key-from-ecdhe"
-data_to_sign = "your-encrypted-payload"
-mac = :crypto.mac(:hmac, :sha256, shared_secret, data_to_sign)
-ciphertext = mac
-    timestamp: System.system_time(:millisecond),
+# 2. Modern AEAD Encryption (OTP 22 through 27+)
+# This is thread-safe and highly optimized for the BEAM
+{ciphertext, mac} = :crypto.crypto_one_time_aead(
+  :aes_256_gcm, 
+  shared_secret, 
+  iv, 
+  plaintext, 
+  aad, 
+  16, 
+  true
+)
 
-request = %Bimip.Message{
-    id: "3e8291f4-7b6a-4d31-bc91-e82a5c4d0f7a",
+# 3. Construct and Encode in one block to prevent "undefined variable" errors
+binary = Bimip.MessageScheme.encode(%Bimip.MessageScheme{
+  route_id: 6,
+  payload: {:message, %Bimip.Message{
+    id: "3e8291f4-7b6a-4d31-bc91-e82a5c4d0f7a", 
     from: %Bimip.Identity{eid: "a@domain.com"},
     to: %Bimip.Identity{eid: "b@domain.com"},
     timestamp: System.system_time(:millisecond),
-    payload: ciphertext,
+    payload: iv <> ciphertext, 
+    mac: mac,
+    ephemeral_public_key: ephemeral_public_key,
     delivery_type: 1,
     participant_role: 1,
     content_type: 1,
-    ephemeral_public_key: ephemeral_public_key,
-    mac: mac,
     message_type: 1
-}
-
-message = %Bimip.MessageScheme{
-    route_id: 6,
-    payload: {:message, request}
-}
-
-binary = Bimip.MessageScheme.encode(message)
+  }}
+})
 hex    = Base.encode16(binary, case: :upper)
 
-080632BB010A2461376332653964342D316636622D346333612D396438652D326235663761316330653333120E0A0C6140646F6D61696E2E636F6D1A0E0A0C6240646F6D61696E2E636F6D28D1DE92BBC73332200C956679A346D9FC823BA8E0477C805C3EC0AC9C8238FF39A74125D6A25C022238014001480152209238AA3E2AE6E9B3C44A6ADDAD36C87E0DE0DAC868811900C8C1C2386AE413325A200C956679A346D9FC823BA8E0477C805C3EC0AC9C8238FF39A74125D6A25C02226001
-
-
-
-response = 
-
-message = 
 
 Bimip.MessageScheme.encode(
   %Bimip.MessageScheme{
@@ -68,6 +66,22 @@ binary = Bimip.MessageScheme.encode(
           to: %Bimip.Identity{eid: "b@domain.com"},
           timestamp: System.system_time(:millisecond),
           type: 4,
+        }
+      }
+  }
+)
+
+binary = Bimip.MessageScheme.encode(
+  %Bimip.MessageScheme{
+      route_id: 8,
+      payload: {:flow, 
+        %Bimip.Flow{
+          id: "a7c2e9d4-1f6b-4c3a-9d8e-2b5f7a1c0e33",
+          from: %Bimip.Identity{eid: "a@domain.com"},
+          category: "client-define",
+          timestamp: System.system_time(:millisecond),
+          payload: "buye",
+          signature: <<0::256>> 
         }
       }
   }
@@ -108,10 +122,10 @@ binary = Bimip.MessageScheme.encode(
       route_id: 2,
       payload: {:awareness, 
         %Bimip.Awareness {
-          from: %Bimip.Identity{eid: "a@domain.com"},
+          from: %Bimip.Identity{eid: "b@domain.com"},
           presence: 1,
           offset: 0,
-          broadcast: 2,
+          broadcast: 1,
           timestamp: System.system_time(:millisecond),
         }
       }
@@ -135,7 +149,7 @@ cf = %Bimip.MessageScheme{
 }
 
 
-Bimip.MessageScheme.encode(
+binary = Bimip.MessageScheme.encode(
   %Bimip.MessageScheme{
       route_id: 7,
       payload: {:offset_commit, 

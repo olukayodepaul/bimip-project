@@ -100,7 +100,9 @@ config :bimips, :network,
 
   reply_window: String.to_integer(System.get_env("BIMIP_VALIDATOR_REPLAY_WINDOW_MS") || "30000"),
 
-  future_tolerance: String.to_integer(System.get_env("BIMIP_VALIDATOR_CLOCK_FUTURE_TOLERANCE_MS") || "10000")
+  future_tolerance: String.to_integer(System.get_env("BIMIP_VALIDATOR_CLOCK_FUTURE_TOLERANCE_MS") || "10000"),
+
+  flow_rate_limit: String.to_integer(System.get_env("BIMIP_FLOW_STANZA_RATE_LIMIT_MS") || "5000")
 
 
 # -------------------------------------------------------------------------
@@ -124,11 +126,8 @@ config :pigeon, :apns,
   }
 
 # --- FCM (Firebase Cloud Messaging for Android) ---
-config :pigeon, :fcm,
-  fcm_default: %{
-    # For FCM V1 (Recommended), you use a service account JSON file
-    service_account_json: System.get_env("BIMIP_FCM_SERVICE_ACCOUNT_PATH") || "priv/fcm/service_account.json"
+# config/config.exs
 
-    # For Legacy FCM (Old), you use a server key
-    # key: System.get_env("BIMIP_FCM_SERVER_KEY")
-  }
+config :pigeon, :fcm_default,
+  adapter: Pigeon.FCM,
+  service_account_json: System.get_env("BIMIP_FCM_SERVICE_ACCOUNT_PATH") || "priv/fcm/service_account.json"
