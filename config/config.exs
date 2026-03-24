@@ -1,38 +1,89 @@
 import Config
 
-config :bimip, :connections,
-  secure_tls: false,
-  cert_file: "priv/cert.pem",
-  key_file: "priv/key.pem",
-  port: 4001,
-  resource_path: "/application/development",
-  idle_timeout: 60_000
+# -------------------------------------------------------------------------
+# 1. LOAD .ENV FILE
+# -------------------------------------------------------------------------
+dot_env_path = Path.expand(".env")
 
-config :bimip, :subpub,
-  topic: :default
+if File.exists?(dot_env_path) do
+  dot_env_path
+  |> File.stream!()
+  |> Enum.map(&String.trim/1)
+  |> Enum.filter(&(String.length(&1) > 0 and not String.starts_with?(&1, "#")))
+  |> Enum.each(fn line ->
+    case String.split(line, "=", parts: 2) do
+      [key, value] -> System.put_env(String.trim(key), String.trim(value))
+      _ -> :ok
+    end
+  end)
+end
 
-config :bimip, :jwt,
-  public_key_path: "priv/keys/public.pem",
-  signing_algorithm: "RS256"
+# -------------------------------------------------------------------------
+# 2. PRE-CONFIG CALCULATIONS & CONSTANTS
+# -------------------------------------------------------------------------
+# Internal Law: Sparse index stride is hardcoded to ensure data integrity.
+internal_stride = 1000
 
-config :bimip, :adaptive_network_ping_pong,
-  default_ping_interval_ms: 10_000,     # Ping every 10s → light but responsive
-  max_allowed_delay_seconds: 60 * 2,    # Allow up to 45s delay before forcing check
-  max_pong_retries: 5,                  # Refresh ONLINE every ~30s (3 × 10s)
-  initial_max_missed_pings: 6,          # 6 misses = ~60s silence → OFFLINE
+retention_days = String.to_integer(System.get_env("BIMIP_RETENTION_DAYS") || "1")
+max_seg = String.to_integer(System.get_env("BIMIP_MAX_MESSAGES_PER_SEG") || "1000000")
+flush_secs = String.to_integer(System.get_env("BIMIP_FLUSH_INTERVAL_SECONDS") || "10")
 
-  # Adaptive tuning
-  rtt_thresholds: %{high: 500, low: 100},         # RTT thresholds in ms
-  ping_intervals: %{high_rtt: 2_000, medium_rtt: 1_000, default: 1_000},
-  max_missed_pongs: %{high: 8, low: 3, default: 5}
+# Validation: Ensure segment size aligns with the internal index stride
+if rem(max_seg, internal_stride) != 0 do
+  raise ArgumentError, "BIMIP_MAX_MESSAGES_PER_SEG must be a multiple of #{internal_stride}."
+end
 
-config :bimip, :device_state_change,
-  stale_threshold_seconds: 60 * 10,   # Device considered stale after 2 min without pong
-  force_change_seconds: 60 * 5    # Force a rebroadcast every 1 min idle
+# -------------------------------------------------------------------------
+# 3. NETWORK & TLS CONFIGURATION
+# -------------------------------------------------------------------------
+secure_tls = System.get_env("BIMIP_SECURE_TLS") == "true"
 
-config :bimip, :server_state,
-  stale_threshold_seconds: 60 * 10,   # 60 * 20 User considered stale after 10 min no device activity
-  force_change_seconds: 60 * 2       # Force rebroadcast every 5 min idle
+config :bimips, :connections,
+  secure_tls: secure_tls,
+  resource_path: System.get_env("BIMIP_RESOURCE_PATH") || "/",
+  tls_port: String.to_integer(System.get_env("BIMIP_TLS_PORT") || "4001"),
+  clear_port: String.to_integer(System.get_env("BIMIP_NONE_TLS_PORT") || "4000"),
+  cert_file: System.get_env("BIMIP_CERT_PATH") || "priv/cert/selfsigned.pem",
+  key_file: System.get_env("BIMIP_KEY_PATH") || "priv/cert/selfsigned_key.pem"
 
-config :bimip, :queue,
-  max_queue_size: 1000
+# -------------------------------------------------------------------------
+# 4. QUEUE & PERFORMANCE CONFIGURATION
+# -------------------------------------------------------------------------
+
+
+config :bimips, :queue,
+  max_batch_size: String.to_integer(System.get_env("MAX_BATCH_SIZE") || "100"),
+  compact_interval: String.to_integer(System.get_env("BIMIP_COMPACT_INTERVAL_HOURS") || "4"),
+  archive_root: System.get_env("BIMIP_ARCHIVE_PATH") || "data/archive",
+  max_read_fds: String.to_integer(System.get_env("BIMIP_MAX_READ_FDS") || "11"),
+  retention_seconds: retention_days * 86_400,
+  stable_limit: String.to_integer(System.get_env("BIMIP_STABLE_LIMIT") || "1000"),
+  max_buffer_per_shard: String.to_integer(System.get_env("BIMIP_MAX_BUFFER_PER_SHARD") || "10000000"),
+  user_stride: internal_stride,
+  max_messages_per_seg: max_seg,
+  flush_interval_ms: flush_secs * 1_000
+
+# -------------------------------------------------------------------------
+# 5. SECURITY & AUTHENTICATION
+# -------------------------------------------------------------------------
+# Path.expand/1 turns "./priv/keys/public.pem" into a full absolute path
+# based on the project root during compilation.
+
+config :bimips, :auth,
+  public_key_path: System.get_env("BIMIP_JWT_PUBLIC_KEY_PATH") || "priv/keys/public.pem",
+  signing_algorithm: System.get_env("BIMIP_SIGNING_ALGORITHM") || "RS256"
+
+
+config :bimips, :network,
+  # From your .env: BIMIP_DEFAULT_PING_INTERVAL_MS (10000)
+  ping_interval_ms: String.to_integer(System.get_env("BIMIP_DEFAULT_PING_INTERVAL_MS") || "10000"),
+
+  # Absolute silence before we start worrying (BIMIP_MAX_SILENCE_MS)
+  max_silence_ms: String.to_integer(System.get_env("BIMIP_MAX_SILENCE_MS") || "5000"),
+
+  # User idle timeout (BIMIP_DEVICE_STALE_THRESHOLD_SECONDS converted to ms)
+  # 600 seconds -> 600,000 ms
+  max_idle_ms: String.to_integer(System.get_env("BIMIP_DEVICE_STALE_THRESHOLD_SECONDS") || "600") * 1_000,
+
+  # Heartbeat for federation/reporting
+  report_interval_ms: 60_000

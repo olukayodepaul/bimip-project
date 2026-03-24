@@ -1,107 +1,55 @@
 defmodule Bimip.Validators.AwarenessValidator do
-  @moduledoc """
-  Validates an Awareness message sent from a client.
-
-  Validation Rules:
-  - `id`: must be present and not empty
-  - `from` and `to`: must exist and contain `connection_resource_id`
-  - `type`: must be 1 (REQUEST)
-  - `status`: must be one of the allowed status codes (1..11)
-  - `location_sharing`: must be 1 (ENABLED) or 2 (DISABLED)
-  - If `location_sharing = 1`, both `latitude` and `longitude` must be valid numbers
-  - If `location_sharing = 2`, both may be omitted
-  - `ttl`: must be a positive integer
-  - `timestamp`: must be a positive integer (epoch millis)
-  """
-
   alias Bimip.Awareness
 
-  @allowed_status 1..11
-  @allowed_location_sharing [1, 2]
-  @allowed_type 1 # REQUEST only
+  @allowed_presence 1..5
+  @allowed_broadcast [1, 2]
+  # 60 seconds tolerance for drift/latency
+  @clock_window_ms 60_000
+  @max_offset 1_000_000_000
 
-  @spec validate_awareness(Awareness.t()) :: :ok | {:error, map()}
-  def validate_awareness(%Awareness{} = msg) do
-    with :ok <- validate_id(msg.id),
-         :ok <- validate_identity(msg.from, "from"),
-         :ok <- validate_identity(msg.to, "to"),
-         :ok <- validate_type(msg.type),
-         :ok <- validate_status(msg.status),
-         :ok <- validate_location_sharing(msg.location_sharing),
-         :ok <- validate_coordinates(msg.location_sharing, msg.latitude, msg.longitude),
-         :ok <- validate_ttl(msg.ttl),
-         :ok <- validate_timestamp(msg.timestamp) do
+  @spec validate(Awareness.t(), String.t()) :: :ok | {:error, map()}
+  def validate(%Awareness{} = msg, actual_eid) do
+    with :ok <- validate_identity(msg.from, actual_eid),
+         :ok <- validate_presence(msg.presence),
+         :ok <- validate_offset(msg.offset),
+         :ok <- validate_broadcast(msg.broadcast),
+         :ok <- validate_timestamp(msg.timestamp) do # <--- Enabled
       :ok
     end
   end
 
-  # ------------------------------------------------------------------------
-  # ID Validation
-  # ------------------------------------------------------------------------
-  defp validate_id(nil),
-    do: {:error, error_detail(100, "Missing awareness id", "id")}
+  # Identity: Matches provided EID against session EID
+  defp validate_identity(%{eid: provided_eid}, actual_eid) do
+    if provided_eid == actual_eid, do: :ok, else: {:error, error_detail(101, "EID mismatch", "from.eid")}
+  end
+  defp validate_identity(_, _), do: {:error, error_detail(100, "Missing identity", "from")}
 
-  defp validate_id(""),
-    do: {:error, error_detail(100, "Awareness id cannot be empty", "id")}
+  # Presence/Offset/Broadcast checks...
+  defp validate_presence(p) when p in @allowed_presence, do: :ok
+  defp validate_presence(_), do: {:error, error_detail(100, "Invalid presence", "presence")}
 
-  defp validate_id(_), do: :ok
+  defp validate_offset(o) when is_integer(o) and o >= 0 and o <= @max_offset, do: :ok
+  defp validate_offset(_), do: {:error, error_detail(100, "Invalid offset", "offset")}
 
-  # ------------------------------------------------------------------------
-  # Existing validations
-  # ------------------------------------------------------------------------
-  defp validate_identity(nil, field),
-    do: {:error, error_detail(100, "Missing #{field} identity", field)}
+  defp validate_broadcast(b) when b in @allowed_broadcast, do: :ok
+  defp validate_broadcast(_), do: {:error, error_detail(100, "Broadcast must be 1 or 2", "broadcast")}
 
-  defp validate_identity(%{connection_resource_id: id}, field)
-      when id in [nil, ""],
-      do: {:error, error_detail(100, "Missing #{field}.connection_resource_id", "#{field}.connection_resource_id")}
+  # ---------------- Timestamp Validation (Unix/Epoch) ----------------
+  defp validate_timestamp(ts) when is_integer(ts) and ts > 0 do
+    # Get current server Unix/Epoch time in milliseconds
+    now = System.system_time(:millisecond)
 
-  defp validate_identity(_identity, _field), do: :ok
-
-  defp validate_type(@allowed_type), do: :ok
-  defp validate_type(_),
-    do: {:error, error_detail(100, "Invalid type — user can only send REQUEST (1)", "type")}
-
-  defp validate_status(status) when status in @allowed_status, do: :ok
-  defp validate_status(_),
-    do: {:error, error_detail(100, "Invalid status — must be one of 1..11", "status")}
-
-  defp validate_location_sharing(v) when v in @allowed_location_sharing, do: :ok
-  defp validate_location_sharing(_),
-    do: {:error, error_detail(100, "Invalid location_sharing — must be 1 or 2", "location_sharing")}
-
-  defp validate_ttl(ttl) when is_integer(ttl) and ttl > 0, do: :ok
-  defp validate_ttl(_),
-    do: {:error, error_detail(100, "Missing or invalid ttl", "ttl")}
-
-  defp validate_timestamp(ts) when is_integer(ts) and ts > 0, do: :ok
-  defp validate_timestamp(_),
-    do: {:error, error_detail(100, "Missing or invalid timestamp", "timestamp")}
-
-  # ------------------------------------------------------------------------
-  # Conditional Coordinate Validation
-  # ------------------------------------------------------------------------
-  defp validate_coordinates(1, lat, lon) do
-    cond do
-      is_nil(lat) or is_nil(lon) ->
-        {:error, error_detail(100, "Latitude and Longitude required when sharing is enabled", "coordinates")}
-
-      not is_number(lat) or not is_number(lon) ->
-        {:error, error_detail(100, "Latitude and Longitude must be numeric when sharing is enabled", "coordinates")}
-
-      true ->
-        :ok
+    # Calculate absolute difference to catch both "too old" and "too far future"
+    if abs(now - ts) <= @clock_window_ms do
+      :ok
+    else
+      error_msg = "Clock skew too high. Server: #{now}, Client: #{ts}"
+      {:error, error_detail(102, error_msg, "timestamp")}
     end
   end
 
-  defp validate_coordinates(2, _lat, _lon), do: :ok
+  defp validate_timestamp(_),
+    do: {:error, error_detail(100, "Timestamp must be a positive Unix integer", "timestamp")}
 
-  defp validate_coordinates(_, _lat, _lon),
-    do: {:error, error_detail(100, "Invalid location_sharing value", "location_sharing")}
-
-  # ------------------------------------------------------------------------
-  # Error helper
-  # ------------------------------------------------------------------------
-  defp error_detail(code, description, field),
-    do: %{code: code, description: description, field: field}
+  defp error_detail(code, desc, field), do: %{code: code, description: desc, field: field}
 end

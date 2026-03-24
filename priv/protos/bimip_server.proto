@@ -3,81 +3,38 @@ syntax = "proto3";
 package bimip_server;
 
 service BimipService {
-  rpc DeviceAuth (AuthRequest) returns (AuthReply) {}
-  rpc GenerateDeviceToken (GenerateTokenReq) returns (GenerateTokenRes) {}
-  rpc BlackListToken (BlackListTokenReq) returns (BlackListTokenRes) {}
-  rpc GenAccessFromRefreshToken (GenerateAccessTokenFromRefreshTokenReq) returns (GenerateAccessTokenFromRefreshTokenRes) {}
-  
-  // 👇 New RPC for Awareness Visibility
-  rpc AwarenessVisibility (AwarenessVisibilityReq) returns (AwarenessVisibilityRes) {}
+  rpc BimipTunnel (stream TunnelMessage) returns (stream TunnelMessage) {}
 }
 
-// -------------------- Existing Messages --------------------
-
-message AuthReply {
-  int32 status = 1;
-  int32 type = 2; 
-  string jti = 3;
-  string message = 4;
-  string device_id = 5;
-  string jid = 6;
+message TunnelMessage {
+  string id = 1;
+  int32 node_id = 2;
+  int32 target_node_id = 3;
+  State state = 4;
+  Direction direction = 5;
+  bytes payload = 6;
+  ActionType action_type = 7;
+  int64 timestamp = 8;
 }
 
-message AuthRequest {
-  string token = 1;
-  int32 type = 2;
-}
+enum Direction {
+    DIR_UNKNOWN = 0;
+    CLIENT_TO_SERVER = 1;
+    SERVER_TO_CLIENT = 2;
+  }
 
-message GenerateTokenReq {
-  string jid = 1;
-  string device_id = 2;
-  int32 user_id = 3; 
-}
+enum State {
+    UNKNOWN = 0;
+    CONNECT = 1;
+    DISCONNECT = 2;
+    COMMUNICATION = 3;
+    HEARTBEAT = 4;
+  }
 
-message GenerateTokenRes {
-  string status = 1;
-  string refresh_token = 2;
-  string access_token = 3;
-  string message = 4;
-}
+  enum ActionType {
+    ACTION_UNKNOWN = 0;
+    FORWARD = 1;          // Route this message to another node
+    RECEIPT = 2;          // Acknowledge a received message
+    PRESENCE_UPDATE = 3;  // Update status (Online/Away/Busy)
+  }
 
-message BlackListTokenReq {
-  string token = 1;
-}
-
-message BlackListTokenRes {
-  string status = 1;
-  string message = 4;
-}
-
-message GenerateAccessTokenFromRefreshTokenReq {
-  string token = 1;
-}
-
-message GenerateAccessTokenFromRefreshTokenRes {
-  string status = 1;
-  string refresh_token = 2;
-  string access_token = 3;
-  string message = 4;
-}
-
-// -------------------- Awareness Visibility --------------------
-
-message AwarenessVisibilityReq {
-  string id = 1;                   // Unique message ID
-  string eid = 2;                  // Entity ID (user or session identifier)
-  string device_id = 3;            // Device making the visibility change
-  int32 type = 4;                  // 1 = ENABLED (share awareness), 2 = DISABLED (hide awareness)
-  int64 timestamp = 5;             // Unix UTC timestamp (milliseconds)
-}
-
-message AwarenessVisibilityRes {
-  string id = 1;                   // Unique message ID (echoed back)
-  string eid = 2;                  // Entity ID (echoed back)
-  string device_id = 3;            // Device making the visibility change (echoed back)
-  int32 type = 4;                  // Visibility type (echoed back)
-  int64 timestamp = 5;             // Unix UTC timestamp (echoed back)
-  int32 status = 6;                // 0 = OK, non-zero = error code
-  string message = 7;              // Description or error message
-  string display_name = 8;         // Description or error message
-}
