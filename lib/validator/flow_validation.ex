@@ -17,9 +17,6 @@ defmodule Bimip.Validators.FlowValidator do
   @status_bad_request 400
   @status_too_many_requests 429
 
-  # ---------------- Protocol Constraints ----------------
-  @flow_rate_limit 5000  # Default 5s interval
-
   # ---------------- Public API ----------------
   @spec validate(Flow.t(), String.t(), integer(), integer() | nil) :: :ok | {:error, map()}
   def validate(%Flow{} = msg, authenticated_eid, last_flow_sent_at, min_interval \\ Application.Config.flow_rate_limit()) do
@@ -66,7 +63,7 @@ defmodule Bimip.Validators.FlowValidator do
   end
 
   # ---------------- Identity ----------------
-  defp validate_identity(%Identity{eid: eid}, field) when is_binary(eid) and byte_size(eid) > 0,
+  defp validate_identity(%Identity{eid: eid}, _field) when is_binary(eid) and byte_size(eid) > 0,
     do: :ok
 
   defp validate_identity(_, field),

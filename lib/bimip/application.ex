@@ -3,16 +3,16 @@
 # -----------------------
 defmodule Bimip.Application do
   use Application
-
   require Logger
 
   @impl true
   def start(_type, _args) do
-
     # -----------------------
     # COWBOY CONNECTIONS
     # -----------------------
     connections_children = []
+
+    Logger.info("TLS port configured: #{Application.Config.tls_port()}")
 
     # TLS server
     connections_children =
@@ -50,7 +50,6 @@ defmodule Bimip.Application do
            %{env: %{dispatch: dispatch(Application.Config.resource_path())}}
          ]}
     }
-
     connections_children = [non_tls_child | connections_children]
 
     # -----------------------
@@ -74,7 +73,6 @@ defmodule Bimip.Application do
         # {BimipsSignal.SignalManager, []},
         {Task.Supervisor, name: Message.TaskSupervisor}
       ]
-
     opts = [strategy: :one_for_one, name: Bimip.Supervisor]
     Supervisor.start_link(children, opts)
   end

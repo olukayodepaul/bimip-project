@@ -42,6 +42,7 @@ defmodule Bimip.Signal.RosterManager do
 
   defp fetch_loop(eid, parent_pid, offset) do
     # Call the bimIPs Server (DigitalOcean Droplet)
+
     case Bimip.ServerClient.fetch_roster_page(eid, offset, @chunk_size) do
       {:ok, %{subscribers: list, count: received_count, completed: is_done}} ->
         # Send the list to the SignalServer
@@ -55,8 +56,8 @@ defmodule Bimip.Signal.RosterManager do
           fetch_loop(eid, parent_pid, offset + received_count)
         end
 
-      {:error, reason} ->
-        Logger.error("RosterManager: Fetch failed for #{eid} at offset #{offset}: #{inspect(reason)}")
+      _ ->
+        Logger.error("RosterManager: Fetch failed for")
     end
   end
 end

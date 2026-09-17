@@ -14,8 +14,8 @@ defmodule Queue.QueueLogImpl do
   @checkpoints_prefix :bimip_segment_checkpoints_
   @user_offsets_prefix :bimip_user_offsets_
   @user_segment_counts_prefix :bimip_user_segment_counts_
-  @idx_cache_prefix :"bimip_idx_"
-  @log_buffer_prefix :"bimip_buf_"
+  @idx_cache_prefix :bimip_idx_
+  @log_buffer_prefix :bimip_buf_
   @flush_state :flush_state
   @partition 1
   @num_shards 64
@@ -238,9 +238,9 @@ defmodule Queue.QueueLogImpl do
     drain_buf(buf, state)
   end
 
-  defp process_batch(state, items, depth \\ 0)
+  # defp process_batch(state, items, depth \\ 0)
   defp process_batch(state, [], _depth), do: state
-  defp process_batch(state, items, depth) when depth > 500 do
+  defp process_batch(state, _items, depth) when depth > 500 do
     Logger.error("Flush recursion too deep. Shard: #{state.shard}")
     state
   end
@@ -390,7 +390,7 @@ end
     :ok
   end
 
-  defp encode_packet(rec, offset, state) do
+  defp encode_packet(rec, offset, _state) do
     u_bin = to_string(rec.u)
     d_bin = to_string(rec.writer_device)
     packet = [
@@ -485,6 +485,7 @@ end
     else {:error, :file_not_found} end
   end
 
+  @impl true
   def handle_call({:fetch, user, p, device_id, batch_size}, _from, state) do
     cache = :"device_bookmarks_cache_#{state.shard}"
     today = Date.utc_today() |> Date.to_iso8601()
@@ -626,7 +627,7 @@ end
     else :already_loaded end
   end
 
- defp perform_recovery(user, partition_id, cache, data) do
+ defp perform_recovery(user, _partition_id, _cache, data) do
     shard = :erlang.phash2(user, @num_shards)
     prime_indexes(shard, user, data, get_manifest_cached(shard))
     :ok
@@ -687,61 +688,7 @@ end
     :ets.insert(@flush_state, {state.shard, :idle}); schedule_flush(); state
   end
 
-  @impl true
-  def handle_cast(:trigger_maintenance, state) do
-    shard = state.shard
 
-    # 1. 🚀 PID-Aware Lock Validation
-    is_busy = case :ets.lookup(@flush_state, shard) do
-      [{^shard, {:busy, pid}}] -> Process.alive?(pid)
-      [{^shard, :busy}] -> true
-      _ -> false
-    end
-
-    if is_busy do
-      Logger.warning("Shard #{shard} maintenance skipped: BUSY (Lock held by active process)")
-      {:noreply, state}
-    else
-      # 2. Acquire Lock with current PID
-      :ets.insert(@flush_state, {shard, {:busy, self()}})
-
-      try do
-        # 3. Get manifest from ETS
-        manifest = get_manifest_cached(shard)
-        now = System.system_time(:second)
-
-        # 4. Filter based on retention
-        expired_ids =
-          manifest.expired
-          |> Enum.filter(fn {_id, ts} -> (now - ts) > retention_seconds() end)
-          |> Enum.map(fn {id, _ts} -> id end)
-
-        if expired_ids == [] do
-          Logger.info("Shard #{shard} maintenance: Nothing old enough to archive yet.")
-          {:noreply, state}
-        else
-          Logger.info("🧹 Shard #{shard} archiving: #{inspect(expired_ids)}")
-
-          # 5. Perform the move (The "Remove List/Compact" heavy lifting)
-          new_manifest_map = perform_archival(state, manifest, expired_ids)
-
-          # 6. Save results back to ETS and Disk
-          u_offsets = user_offsets_tab(shard)
-          :ets.insert(u_offsets, {:manifest_snapshot, new_manifest_map})
-          write_manifest(shard, new_manifest_map)
-
-          {:noreply, %{state | manifest: new_manifest_map}}
-        end
-      rescue
-        e ->
-          Logger.error("❌ Shard #{shard} maintenance CRASHED: #{inspect(e)}")
-          {:noreply, state}
-      after
-        # 7. 🛡️ Safety Release: Always set back to idle
-        :ets.insert(@flush_state, {shard, :idle})
-      end
-    end
-  end
 
   defp perform_archival(state, manifest, expired_ids) do
 
@@ -840,6 +787,62 @@ def handle_cast({:ack, user, device_id, ack_offset}, state) do
 
   {:noreply, state}
 end
+
+ @impl true
+  def handle_cast(:trigger_maintenance, state) do
+    shard = state.shard
+
+    # 1. 🚀 PID-Aware Lock Validation
+    is_busy = case :ets.lookup(@flush_state, shard) do
+      [{^shard, {:busy, pid}}] -> Process.alive?(pid)
+      [{^shard, :busy}] -> true
+      _ -> false
+    end
+
+    if is_busy do
+      Logger.warning("Shard #{shard} maintenance skipped: BUSY (Lock held by active process)")
+      {:noreply, state}
+    else
+      # 2. Acquire Lock with current PID
+      :ets.insert(@flush_state, {shard, {:busy, self()}})
+
+      try do
+        # 3. Get manifest from ETS
+        manifest = get_manifest_cached(shard)
+        now = System.system_time(:second)
+
+        # 4. Filter based on retention
+        expired_ids =
+          manifest.expired
+          |> Enum.filter(fn {_id, ts} -> (now - ts) > retention_seconds() end)
+          |> Enum.map(fn {id, _ts} -> id end)
+
+        if expired_ids == [] do
+          Logger.info("Shard #{shard} maintenance: Nothing old enough to archive yet.")
+          {:noreply, state}
+        else
+          Logger.info("🧹 Shard #{shard} archiving: #{inspect(expired_ids)}")
+
+          # 5. Perform the move (The "Remove List/Compact" heavy lifting)
+          new_manifest_map = perform_archival(state, manifest, expired_ids)
+
+          # 6. Save results back to ETS and Disk
+          u_offsets = user_offsets_tab(shard)
+          :ets.insert(u_offsets, {:manifest_snapshot, new_manifest_map})
+          write_manifest(shard, new_manifest_map)
+
+          {:noreply, %{state | manifest: new_manifest_map}}
+        end
+      rescue
+        e ->
+          Logger.error("❌ Shard #{shard} maintenance CRASHED: #{inspect(e)}")
+          {:noreply, state}
+      after
+        # 7. 🛡️ Safety Release: Always set back to idle
+        :ets.insert(@flush_state, {shard, :idle})
+      end
+    end
+  end
 
 defp find_segment_for_offset(positions, ack_offset, active_base) do
   positions

@@ -4,14 +4,13 @@ defmodule Bimip.SignalServer do
 
   @message_route_id 6
   @partition 1
-  @range 100
   @route 8
   @stale_threshold 1800 # 30 minutes in seconds
   @global_ttl_ms 24 * 3600 * 1000 # 24 hours in milliseconds
 
 
   alias Supervisor.{Registry, Client}
-  alias Bimip.{Flow, MessageScheme,  Body}
+  alias Bimip.{MessageScheme,  Body}
 
   # ----------------------
   # Client API
@@ -86,6 +85,55 @@ defmodule Bimip.SignalServer do
   end
 
   @impl true
+  def handle_info({:presence_update, {eid, bin, broadcast, presence} }, state) do
+
+    state = update_roster_last_seen(state, eid, presence)
+
+    {active_flows, state} = fetch_active_and_purge_expired(state)
+
+    if broadcast == 2 do
+       Device.Transmission.emit_broadcast(state.eid, state.devices, bin)
+    end
+
+    unless Enum.empty?(active_flows) do
+      %MessageScheme{
+        route_id: 10,
+          payload: {:body, %Body{
+            route_id: @route,
+            flow: active_flows,
+            timestamp: Until.UniPosTime.uni_pos_time()
+          }
+        }
+      }
+      |>MessageScheme.encode()
+      |>then(&Route.Connect.client_server_inbound({:eid, eid, :message_transmiter, &1}))
+    end
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:expire_genserver, state) do
+    now = System.system_time(:second)
+    elapsed = now - state.last_activity
+
+    # Threshold in seconds: 120s + 1800s = 1920s
+    limit_sec = div(total_ttl_ms(), 1000)
+
+    if elapsed >= limit_sec do
+      Logger.info("SignalServer for #{state.eid} idle beyond stale threshold. Shutting down.")
+      {:stop, :normal, state}
+    else
+      # If activity happened that wasn't caught, reschedule for the remainder
+      remaining_ms = (limit_sec - elapsed) * 1000
+      new_timer = Process.send_after(self(), :expire_genserver, remaining_ms)
+
+      # Use hibernate to save RAM during the remaining grace period
+      {:noreply, %{state | termination_timer: new_timer}, :hibernate}
+    end
+  end
+
+  @impl true
   def handle_cast({:start_device, {eid, device_id, exp, ws_pid, uupid}}, state) do
     case Client.start_session({eid, device_id, exp, ws_pid, uupid}) do
       {:ok, _pid} ->
@@ -109,24 +157,51 @@ defmodule Bimip.SignalServer do
     end
   end
 
+  # @impl true
+  # def handle_cast({:message, %{message: message, device_id: device_id} = message_builder}, state) do
+  #   case subscribers_validation(message.to.eid, state.sub) do
+  #     {:ok, :success} ->
+
+  #       filter_roster = Map.take(state.roster, [message.to.eid])
+
+  #       Task.Supervisor.start_child(Message.TaskSupervisor, fn ->
+  #         t1 = Task.async(fn -> Message.Broker.sender(message_builder, state.devices) end)
+  #         t2 = Task.async(fn -> Message.Broker.recv(message_builder, filter_roster) end)
+  #         Task.await(t1); Task.await(t2)
+  #       end)
+
+  #     {:error, :failed} ->
+  #       reason = "Field 'to.eid' → #{message.to.eid} Invalid subscriber 500"
+  #       ThrowProtocolErrorSchema.build(@message_route_id, reason, Until.UniPosTime.response_time())
+  #       |> then(&Device.Transmission.emit_single(device_id, state.eid, &1))
+  #   end
+
+  #   {:noreply, update_last_seen(state, device_id)}
+  # end
+
+
   @impl true
   def handle_cast({:message, %{message: message, device_id: device_id} = message_builder}, state) do
-    case subscribers_validation(message.to.eid, state.sub) do
-      {:ok, :success} ->
+    IO.inspect("message sent out to 1")
+    # Subscriber validation temporarily commented out:
+    # case subscribers_validation(message.to.eid, state.sub) do
+    #   {:ok, :success} ->
 
-        filter_roster = Map.take(state.roster, [message.to.eid])
+    filter_roster = Map.take(state.roster, [message.to.eid])
 
-        Task.Supervisor.start_child(Message.TaskSupervisor, fn ->
-          t1 = Task.async(fn -> Message.Broker.sender(message_builder, state.devices) end)
-          t2 = Task.async(fn -> Message.Broker.recv(message_builder, filter_roster) end)
-          Task.await(t1); Task.await(t2)
-        end)
+    IO.inspect(filter_roster, label: "🔍 FILTER ROSTER CONTENTS")
 
-      {:error, :failed} ->
-        reason = "Field 'to.eid' → #{message.to.eid} Invalid subscriber 500"
-        ThrowProtocolErrorSchema.build(@message_route_id, reason, Until.UniPosTime.response_time())
-        |> then(&Device.Transmission.emit_single(device_id, state.eid, &1))
-    end
+    Task.Supervisor.start_child(Message.TaskSupervisor, fn ->
+      t1 = Task.async(fn -> Message.Broker.sender(message_builder, state.devices) end)
+      t2 = Task.async(fn -> Message.Broker.recv(message_builder, filter_roster) end)
+      Task.await(t1); Task.await(t2)
+    end)
+
+    #   {:error, :failed} ->
+    #     reason = "Field 'to.eid' → #{message.to.eid} Invalid subscriber 500"
+    #     ThrowProtocolErrorSchema.build(@message_route_id, reason, Until.UniPosTime.response_time())
+    #     |> then(&Device.Transmission.emit_single(device_id, state.eid, &1))
+    # end
 
     {:noreply, update_last_seen(state, device_id)}
   end
@@ -145,7 +220,7 @@ defmodule Bimip.SignalServer do
       route_id: 10,
       payload: {:body, %Body{
         route_id: @route,
-        flow: [flow_data], # <--- Only the fresh status
+        flow: [new_entry], # <--- Only the fresh status
         timestamp: Until.UniPosTime.uni_pos_time()
       }}
     }
@@ -159,33 +234,10 @@ defmodule Bimip.SignalServer do
     {:noreply, new_state}
   end
 
-  defp fetch_active_and_purge_expired(state) do
-    now = System.system_time(:second)
-
-    # Split: 'expired' (rejected), 'active' (kept/fetched)
-    {expired, active} = Enum.split_with(state.flow, fn entry ->
-      entry.ttl <= now
-    end)
-
-    # Return the active flows and the state with ONLY those active flows
-    {active, %{state | flow: active}}
-  end
-
-  defp user_online?(eid) do
-    case :pg.get_members(BimipGroups, "eid_#{eid}") do
-      [] -> false
-      _ -> true
-    end
-  end
-
   @impl true
   def handle_cast({:message_transmiter, message_builder}, state) do
     Device.Transmission.emit(state.eid, 0, state.devices, message_builder)
     {:noreply, state}
-  end
-
-  defp subscribers_validation(subscriber_eid, sub) do
-    if subscriber_eid in sub, do: {:ok, :success}, else: {:error, :failed}
   end
 
   @impl true
@@ -194,7 +246,7 @@ defmodule Bimip.SignalServer do
     {:noreply, state}
   end
 
-  @impl true
+    @impl true
   def handle_cast({:offset_commit, data}, state) do
     Commit.Offset.offset_commit(data)
     new_state = update_last_seen(state, data.device_id)
@@ -202,8 +254,9 @@ defmodule Bimip.SignalServer do
   end
 
   @impl true
-  def handle_cast({:terminate, _device_id}, state) do
-    {:stop, :normal, state}
+  def handle_cast({:terminate, device_id}, state) do
+    new_state = update_last_seen(state, device_id)
+    {:noreply, new_state}
   end
 
   @impl true
@@ -235,32 +288,27 @@ defmodule Bimip.SignalServer do
     {:noreply, new_state}
   end
 
-  @impl true
-  def handle_info({:presence_update, {eid, bin, broadcast, presence} }, state) do
+  defp fetch_active_and_purge_expired(state) do
+    now = System.system_time(:second)
 
-    state = update_roster_last_seen(state, eid, presence)
+    # Split: 'expired' (rejected), 'active' (kept/fetched)
+    {_expired, active} = Enum.split_with(state.flow, fn entry ->
+      entry.ttl <= now
+    end)
 
-    {active_flows, state} = fetch_active_and_purge_expired(state)
+    # Return the active flows and the state with ONLY those active flows
+    {active, %{state | flow: active}}
+  end
 
-    if broadcast == 2 do
-       Device.Transmission.emit_broadcast(state.eid, state.devices, bin)
-    end
+  # defp user_online?(eid) do
+  #   case :pg.get_members(BimipGroups, "eid_#{eid}") do
+  #     [] -> false
+  #     _ -> true
+  #   end
+  # end
 
-    unless Enum.empty?(active_flows) do
-      %MessageScheme{
-        route_id: 10,
-          payload: {:body, %Body{
-            route_id: @route,
-            flow: active_flows,
-            timestamp: Until.UniPosTime.uni_pos_time()
-          }
-        }
-      }
-      |>MessageScheme.encode()
-      |>then(&Route.Connect.client_server_inbound({:eid, eid, :message_transmiter, &1}))
-    end
-
-    {:noreply, state}
+  defp subscribers_validation(subscriber_eid, sub) do
+    if subscriber_eid in sub, do: {:ok, :success}, else: {:error, :failed}
   end
 
   defp push_message(eid, uupid, offset, device_id) do
@@ -344,27 +392,6 @@ defmodule Bimip.SignalServer do
 
       true ->
         false
-    end
-  end
-
-  @impl true
-  def handle_info(:expire_genserver, state) do
-    now = System.system_time(:second)
-    elapsed = now - state.last_activity
-
-    # Threshold in seconds: 120s + 1800s = 1920s
-    limit_sec = div(total_ttl_ms(), 1000)
-
-    if elapsed >= limit_sec do
-      Logger.info("SignalServer for #{state.eid} idle beyond stale threshold. Shutting down.")
-      {:stop, :normal, state}
-    else
-      # If activity happened that wasn't caught, reschedule for the remainder
-      remaining_ms = (limit_sec - elapsed) * 1000
-      new_timer = Process.send_after(self(), :expire_genserver, remaining_ms)
-
-      # Use hibernate to save RAM during the remaining grace period
-      {:noreply, %{state | termination_timer: new_timer}, :hibernate}
     end
   end
 

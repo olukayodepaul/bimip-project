@@ -4,7 +4,6 @@ defmodule Commit.Offset do
   """
 
   @route_id 7
-  alias Route.Connect
   alias Bimip.{MessageScheme, OffsetCommit}
 
   @ack_type 2

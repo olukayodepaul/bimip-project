@@ -37,7 +37,7 @@ defmodule Queue.BimipCompactor do
   end
 
   def handle_info(:check, state) do
-    start_time = System.monotonic_time(:millisecond)
+    # start_time = System.monotonic_time(:millisecond)
 
     # Iterate through shard IDs and signal their respective GenServers
     for s <- 0..(@num_shards - 1) do
@@ -55,7 +55,7 @@ defmodule Queue.BimipCompactor do
       end
     end
 
-    elapsed = System.monotonic_time(:millisecond) - start_time
+    # elapsed = System.monotonic_time(:millisecond) - start_time
 
     # Re-schedule for the next 4-hour window
     schedule_check()

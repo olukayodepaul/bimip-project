@@ -37,7 +37,7 @@ defmodule Bimip.Auth.TokenVerifier do
   # --- Key Loading ---
 
   def get_signer do
-    algo = Application.Config.jwt_signing_algorithm()
+    algo = jwt_signing_algorithm()
 
     case load_public_key() do
       nil ->
@@ -55,7 +55,7 @@ defmodule Bimip.Auth.TokenVerifier do
   end
 
   defp load_public_key do
-    with {:ok, binary} <- File.read(Application.Config.jwt_public_key()),
+    with {:ok, binary} <- File.read(public_key_path()),
          {:ok, jwk} <- safe_decode_pem(binary) do
       {_type, key_map} = JOSE.JWK.to_map(jwk)
       key_map

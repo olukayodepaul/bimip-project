@@ -1,3 +1,7 @@
+JWT.Issuer.generate_tokens(%{device_id: "bim3", eid: "bim3@bimip.com", user_id: "3"})
+
+
+
 shared_secret = :crypto.strong_rand_bytes(32) 
 plaintext = "your-encrypted-payload"
 aad = "Bimip-V1"
@@ -16,15 +20,44 @@ ephemeral_public_key = :crypto.strong_rand_bytes(32)
   true
 )
 
-# 3. Construct and Encode in one block to prevent "undefined variable" errors
+
+
+incident_payload = Jason.encode!(%{
+  id: "3e8291f4-7b6a-4d31-bc91-e82a5c4d0f7Ba",
+  polling_unit_code: "",
+  ward_code: "",
+  lg_code: "",
+  state_code: "",
+  category: "1",
+  sub_category: "1",
+  sub_sub_category: "0",
+  type: "",
+  timestamp: System.system_time(:millisecond),
+  message: "OK",
+  msg_type: "TEXT",
+  local_media_path: "",
+  remote_media_url: nil,
+  from_eid: "bim3@bimip.com",
+  to_eid: "bim2@bimip.com",
+  lat: "",
+  lng: "",
+  leadingName: "",
+  leadingType: 0,
+  trailName: "",
+  trailType: 0,
+  msg_state: 0,
+  user_id: 0,
+})
+
+
 binary = Bimip.MessageScheme.encode(%Bimip.MessageScheme{
   route_id: 6,
   payload: {:message, %Bimip.Message{
-    id: "3e8291f4-7b6a-4d31-bc91-e82a5c4d0f7a", 
-    from: %Bimip.Identity{eid: "a@domain.com"},
-    to: %Bimip.Identity{eid: "b@domain.com"},
+    id: "3e8291f4-7b6a-4d31-bc91-e82a5c4d0f7aB", 
+    from: %Bimip.Identity{eid: "bim3@bimip.com"},
+    to: %Bimip.Identity{eid: "bim2@bimip.com"},
     timestamp: System.system_time(:millisecond),
-    payload: iv <> ciphertext, 
+    payload: incident_payload , 
     mac: mac,
     ephemeral_public_key: ephemeral_public_key,
     delivery_type: 1,
@@ -33,7 +66,66 @@ binary = Bimip.MessageScheme.encode(%Bimip.MessageScheme{
     message_type: 1
   }}
 })
+
 hex    = Base.encode16(binary, case: :upper)
+
+
+
+
+
+<!-- Message sent from others -->
+
+shared_secret = :crypto.strong_rand_bytes(32) 
+aad = "Bimip-V1"
+iv = :crypto.strong_rand_bytes(12)
+ephemeral_public_key = :crypto.strong_rand_bytes(32)
+
+{ciphertext, mac} = :crypto.crypto_one_time_aead(
+  :aes_256_gcm, 
+  shared_secret, 
+  iv, 
+  "your-encrypted-payload", 
+  aad, 
+  16, 
+  true
+)
+
+incident_payload = Jason.encode!(%{
+  user_id: "00998872",
+  id: "3e8291f4-7b6a-4d31-bcx91-e842as5c4d0f7a",
+  polling_unit_code: "015",
+  ward_code: "03",
+  lg_code: "01/01",
+  state_code: "01",
+  category: "1",
+  sub_category: "1",
+  type: "1",
+  msg_type: "TEXT",
+  message: "Can i have a coke from me my dear",
+  remote_media_url: "",
+  timestamp: System.system_time(:millisecond),
+})
+
+binary = Bimip.MessageScheme.encode(%Bimip.MessageScheme{
+  route_id: 6,
+  payload: {:message, %Bimip.Message{
+    id: "3e8291f4-7b6sa-4dsxs31-bc91-des8s2xa5c4d0f7a", 
+    from: %Bimip.Identity{eid: "b@domain.com"},
+    to: %Bimip.Identity{eid: "a@domain.com"},
+    timestamp: System.system_time(:millisecond),
+    payload: incident_payload,
+    mac: mac,
+    ephemeral_public_key: ephemeral_public_key,
+    delivery_type: 1,
+    participant_role: 1,
+    content_type: 1,
+    message_type: 1
+  }}
+})
+
+hex = Base.encode16(binary, case: :upper)
+
+
 
 
 Bimip.MessageScheme.encode(
@@ -77,7 +169,7 @@ binary = Bimip.MessageScheme.encode(
       payload: {:flow, 
         %Bimip.Flow{
           id: "a7c2e9d4-1f6b-4c3a-9d8e-2b5f7a1c0e33",
-          from: %Bimip.Identity{eid: "a@domain.com"},
+          from: %Bimip.Identity{eid: "c@domain.com"},
           category: "client-define",
           timestamp: System.system_time(:millisecond),
           payload: "buye",

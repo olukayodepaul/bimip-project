@@ -1,209 +1,542 @@
-what to do
-
-Awareness
-
-1. User Device State → status: 1=ONLINE, 2=OFFLINE
-2. UserIntentStatus → status: 3=AWAY, 4=BUSY, 5=DND
-3. System Awareness → status: 6=TYPING, 7=RECORDING, 8=RESUME
-
-4. User Device State → status: 1=ONLINE, 2=OFFLINE
-   2 = OFFLINE -> send to user directly
-   1 = ONLINE -> send to user and fan out pending offline notification(ack: false) and chat message to sender from queueing system
-
-5. UserIntentStatus → status: 3=AWAY, 4=BUSY, 5=DND
-   3 = AWAY -> send directly to user
-   4 = BUSY -> send directly to user
-   5 = DND -> -> send directly to user
-
-6. System Awareness → status: 6=TYPING, 7=RECORDING, 8=RESUME
-   8 = RESUME -> send to user and fan out all offline message using last incremental id monotonic
-   6=TYPING, 7=RECORDING, -> send to user and fire and foget
-
-Sure! Based on everything we’ve discussed today, here’s a **summary table of the key concepts, statuses, and queue behaviors** for your Awareness + Queue system:
-
-| Layer / Table                    | Field / Status        | Value / Description                    | Behavior                                                              |
-| -------------------------------- | --------------------- | -------------------------------------- | --------------------------------------------------------------------- |
-| **BimipQueue (per user)**        | `offset`              | Monotonic numeric ID per message       | Used to track message order and last fetched position                 |
-|                                  | `partition_id`        | e.g., `chat`, `notification`           | Identifies which type of queue the message belongs to                 |
-|                                  | `from`                | Sender user ID                         |                                                                       |
-|                                  | `to`                  | Receiver user ID                       |                                                                       |
-|                                  | `payload`             | Actual message or notification content |                                                                       |
-|                                  | `timestamp`           | Unix milliseconds timestamp            |                                                                       |
-|                                  | `acknowledged`        | `true/false`                           | Indicates whether the message was delivered/processed                 |
-| **BimipQueueIndex (per device)** | `next_offset`         | Number tracking next message to fetch  | Ensures each device fetches messages **idempotently**                 |
-|                                  | `partition_id`        | e.g., `chat`, `notification`           |                                                                       |
-|                                  | `from`                | Sender user ID                         |                                                                       |
-|                                  | `to`                  | Receiver user ID                       |                                                                       |
-| **User Device State**            | `status`              | 1 = ONLINE, 2 = OFFLINE                | ONLINE → fan-out pending messages; OFFLINE → direct send only         |
-| **User Intent Status**           | `status`              | 3 = AWAY, 4 = BUSY, 5 = DND            | Direct send only                                                      |
-| **System Awareness**             | `status`              | 6 = TYPING, 7 = RECORDING, 8 = RESUME  | TYPING/RECORDING → fire-and-forget; RESUME → fan-out pending messages |
-| **Folder structure**             | Prefix-based sharding | `data/bimip/<prefix>/<user>/`          | Distributes users evenly across 256 folders                           |
-| **File per user**                | Queue file            | `bimip_queue_<user>.dat`               | Stores messages as Base64-encoded lines                               |
-|                                  | Index file            | `bimip_queue_index_<user>.dat`         | Tracks next_offset per (partition_id, from, to)                       |
-
----
-
-💡 **Summary of Flow**
-
-1. **User comes online → device state = ONLINE** → fan-out pending offline messages to UI contact list.
-2. **User opens chat → system awareness = RESUME** → fetch pending messages for that contact only.
-3. **Realtime events (TYPING/RECORDING)** → fire-and-forget to update UI.
-4. **Offline messages** are stored in `bimip_queue` with `ack = false` until delivered.
-
-This table can serve as a **reference for implementation, testing, and future scaling**.
-
----
-
-If you want, I can **draw a visual diagram today** showing **all these tables and the flow between them**, which will complement this table.
-
-Do you want me to do that?
-
-Perfect! Let’s use concrete data to illustrate **how fetch, next_offset, and ack work together** for multiple devices sharing the same partition.
-
----
-
-### **Setup**
-
-User: `"paul@id"`
-Partition: `"chat_a"`
-Sender: `"paul@id"`
-Devices: `device_1`, `device_2`
-
-Messages in queue (initially):
-
-| offset | partition_id | from    | to       | payload                 | acknowledged |
-| ------ | ------------ | ------- | -------- | ----------------------- | ------------ |
-| 0      | chat_a       | paul@id | device_1 | Hello from device_1 - 1 | false        |
-| 1      | chat_a       | paul@id | device_1 | Hello from device_1 - 2 | false        |
-| 2      | chat_a       | paul@id | device_2 | Hello from device_2 - 1 | false        |
-| 3      | chat_a       | paul@id | device_3 | Hello from device_3 - 1 | false        |
-
-Initial **index** (shared per partition and sender):
-
-| partition_id | from    | next_offset |
-| ------------ | ------- | ----------- |
-| chat_a       | paul@id | 4           |
-
----
-
-### **Step 1: Device fetch**
-
-Device 1 fetches messages starting from offset 0:
-
-```elixir
-{:ok, messages, next_offset} = BimipQueue.fetch_unack("paul@id", "chat_a", "paul@id", "device_1", 10, 0)
-```
-
-**Resulting messages for device_1:**
-
-| offset | payload                 | acknowledged |
-| ------ | ----------------------- | ------------ |
-| 0      | Hello from device_1 - 1 | false        |
-| 1      | Hello from device_1 - 2 | false        |
-
-**`next_offset` returned**: 2
-
-- You can now **update the index next_offset** if you want the next fetch to start from 2.
-
----
-
-### **Step 2: Device 2 fetches**
-
-Device 2 fetches messages starting from offset 0 (shared index not yet updated):
-
-```elixir
-{:ok, messages, next_offset} = BimipQueue.fetch_unack("paul@id", "chat_a", "paul@id", "device_2", 10, 0)
-```
-
-**Resulting messages for device_2:**
-
-| offset | payload                 | acknowledged |
-| ------ | ----------------------- | ------------ |
-| 2      | Hello from device_2 - 1 | false        |
-
-**`next_offset` returned**: 3
-
-- Again, **index next_offset can be updated to 3** for shared tracking.
-
----
-
-### **Step 3: Device 1 acknowledges message**
-
-Device 1 acknowledges message at offset 0:
-
-```elixir
-BimipQueue.ack("paul@id", "chat_a", "paul@id", "device_1", 0)
-```
-
-Queue now looks like this:
-
-| offset | payload                 | acknowledged |
-| ------ | ----------------------- | ------------ |
-| 0      | Hello from device_1 - 1 | true         |
-| 1      | Hello from device_1 - 2 | false        |
-| 2      | Hello from device_2 - 1 | false        |
-| 3      | Hello from device_3 - 1 | false        |
-
-**Important:** `next_offset` in the index is **unchanged**.
-
-- Fetch offset only moves when a device fetches.
-- Ack only changes message state.
-
----
-
-### **Step 4: Device 2 fetches again**
-
-Device 2 fetches from `next_offset = 3` (index updated after its last fetch):
-
-```elixir
-{:ok, messages, next_offset} = BimipQueue.fetch_unack("paul@id", "chat_a", "paul@id", "device_2", 10, 3)
-```
-
-**Resulting messages for device_2:**
-
-| offset | payload                 | acknowledged |
-| ------ | ----------------------- | ------------ |
-| 3      | Hello from device_3 - 1 | false        |
-
-- Device 2 did **not see offset 0** because it’s already acknowledged by device 1 and offset 0 < 3.
-- `next_offset` becomes 4 (end of queue).
-
----
-
-### **Key Takeaways for Implementation**
-
-1. **Shared next_offset per partition**:
-
-   - Keeps track of the “fetch cursor” for all devices.
-   - Prevents duplicate fetching across devices.
-
-2. **Ack is separate**:
-
-   - Only marks messages as acknowledged.
-   - Does not move the fetch cursor.
-
-3. **Device fetch flow**:
-
-   - Fetch from `next_offset` stored in index.
-   - Update `next_offset` in index after fetch if needed.
-
-4. **Device ack flow**:
-
-   - Ack messages individually or in batch.
-   - Messages remain in queue for other devices until all relevant devices have acked (optional fan-out logic).
-
----
-
-If you want, I can **draw a timeline diagram with offsets, fetch, and ack for three devices** so you can paste directly in documentation.
-
-Do you want me to do that?
-
-
-
-
-bookmark adjustment
-__anchor__ => {segment or filenene, logical_offser}
-device=> %{
-   "device_1" => {logical_offser, timestamp},
-   "device_2" => {logical_offser, timestamp},
-}
+defmodule WebApiElection.ExternalSocket.Connection do
+  use WebSockex
+  require Logger
+
+  @max_backoff_ms 30_000
+  @ping_interval_ms 25_000
+
+  @doc """
+  Starts a socket process tied to a specific user_id.
+  """
+  def start_link(opts) do
+    user_id = Keyword.fetch!(opts, :user_id)
+    token = Keyword.fetch!(opts, :token)
+    raw_url = Keyword.fetch!(opts, :url)
+
+    url = String.replace(raw_url, ~r/^ws:\/\//, "wss://")
+    uri = URI.parse(url)
+
+    auth_val = if String.starts_with?(token, "Bearer "), do: token, else: "Bearer #{token}"
+
+    extra_headers = [
+      {"origin", "https://#{uri.host}"},
+      {"token", auth_val},
+      {"authorization", auth_val},
+      {"ngrok-skip-browser-warning", "true"},
+      {"user-agent", "PostmanRuntime/7.39.0"}
+    ]
+
+    name = via_tuple(user_id)
+
+    state = %{
+      user_id: user_id,
+      token: token,
+      eid: "bim#{user_id}@bimip.com",
+      reconnect_attempts: 0,
+      ping_timer: nil
+    }
+
+    WebSockex.start_link(
+      url,
+      __MODULE__,
+      state,
+      name: name,
+      extra_headers: extra_headers,
+      insecure: true,
+      async: true,
+      handle_initial_conn_failure: true
+    )
+  end
+
+  def via_tuple(user_id) do
+    {:via, Registry, {WebApiElection.UserSocketRegistry, user_id}}
+  end
+
+  defp dispatch_map do
+    %{
+      3 => &handle_ping_ack/2,
+      6 => &handle_message/2
+    }
+  end
+
+  # --- WebSockex Callbacks ---
+
+  @impl true
+  def handle_connect(_conn, state) do
+    Logger.info("🟢 WebSocket connected for User ID: #{state.user_id}")
+
+    # Cancel any lingering timer and schedule a fresh keep-alive ping loop
+    cancel_ping_timer(state)
+    timer_ref = schedule_ping()
+
+    {:ok, %{state | reconnect_attempts: 0, ping_timer: timer_ref}}
+  end
+
+  @impl true
+  def handle_frame({:binary, data}, state) do
+    if data == <<>> do
+      {:ok, state}
+    else
+      case safe_decode_route(data) do
+        {:ok, route, decoded} ->
+          dispatch_map()
+          |> Map.get(route, &default_handler/2)
+          |> then(fn handler -> handler.(state, decoded) end)
+
+        {:error, reason} ->
+          Logger.error("Failed to decode route: #{inspect(reason)}")
+          {:ok, state}
+      end
+    end
+  end
+
+  def handle_frame({:text, _msg}, state), do: {:ok, state}
+  def handle_frame({_type, _msg}, state), do: {:ok, state}
+
+  # --- Keep-alive ping loop ---
+
+  @impl true
+  def handle_info(:send_ping, state) do
+    binary_ping = build_ping_frame(state)
+    timer_ref = schedule_ping()
+    new_state = %{state | ping_timer: timer_ref}
+
+    {:reply, {:binary, binary_ping}, new_state}
+  end
+
+  def handle_info(_msg, state), do: {:ok, state}
+
+  @impl true
+  def handle_pong(_pong_frame, state) do
+    {:ok, state}
+  end
+
+  defp build_ping_frame(state) do
+    Bimip.MessageScheme.encode(%Bimip.MessageScheme{
+      route_id: 3,
+      payload:
+        {:ping,
+        %Bimip.Ping{
+          id: Ecto.UUID.generate(),
+          from: %Bimip.Identity{eid: state.eid},
+          type: 1,
+          timestamp: System.system_time(:millisecond)
+        }}
+    })
+  end
+
+  defp schedule_ping do
+    Process.send_after(self(), :send_ping, @ping_interval_ms)
+  end
+
+  defp cancel_ping_timer(%{ping_timer: nil}), do: :ok
+
+  defp cancel_ping_timer(%{ping_timer: ref}) do
+    Process.cancel_timer(ref)
+
+    receive do
+      :send_ping -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  # --- Ping ack from server ---
+
+  defp handle_ping_ack(state, %Bimip.MessageScheme{payload: {:ping, ping}}) do
+    IO.inspect(ping, label: "📥 PING RAW INCOMING WEBSOCKET BINARY")
+    {:ok, state}
+  end
+
+  defp handle_ping_ack(state, _decoded), do: {:ok, state}
+
+  # --- Message handling ---
+
+  defp handle_message(state, %Bimip.MessageScheme{payload: {:message, message}}) do
+    IO.inspect(message, label: "📥 RAW INCOMING 1")
+    with {:ok, outer} <- Jason.decode(message.payload),
+         {:ok, inner} <- decode_inner_message(outer),
+         {:ok, user_id} <- parse_user_id(outer["user_id"]) do
+      case outer["category"] do
+        "1" -> insert_message(state, user_id, outer, inner)
+        "2" -> insert_polling_unit_report(state, user_id, outer, inner)
+        "3" -> insert_polling_unit_security_report(state, user_id, outer, inner)
+        "4" -> insert_ward_security_report(state, user_id, outer, inner)
+        "5" -> insert_party_agent_report(state, user_id, outer, inner)
+        _ -> :ok
+      end
+    else
+      {:error, reason} ->
+        Logger.error("Failed to parse message payload: #{inspect(reason)}")
+    end
+
+    {:ok, state}
+  end
+
+  defp insert_polling_unit_report(state, user_id, outer, inner) do
+    IO.inspect(outer, label: "📥 RAW INCOMING 2")
+
+    case WebApiElection.Reporting.PollingUnitReportQuery.insert_report(
+          user_id,
+          outer["id"],
+          outer["polling_unit_code"],
+          outer["ward_code"],
+          outer["lg_code"],
+          outer["state_code"],
+          inner
+        ) do
+      {:ok, report} ->
+        broadcast_report(state, report)
+
+        %WebApiElection.Reporting.PollingUnitReport{payload: payload, user_id: report_user_id} = report
+
+        inec_ar_time =
+          case outer["timestamp"] do
+            ms when is_integer(ms) -> DateTime.from_unix!(ms, :millisecond)
+            _ -> nil
+          end
+
+        report_user_id =
+          case report_user_id do
+            val when is_binary(val) -> String.to_integer(val)
+            val when is_integer(val) -> val
+            _ -> nil
+          end
+
+        attrs = %{
+          inec_ar_time:        inec_ar_time,
+          official_no:         payload["numberOfInecOfficial"] && to_string(payload["numberOfInecOfficial"]),
+          is_bvas_available:   payload["isBvnMachineAvail"],
+          is_bvas_working:     payload["isBvbDeviceGoodCond"],
+          is_voters_verify:    payload["isVotersVerifyWithBvas"],
+          has_accr_commence:   payload["hasAccredCommence"],
+          has_voting_commence: payload["hasVolingCommence"],
+          is_voters_verify_with_bvas: payload["isVotersVerifyWithBvas"]
+        }
+
+        case WebApiElection.Elections.ElecCurrentStateQuery.upsert_state(report_user_id, attrs) do
+          {:ok, _updated} ->
+            :ok
+
+          {:error, :not_found} ->
+            Logger.error("No elec_current_state row for user_id=#{report_user_id}")
+
+          {:error, changeset} ->
+            Logger.error("Failed to update elec_current_state: #{inspect(changeset)}")
+        end
+
+      {:error, changeset} ->
+        Logger.error("Failed to insert field report: #{inspect(changeset)}")
+    end
+  end
+
+  defp insert_polling_unit_security_report(state, user_id, outer, inner) do
+    case WebApiElection.Reporting.PollingUnitSecurityReportQuery.insert_report(
+           user_id,
+           outer["id"],
+           outer["polling_unit_code"],
+           outer["ward_code"],
+           outer["lg_code"],
+           outer["state_code"],
+           inner
+         ) do
+      {:ok, report} ->
+        broadcast_report(state, report)
+
+        %WebApiElection.Reporting.PollingSecuriyReport{payload: payload, user_id: report_user_id} = report
+
+        report_user_id =
+          case report_user_id do
+            val when is_binary(val) -> String.to_integer(val)
+            val when is_integer(val) -> val
+            _ -> nil
+          end
+
+        attrs = %{
+          security_present: payload["isSecurityPersonPresent"]
+        }
+
+        case WebApiElection.Elections.ElecCurrentStateQuery.update_security(report_user_id, attrs) do
+          {:ok, _updated} ->
+            :ok
+
+          {:error, :not_found} ->
+            Logger.error("No elec_current_state row for user_id=#{report_user_id}")
+
+          {:error, changeset} ->
+            Logger.error("Failed to update security state: #{inspect(changeset)}")
+        end
+
+        IO.inspect(attrs, label: "📥 RAW INCOMING 1000")
+
+      {:error, changeset} ->
+        Logger.error("Failed to insert security report: #{inspect(changeset)}")
+    end
+  end
+
+  defp insert_ward_security_report(state, user_id, outer, inner) do
+    case WebApiElection.Reporting.WardSecurityReportQuery.insert_report(
+           user_id,
+           outer["id"],
+           outer["polling_unit_code"],
+           outer["ward_code"],
+           outer["lg_code"],
+           outer["state_code"],
+           inner
+         ) do
+      {:ok, report} ->
+
+        broadcast_report(state, report)
+
+        %WebApiElection.Reporting.WardSecurityReport{payload: payload, user_id: report_user_id} = report
+
+          report_user_id =
+          case report_user_id do
+            val when is_binary(val) -> String.to_integer(val)
+            val when is_integer(val) -> val
+            _ -> nil
+          end
+
+          attrs = %{
+            has_proceed_to_ward: payload["isInecOfficialProceedToWardCollationCenter"],
+            is_pu_officer_at_collation_center: payload["isPuOfficialArriveAtCollationCenter"],
+            is_inec_officer_same_as_pu_officer: payload["isInecOfficialSameAsPuOfficer"],
+            is_inec_officer_at_collation_center: payload["isInecOfficialArriveAtCollationCenter"]
+          }
+
+          case WebApiElection.Elections.ElecCurrentStateQuery.update_ward_security(report_user_id, attrs) do
+            {:ok, _updated} ->
+              :ok
+
+            {:error, :not_found} ->
+              Logger.error("No elec_current_state row for user_id=#{report_user_id}")
+
+            {:error, changeset} ->
+              Logger.error("Failed to update security state: #{inspect(changeset)}")
+          end
+
+      {:error, changeset} ->
+        Logger.error("Failed to insert ward security report: #{inspect(changeset)}")
+    end
+  end
+
+  defp insert_party_agent_report(state, user_id, outer, inner) do
+    case WebApiElection.Reporting.PartyAgentReportQuery.insert_report(
+           user_id,
+           outer["id"],
+           outer["polling_unit_code"],
+           outer["ward_code"],
+           outer["lg_code"],
+           outer["state_code"],
+           inner
+         ) do
+      {:ok, report} ->
+
+        broadcast_report(state, report)
+
+        %WebApiElection.Reporting.PartyAgentReport{payload: payload, user_id: report_user_id} = report
+
+          report_user_id =
+            case report_user_id do
+              val when is_binary(val) -> String.to_integer(val)
+              val when is_integer(val) -> val
+              _ -> nil
+            end
+
+          attrs = %{
+            is_agent_at_polling_unit: payload["isAtAssignedUnit"],
+            did_inec_clear_agent: payload["isAgentVerifiedByInec"]
+          }
+
+          case WebApiElection.Elections.ElecCurrentStateQuery.update_party_agent_security(report_user_id, attrs) do
+            {:ok, _updated} ->
+              :ok
+
+            {:error, :not_found} ->
+              Logger.error("No elec_current_state row for user_id=#{report_user_id}")
+
+            {:error, changeset} ->
+              Logger.error("Failed to update security state: #{inspect(changeset)}")
+          end
+
+      {:error, changeset} ->
+        Logger.error("Failed to insert party agent report: #{inspect(changeset)}")
+    end
+  end
+
+  defp insert_message(state, user_id, outer, _inner) do
+    msg_type = outer["msg_type"]
+
+    payload_string =
+      case msg_type do
+        "TEXT" -> outer["message"] || ""
+        "IMAGE" -> outer["remote_media_url"] || ""
+        "VIDEO" -> outer["remote_media_url"] || ""
+        _ -> ""
+      end
+
+    case WebApiElection.Reporting.MessageQuery.insert_message(
+           user_id,
+           outer["id"],
+           outer["polling_unit_code"],
+           outer["ward_code"],
+           outer["lg_code"],
+           outer["state_code"],
+           payload_string,
+           msg_type || "TEXT",
+           0,
+           "SENT"
+         ) do
+      {:ok, message} ->
+
+        broadcast_report(state, message)
+
+      {:error, changeset} ->
+        Logger.error("Failed to insert message: #{inspect(changeset.errors)}")
+    end
+  end
+
+  defp broadcast_report(state, report) do
+    Phoenix.PubSub.broadcast(
+      WebApiElection.PubSub,
+      "inec_official:#{state.user_id}",
+      {:inec_official, report}
+    )
+  end
+
+  defp parse_user_id(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {int, ""} -> {:ok, int}
+      _ -> {:error, {:invalid_user_id, id}}
+    end
+  end
+
+  defp parse_user_id(id) when is_integer(id), do: {:ok, id}
+  defp parse_user_id(id), do: {:error, {:invalid_user_id, id}}
+
+  defp decode_inner_message(%{"message" => inner_str}) when is_binary(inner_str) do
+    case Jason.decode(inner_str) do
+      {:ok, decoded} -> {:ok, decoded}
+      {:error, _} -> {:ok, inner_str}
+    end
+  end
+
+  defp decode_inner_message(_outer), do: {:ok, nil}
+
+  defp default_handler(state, decoded) do
+    Logger.warning("Unhandled route_id=#{decoded.route_id} for user #{state.user_id}")
+    {:ok, state}
+  end
+
+  defp safe_decode_route(data) do
+    with %Bimip.MessageScheme{route_id: route} = decoded <- Bimip.MessageScheme.decode(data) do
+      {:ok, route, decoded}
+    else
+      _ -> {:error, :invalid_route}
+    end
+  rescue
+    e -> {:error, e}
+  end
+
+  @impl true
+  def handle_disconnect(disconnect_map, state) do
+    cancel_ping_timer(state)
+
+    attempts = state.reconnect_attempts + 1
+
+    Logger.error(
+      "🔴 User #{state.user_id} disconnected: #{inspect(disconnect_map)}. " <>
+        "Attempting reconnect (Attempt ##{attempts})..."
+    )
+
+    # Allow WebSockex to handle reconnects without blocking execution loops
+    {:reconnect, %{state | reconnect_attempts: attempts, ping_timer: nil}}
+  end
+
+  def send_chat_message(message) do
+    IO.inspect(message, label: "📥 1 GET DECODE MESSAGE")
+
+    frame = build_message_frame(message)
+
+    IO.inspect(frame, label: "📥 2 GET DECODE MESSAGE")
+
+    case Registry.lookup(WebApiElection.UserSocketRegistry, message.from) do
+      [{pid, _}] ->
+        case WebApiElection.Reporting.MessageQuery.insert_message(
+              message.to,
+              Ecto.UUID.generate(),
+              message.pu_code,
+              message.ward_code,
+              message.lg_code,
+              message.state_code,
+              message.message,
+              "TEXT",
+              1,
+              "SENT"
+            ) do
+          {:ok, _saved_message} ->
+            :ok
+
+          {:error, changeset} ->
+            Logger.error("Failed to insert outgoing message: #{inspect(changeset.errors)}")
+        end
+
+        WebSockex.send_frame(pid, {:binary, frame})
+        :ok
+
+      [] ->
+        {:error, :not_connected}
+    end
+  end
+
+  defp build_message_frame(message) do
+    id = Ecto.UUID.generate()
+    timestamp = System.system_time(:millisecond)
+
+    payload_json =
+      Jason.encode!(%{
+        "id" => id,
+        "category" => "1",
+        "sub_category" => "1",
+        "sub_sub_category" => "0",
+        "type" => "TEXT",
+        "msg_type" => "TEXT",
+        "message" => message.message,
+        "leadingType" => "1",
+        "trailType" => "1",
+        "msg_state" => 0,
+        "polling_unit_code" => message.pu_code,
+        "ward_code" => message.ward_code,
+        "lg_code" => message.lg_code,
+        "state_code" => message.state_code,
+        "user_id" => to_string(message.to),
+        "timestamp" => timestamp,
+        "owner" => 0
+      })
+
+      from_eid = "bim#{message.from}@bimip.com"
+      to_eid = "bim#{message.to}@bimip.com"
+
+    Bimip.MessageScheme.encode(%Bimip.MessageScheme{
+      route_id: 6,
+      payload:
+        {:message,
+          %Bimip.Message{
+            id: id,
+            from: %Bimip.Identity{eid: from_eid},
+            to: %Bimip.Identity{eid: to_eid},
+            timestamp: timestamp,
+            payload: payload_json,
+            delivery_type: 1,
+            participant_role: 1,
+            content_type: 1,
+            message_type: 1,
+            ephemeral_public_key: <<>>,
+            mac: <<>>
+          }
+        }
+    })
+  end
+
+
+end

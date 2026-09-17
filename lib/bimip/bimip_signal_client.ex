@@ -2,13 +2,11 @@ defmodule Bimip.SignalClient do
   # bimip
   use GenServer
   @message_route_id 6
-  @compose_route_id 4
   @commit_offset_route_id 7
   @ping_route_id 3
   @wareness_id 2
   @flow_id 8
 
-  alias Bimip.{MessageScheme}
   alias Supervisor.{Registry}
   alias Util.Network.AdaptivePingPong
   alias Route.Connect
@@ -18,6 +16,7 @@ defmodule Bimip.SignalClient do
     GenServer.start_link(__MODULE__, state, name: Registry.via_registry(device_id))
   end
 
+  @impl true
   def init({eid, device_id, exp, ws_pid, uupid}) do
 
     now = System.monotonic_time(:millisecond)
@@ -52,8 +51,14 @@ defmodule Bimip.SignalClient do
     }
   end
 
-  def handle_cast({:send_terminate_signal_to_client, {device_id, eid}}, state) do
-    {:stop, :normal, state}
+  def handle_info(:tick_ping, state) do
+    # You MUST capture the result and return it as the second element of the tuple
+    AdaptivePingPong.handle_ping(state)
+  end
+
+  def handle_info({:outbound,  binary}, %{ws_pid: ws_pid} = state) do
+    send(ws_pid, {:binary, binary})
+    {:noreply, state}
   end
 
   # Handle ping/pong
@@ -62,27 +67,18 @@ defmodule Bimip.SignalClient do
     AdaptivePingPong.handle_ping(%{state | last_rtt: interval})
   end
 
+  def handle_cast({:send_terminate_signal_to_client, {_device_id, _eid}}, state) do
+    {:stop, :normal, state}
+  end
+
+
   @impl true
-  def handle_cast({:pong, receive_time}, state) do
+  def handle_cast({:pong, _receive_time}, state) do
     new_state = AdaptivePingPong.pong_received(state)
     {:noreply, new_state}
   end
 
-  def handle_info(:tick_ping, state) do
-    # You MUST capture the result and return it as the second element of the tuple
-    case AdaptivePingPong.handle_ping(state) do
-      {:noreply, new_state} ->
-        {:noreply, new_state}
-
-      {:stop, reason, new_state} ->
-        {:stop, reason, new_state}
-
-      {:noreply, new_state, :hibernate} ->
-        {:noreply, new_state, :hibernate}
-    end
-  end
-
-  def handle_cast({:ping,  data},   %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
+  def handle_cast({:ping,  data},   %{device_id: device_id, eid: eid,  ws_pid: ws_pid} = state) do
     bim = Bimip.MessageScheme.decode(data)
     case bim.payload do
       {:ping, %Bimip.Ping{} = ping} ->
@@ -146,7 +142,7 @@ defmodule Bimip.SignalClient do
       end
   end
 
-  def handle_cast({:compose,  data},   %{eid: eid, ws_pid: ws_pid, device_id: device_id} = state) do
+  def handle_cast({:compose,  data},   %{eid: eid, device_id: device_id} = state) do
     bim = Bimip.MessageScheme.decode(data)
     case bim.payload do
       {:compose, %Bimip.Compose{} = compose} ->
@@ -170,7 +166,7 @@ defmodule Bimip.SignalClient do
       end
   end
 
-  def handle_cast({:location_stream, data}, %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid, last_location_stream: last_location_stream} = state) do
+  def handle_cast({:location_stream, data}, %{device_id: device_id, eid: eid,  ws_pid: ws_pid, last_location_stream: last_location_stream} = state) do
     bim = Bimip.MessageScheme.decode(data)
     case bim.payload do
       {:location_stream, %Bimip.LocationStream{} = location_stream} ->
@@ -200,10 +196,14 @@ defmodule Bimip.SignalClient do
 
   def handle_cast({:message,  data}, %{device_id: device_id, eid: eid, uupid: uupid, ws_pid: ws_pid} = state) do
     msg = Bimip.MessageScheme.decode(data)
+
+    IO.inspect(eid, label: "Decoded eid")
+    IO.inspect(msg, label: "Decoded message")
     case msg.payload do
       {:message, %Bimip.Message{} = message} ->
         case Bimip.Validators.MessageValidator.validate(message) do
           :ok ->
+            IO.inspect("2 msg")
             %{
               message: message,
               device_id: device_id,
@@ -212,15 +212,16 @@ defmodule Bimip.SignalClient do
             |> server_inbound(:eid, :message, eid)
 
           {:error, err} ->
-
+            IO.inspect("3 msg")
             reason = "Field '#{err.field}' → #{err.description} #{err.code}"
+            IO.inspect(reason)
             throws = ThrowProtocolErrorSchema.build(@message_route_id, reason,Until.UniPosTime.response_time())
             socket_outbound(ws_pid, throws)
 
         end
         {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
       _ ->
-
+        IO.inspect("4 msg")
         reason = "Unexpected payload received"
         throws = ThrowProtocolErrorSchema.build(@message_route_id, reason, Until.UniPosTime.response_time())
         socket_outbound(ws_pid, throws)
@@ -292,9 +293,6 @@ defmodule Bimip.SignalClient do
     |> Connect.client_server_inbound()
   end
 
-  def handle_info({:outbound,  binary}, %{ws_pid: ws_pid} = state) do
-    send(ws_pid, {:binary, binary})
-    {:noreply, state}
-  end
+
 
 end

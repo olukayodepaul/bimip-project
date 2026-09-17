@@ -9,8 +9,7 @@ defmodule Application.Config do
 
   def resource_path do
     System.get_env("BIMIP_RESOURCE_PATH") ||
-      Application.get_env(:bimips, :connections, [])[:resource_path] ||
-      "/"
+      Application.get_env(:bimips, :connections, [])[:resource_path] || "/"
   end
 
   def clear_port do
@@ -143,21 +142,14 @@ defmodule Application.Config do
     |> Kernel.*(1_000)
   end
 
-  def max_batch_size do
-    System.get_env("BIMIP_QUEUE_MAX_BATCH_SIZE")
-    |> parse_int(Application.get_env(:bimips, :queue, [])[:max_batch_size] || 100)
-  end
+
 
   def max_silence_ms do
     System.get_env("BIMIP_HEARTBEAT_MAX_SILENCE_MS")
     |> parse_int(Application.get_env(:bimips, :network, [])[:max_silence_ms] || 5000)
   end
 
-  # Idle timeout
-  def idle_timeout do
-    System.get_env("BIMIP_NETWORK_IDLE_TIMEOUT_MS")
-    |> parse_int(Application.get_env(:bimips, :network, [])[:idle_timeout] || 60_000)
-  end
+
 
   # Idle timeout
   def reply_window do
@@ -198,10 +190,10 @@ defmodule Application.Config do
   defp parse_bool(val, _default) when is_boolean(val), do: val
 
   defp parse_int(nil, default), do: default
-  defp parse_int(val, _default) when is_binary(val) do
+  defp parse_int(val, default) when is_binary(val) do
     case Integer.parse(val) do
       {int, _} -> int
-      :error -> _default
+      :error -> default
     end
   end
   defp parse_int(val, _default) when is_integer(val), do: val

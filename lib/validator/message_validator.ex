@@ -26,19 +26,19 @@ defmodule Bimip.Validators.MessageValidator do
   # ---------------- Public API ----------------
   @spec validate(Message.t()) :: :ok | {:error, map()}
   def validate(%Message{} = msg) do
-    with :ok <- validate_id(msg.id),
-         :ok <- validate_identity(msg.from, "from"),
+    with :ok <- validate_identity(msg.from, "from"),
          :ok <- validate_identity(msg.to, "to"),
          :ok <- validate_from_to_not_same(msg.from, msg.to),
-         :ok <- validate_timestamp(msg.timestamp),
+        #  :ok <- validate_timestamp(msg.timestamp),
          :ok <- validate_payload(msg.payload),
          :ok <- validate_required_int32(msg.content_type, "content_type"),
          :ok <- validate_content_type(msg.content_type),
          :ok <- validate_required_int32(msg.participant_role, "participant_role"),
          :ok <- validate_participant_role(msg.participant_role),
          :ok <- validate_optional_int32(msg.delivery_type, "delivery_type"),
-         :ok <- validate_binary_required(msg.ephemeral_public_key, "ephemeral_public_key"),
-         :ok <- validate_binary_required(msg.mac, "mac"),
+        #  :ok <- validate_binary_required(msg.ephemeral_public_key, "ephemeral_public_key"),
+        #  :ok <- validate_binary_required(msg.mac, "mac"),
+        #  :ok <- validate_id(msg.id),
          :ok <- validate_required_int32(msg.message_type, "message_type") do
       :ok
     end

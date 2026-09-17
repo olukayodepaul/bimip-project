@@ -19,6 +19,7 @@ defmodule Queue.FDPoolShard do
 
   # --- Server Callbacks ---
 
+  @impl true
   def init(shard_id) do
     table = :"fd_pool_#{shard_id}"
     if :ets.info(table) == :undefined do
@@ -59,6 +60,30 @@ defmodule Queue.FDPoolShard do
       [] -> {:reply, :ok, state}
     end
   end
+
+  @impl true
+  def handle_call({:eject_by_base, base_id}, _from, state) do
+    table = state.table
+    # Pattern match any key in the lookup table
+    # We look for paths that contain the specific segment base ID
+    # This matches "37_100_1769445066.log" or "archive/37/37_100_..."
+    match_spec = [{{{:lookup, :"$1"}, :"$2", :"$3"}, [], [{{:"$1", :"$2", :"$3"}}]}]
+
+    :ets.select(table, match_spec)
+    |> Enum.filter(fn {path, _fd, _ts} ->
+      # Ensure we only eject the specific segment we are moving
+      Path.basename(path) |> String.contains?("_#{base_id}_")
+    end)
+    |> Enum.each(fn {path, fd, ts} ->
+      Logger.info("LRU Shard #{state.shard}: Ejecting #{path} for archival")
+      :file.close(fd)
+      :ets.delete(table, {:lookup, path})
+      :ets.delete(table, {:evict, ts, path})
+    end)
+
+    {:reply, :ok, state}
+  end
+
 
   @impl true
   def handle_cast({:atomic_snapshot, final_path, data}, state) do
@@ -135,28 +160,6 @@ defmodule Queue.FDPoolShard do
     end
   end
 
-  @impl true
-  def handle_call({:eject_by_base, base_id}, _from, state) do
-    table = state.table
-    # Pattern match any key in the lookup table
-    # We look for paths that contain the specific segment base ID
-    # This matches "37_100_1769445066.log" or "archive/37/37_100_..."
-    match_spec = [{{{:lookup, :"$1"}, :"$2", :"$3"}, [], [{{:"$1", :"$2", :"$3"}}]}]
-
-    :ets.select(table, match_spec)
-    |> Enum.filter(fn {path, _fd, _ts} ->
-      # Ensure we only eject the specific segment we are moving
-      Path.basename(path) |> String.contains?("_#{base_id}_")
-    end)
-    |> Enum.each(fn {path, fd, ts} ->
-      Logger.info("LRU Shard #{state.shard}: Ejecting #{path} for archival")
-      :file.close(fd)
-      :ets.delete(table, {:lookup, path})
-      :ets.delete(table, {:evict, ts, path})
-    end)
-
-    {:reply, :ok, state}
-  end
 
   defp find_and_evict_oldest(_table, :"$end_of_table"), do: :ok
   defp find_and_evict_oldest(table, key) do

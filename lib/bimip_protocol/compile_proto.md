@@ -1,5 +1,11 @@
 protoc \
  --proto_path=./priv/protos \
+ --elixir_out=plugins=grpc:./lib/external_socket \
+ ./priv/protos/dartmessage.proto
+
+
+protoc \
+ --proto_path=./priv/protos \
  --elixir_out=plugins=grpc:./lib/bimip_protocol \
  ./priv/protos/dartmessage.proto
 

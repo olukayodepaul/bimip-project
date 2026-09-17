@@ -2,7 +2,6 @@ defmodule Bimip.Socket do
   # bimip
 
   @behaviour :cowboy_websocket
-  @compose_route_id 4
   @message_route_id 6
   @ping_route_id 3
   @commit_offset_route_id 7
@@ -10,8 +9,8 @@ defmodule Bimip.Socket do
   @location_stream 9
   @flow 8
 
-  alias Bimip.Auth.TokenVerifier
-  alias Util.{ConnectionsHelper, TokenRevoked}
+
+  alias Util.{ConnectionsHelper}
   alias Supervisor.Server
   alias Route.Connect
   require Logger
@@ -67,7 +66,15 @@ defmodule Bimip.Socket do
     end
   end
 
+  def websocket_info(:send_ping, state) do
+    IO.inspect("send Pinp")
+    IO.inspect(state.eid)
+    {:reply, :ping, state}
+  end
+
   def websocket_handle(:pong,  state) do
+    IO.inspect("get Pong")
+    IO.inspect(state.eid)
     case Connect.client_server_inbound({:device_id, state.device_id, :pong, DateTime.utc_now()}) do
       :ok ->
         {:ok, state}
@@ -92,10 +99,6 @@ defmodule Bimip.Socket do
     Logger.info("Sending batch awareness frames to client")
     frames = Enum.map(binaries, fn bin -> {:binary, bin} end)
     {:reply, frames, state}
-  end
-
-  def websocket_info(:send_ping, state) do
-    {:reply, :ping, state}
   end
 
   def websocket_info(:terminate_socket, state) do
@@ -124,6 +127,7 @@ defmodule Bimip.Socket do
   end
 
   defp handle_ping(state, data) do
+    IO.inspect(data, label: "📥 SOCKET PING SENT FROM DASHBAORD")
     case Connect.client_server_inbound({:device_id, state.device_id, :ping, data}) do
       :ok ->
         {:ok, state}
@@ -136,6 +140,7 @@ defmodule Bimip.Socket do
   end
 
   defp handle_message(state, data) do
+
     case Connect.client_server_inbound({:device_id, state.device_id, :message, data}) do
       :ok ->
         {:ok, state}

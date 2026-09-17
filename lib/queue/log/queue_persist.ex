@@ -5,8 +5,6 @@ defmodule Queue.Persist do
   (no nested wrapping).
   """
 
-  @delivery_type 2
-
   def build(%Bimip.Message{} = payload, next_offset) do
     payload
     |> Map.put(:offset, next_offset)

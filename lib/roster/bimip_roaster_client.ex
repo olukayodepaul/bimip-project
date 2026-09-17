@@ -4,27 +4,32 @@ defmodule Bimip.ServerClient do
   """
   require Logger
 
-  def fetch_roster_page(eid, offset, _limit) do
-    Logger.debug("Fetching roster for #{eid} at offset #{offset}...")
+
+  def fetch_roster_page(eid, _offset, _limit) do
 
     subscribers =
       cond do
-        eid == "a@domain.com" ->
+        eid == "bim1@bimip.com" ->
           [
-            %{eid: "b@domain.com", d_tok: "mock_1", plat: "android", app_id: "com.bimips.app", node: 1, last_seen: System.system_time(:second), presence: 2},
-            %{eid: "c@domain.com", d_tok: "mock_2", plat: "android", app_id: "com.bimips.app", node: 2, last_seen: System.system_time(:second), presence: 2}
+            %{eid: "bim2@bimip.com", d_tok: "mock_1", plat: "android", app_id: "com.bimips.app", node: 1, last_seen: System.system_time(:second), presence: 2},
+            %{eid: "bim3@bimip.com", d_tok: "mock_3", plat: "android", app_id: "com.bimips.app", node: 1, last_seen: System.system_time(:second), presence: 2}
           ]
 
-        eid == "b@domain.com" ->
+        eid == "bim2@bimip.com" ->
           [
-            %{eid: "a@domain.com", d_tok: "mock_3", plat: "android", app_id: "com.bimips.app", node: 1, last_seen: System.system_time(:second), presence: 2},
-            %{eid: "c@domain.com", d_tok: "mock_4", plat: "android", app_id: "com.bimips.app", node: 2, last_seen: System.system_time(:second), presence: 2}
+            %{eid: "bim1@bimip.com", d_tok: "mock_3", plat: "android", app_id: "com.bimips.app", node: 1, last_seen: System.system_time(:second), presence: 2},
+            %{eid: "bim3@bimip.com", d_tok: "mock_3", plat: "android", app_id: "com.bimips.app", node: 1, last_seen: System.system_time(:second), presence: 2}
+          ]
+
+        eid == "bim3@bimip.com" ->
+          [
+            %{eid: "bim1@bimip.com", d_tok: "mock_3", plat: "android", app_id: "com.bimips.app", node: 1, last_seen: System.system_time(:second), presence: 2}
           ]
 
         true -> # This acts as your final "else"
           [
-            %{eid: "a@domain.com", d_tok: "mock_5", plat: "android", app_id: "com.bimips.app", node: 1, last_seen: System.system_time(:second), presence: 2},
-            %{eid: "b@domain.com", d_tok: "mock_6", plat: "android", app_id: "com.bimips.app", node: 2, last_seen: System.system_time(:second), presence: 2}
+            %{eid: "bim1@bimip.com", d_tok: "mock_5", plat: "android", app_id: "com.bimips.app", node: 1, last_seen: System.system_time(:second), presence: 2},
+            %{eid: "bim2@bimip.com", d_tok: "mock_6", plat: "android", app_id: "com.bimips.app", node: 2, last_seen: System.system_time(:second), presence: 2}
           ]
       end
 

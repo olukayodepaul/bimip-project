@@ -15,16 +15,21 @@ defmodule Route.Connect do
   end
 
   defp consolidated_route({lookup_via_registry, registry_id, resouce_finder, payload}, roster \\ %{}) do
+
     case Horde.Registry.lookup(lookup_via_registry, registry_id) do
       [{pid, _}] ->
         GenServer.cast(pid, {resouce_finder, payload})
         :ok
       [] ->
 
-        # if resouce_finder == :message_transmiter do
-        #   [{eid_domain, roster_details}] = Map.to_list(roster)
-        #   Bimip.Push.Dispatcher.send_wake_signal(roster_details, eid_domain)
-        # end
+        if resouce_finder == :message_transmiter do
+          case Map.to_list(roster) do
+            [{eid_domain, roster_details} | _rest] ->
+              Bimip.Push.Dispatcher.send_wake_signal(roster_details, eid_domain)
+            [] ->
+              Logger.warning("No roster details available to send wake signal")
+          end
+        end
 
         :error
     end

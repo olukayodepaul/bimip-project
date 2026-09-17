@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package bimip;
+
+// ---------------- Identity ----------------
+// Represents the source or destination of a packet.
+message Identity {
+  string eid = 1;                               // User’s global identifier (e.g., account ID or device IMEI)
+  optional string connection_resource_id = 2;   // Identifier for a specific device or session instance
+  optional string node = 3;                     // System node handling this entity (cluster context)
+}
+
+// ---------------- Flow ----------------
+message Flow {
+  string id = 1;
+  Identity from = 2;
+  string category = 3;
+  int64 timestamp = 4;
+  bytes payload = 5;
+  bytes signature = 6; 
+  optional int64 ttl = 7;
+}
+
+// ---------------- LocationStream ----------------
+// Primary stanza for GPS telemetry
+message LocationStream {
+  Identity from = 1;
+  Identity to = 2;
+  double latitude = 3;
+  double longitude = 4;
+  optional double altitude = 5;
+  int64 timestamp = 6;
+}
+
+// type 1: revoke, 2-accept, 3-reject
+message Token {
+  string id = 1;
+  Identity from = 2;
+  string token = 3;
+  int32 type = 4; 
+  int64 timestamp = 5;
+}
+
+// type 1: terminate, 2-accept, 3-reject
+message Logout {
+  string id = 1;
+  Identity from = 2;
+  int32 type = 3; 
+  int64 timestamp = 4;
+}
+
+message Message {
+  string id = 1;
+  Identity from = 2;
+  Identity to = 3;
+  optional int64 offset = 4;
+  int64 timestamp = 5;
+  bytes payload = 6;
+  optional int32 delivery_type = 7;
+  int32 participant_role = 8;
+  int32 content_type = 9;
+  bytes ephemeral_public_key = 10;
+  bytes mac = 11;
+  int32 message_type = 12;
+}
+
+message Body {
+  int32 route_id = 1;
+  repeated Message messages = 2;
+  repeated Flow flow = 3;
+  int64 timestamp = 4;
+}
+
+message Ping {
+  string id = 1;
+  Identity from = 2;
+  int32 type = 3;
+  int64 timestamp = 4;
+}
+
+message OffsetCommit {
+  Identity from = 1;
+  int32 type = 2;
+  int64 offset = 3;
+  int64 timestamp = 4;
+}
+
+message ProtocolError {
+  int32 route_id = 1;
+  string details = 2;
+  int64 timestamp = 3;
+}
+
+message MessageDeliveryReceipts {
+  string id = 1;
+  Identity from = 2;
+  Identity to = 3;
+  int64 offset = 4;
+  int64 timestamp = 5;
+}
+
+message Compose {
+  Identity to = 1;
+  Identity from = 2;
+  int32 type = 3;
+  int64 timestamp = 4;
+}
+
+message Awareness {
+  Identity from = 1;
+  int32 presence = 2;
+  int64 offset = 3;
+  int32 broadcast = 4;
+  int64 timestamp = 5;
+}
+
+message Subscriber {
+  int64 route_id = 14;
+}
+
+// ---------------- MessageScheme ----------------
+// Top-level wrapper for all WebSocket binary communication.
+message MessageScheme {
+  int64 route_id = 1;
+  oneof payload {
+    Awareness awareness = 2;
+    Ping ping = 3;
+    Compose compose = 4;
+    Token token = 5;
+    Message message = 6;
+    OffsetCommit offset_commit = 7;
+    Flow flow = 8;
+    LocationStream location_stream = 9;
+    Body body = 10;
+    ProtocolError protocol_error = 11;
+    Logout logout = 12;
+    MessageDeliveryReceipts message_delivery_receipts = 13;
+    Subscriber Subscriber = 14;
+  }
+}

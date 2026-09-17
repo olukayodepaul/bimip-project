@@ -9,7 +9,6 @@ message Identity {
   optional string node = 3;                             // System node handling this entity (cluster context)
 }
 
-
 // ---------------- Flow ----------------
 message Flow {
   string id = 1;
@@ -25,11 +24,75 @@ message Flow {
 message LocationStream {
   Identity from = 1;
   Identity to = 2;
-  double latitude = 3;
-  double longitude = 4;
-  optional double altitude = 5;
-  int64 timestamp = 6;
+  int64 timestamp = 3;
+  string key_version = 4;    // "Key #5" - tells the server which key to use
+  bytes iv = 5;              // 12-byte random initialization vector
+  bytes tag = 6;             // 16-byte GCM authentication tag
+  bytes encrypted_blob = 7;  // THIS MUST BE BYTES (The encrypted LocationPayload)
 }
+
+// ---------------- LocationPayload (The "Secret" Message) ----------------
+// This is what lives INSIDE the encrypted_blob
+message LocationPayload {
+  double latitude = 1;
+  double longitude = 2;
+  optional double altitude = 3;
+  optional float speed = 4;
+  optional float heading = 5;
+}
+
+// ---------------- LocationVideoStream (Wire Stanza) ----------------
+message LocationVideoStream {
+  Identity from = 1;
+  Identity to = 2;
+  int64 timestamp = 3;
+  
+  // Tactical Security Header
+  string key_version = 4;
+  bytes iv = 5;              // 12-byte initialization vector
+  bytes tag = 6;             // 16-byte GCM authentication tag
+  
+  // The "Black Box"
+  bytes encrypted_video_blob = 7; // Serialized + Encrypted VideoPayload
+
+  // Keep this plain for the Elixir Load Balancer to prioritize
+  bool is_emergency = 8; 
+}
+
+// ---------------- VideoPayload (Internal) ----------------
+message VideoPayload {
+  double latitude = 1;
+  double longitude = 2;
+  double speed = 3;
+  float heading = 4;
+  string stream_id = 5;
+  VideoSource source = 6;
+  VideoTrigger trigger = 7;
+
+  oneof transport {
+    string hls_url = 8;
+    string rtsp_url = 9;
+    bytes clip_preview = 10; // Thumbnails stay inside the encrypted blob
+  }
+}
+
+
+// ---------------- Video Enums ----------------
+
+enum VideoSource {
+  VIDEO_SOURCE_UNSPECIFIED = 0;
+  CAMERA_FRONT = 1;
+  CAMERA_BACK = 2;
+  EXTERNAL_STREAM = 3;
+}
+
+enum VideoTrigger {
+  VIDEO_TRIGGER_UNSPECIFIED = 0;
+  MANUAL_ALERT = 1;
+  AUTOMATIC_INCIDENT = 2;
+  PROXIMITY_ALERT = 3;
+}
+
 
 
 // type 1: revoke, 2-accept, 3-reject
@@ -138,6 +201,7 @@ message MessageScheme {
     Logout logout = 12;
     MessageDeliveryReceipts message_delivery_receipts = 13;
     Subscriber Subscriber = 14;
+    LocationVideoStream location_video_stream = 15;
   }
 }
   

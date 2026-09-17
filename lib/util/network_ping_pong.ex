@@ -29,19 +29,20 @@ defmodule Util.Network.AdaptivePingPong do
     cond do
       # PRIORITY 1: User Idle Logout (Unchanged)
       ms_since_user > max_idle_ms() ->
-        Logger.info("[PingPong] LOGOUT: User idle limit reached.", device_id: state.device_id)
+        # Logger.info("[PingPong] LOGOUT: User idle limit reached.", device_id: state.device_id)
         server_inbound(state.device_id, :eid, :terminate, state.eid)
+
         socket_terminate(state.ws_pid)
         {:stop, :normal, state}
 
       # PRIORITY 2: THE TERMINATOR (Network Death)
       # If we hit the limit, we stop trying to ping and close the shop.
       state.missed_pongs >= max_missed ->
-        Logger.error("[PingPong] DEAD SOCKET: #{state.device_id} missed #{state.missed_pongs} pongs. Closing connection.")
+        # Logger.error("[PingPong] DEAD SOCKET: #{state.device_id} missed #{state.missed_pongs} pongs. Closing connection.")
 
         # Notify the system this device is now "Offline/FCM-Only"
         # This allows your Fan-out to know: "Don't look for a socket, send an FCM."
-        server_inbound(state.device_id, :eid, :connection_lost, state.eid)
+        server_inbound(state.device_id, :eid, :terminate, state.eid)
 
         socket_terminate(state.ws_pid)
         {:stop, :normal, state}
@@ -191,6 +192,7 @@ defmodule Util.Network.AdaptivePingPong do
   end
 
   defp server_inbound(payload, channel, signal_to_server, eid) do
+    IO.inspect("This ping pong coming in from client")
     {channel, eid, signal_to_server, payload}
     |> Connect.client_server_inbound()
   end
