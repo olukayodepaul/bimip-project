@@ -120,6 +120,10 @@ defmodule Util.Network.AdaptivePingPong do
 
     state
     |> Map.put(:last_rtt, rtt)
+    # A pong proves the device is online, so it also counts against the idle
+    # logout. (Only last_user_activity: missed_pongs is still decayed gradually
+    # by mark_active/1 below.)
+    |> Map.put(:last_user_activity, now)
     |> mark_active()
     |> handle_federation_refresh()
   end
@@ -150,6 +154,13 @@ defmodule Util.Network.AdaptivePingPong do
     last_report = Map.get(state, :last_reported_ms, 0)
 
     if state.missed_pongs == 0 and (now - last_report) >= report_interval_ms() do
+      # Pong-only devices never send real traffic, so tell the user's mother
+      # process (SignalServer) the device is still here. This refreshes the
+      # device's last_seen and resets the mother's expiry timer.
+      Connect.client_server_inbound(
+        {:eid, state.eid, :update_device_last_seen, %{device_id: state.device_id}}
+      )
+
       Map.put(state, :last_reported_ms, now)
     else
       state

@@ -1,6 +1,7 @@
 defmodule Bimip.SignalClient do
   # bimip
   use GenServer
+  require Logger
   @message_route_id 6
   @commit_offset_route_id 7
   @ping_route_id 3
@@ -51,9 +52,21 @@ defmodule Bimip.SignalClient do
     }
   end
 
+  # Lets a (re)started SignalServer rebuild its devices map from live sessions.
+  @impl true
+  def handle_call(:session_info, _from, state) do
+    {:reply,
+     %{device_id: state.device_id, eid: state.eid, uupid: state.uupid,
+       ws_pid: state.ws_pid, exp: state.exp}, state}
+  end
+
   def handle_info(:tick_ping, state) do
-    # You MUST capture the result and return it as the second element of the tuple
-    AdaptivePingPong.handle_ping(state)
+    if token_expired?(state) do
+      expire_session(state)
+    else
+      # You MUST capture the result and return it as the second element of the tuple
+      AdaptivePingPong.handle_ping(state)
+    end
   end
 
   def handle_info({:outbound,  binary}, %{ws_pid: ws_pid} = state) do
@@ -64,11 +77,41 @@ defmodule Bimip.SignalClient do
   # Handle ping/pong
   @impl true
   def handle_info({:send_ping, interval}, state) do
-    AdaptivePingPong.handle_ping(%{state | last_rtt: interval})
+    if token_expired?(state) do
+      expire_session(state)
+    else
+      AdaptivePingPong.handle_ping(%{state | last_rtt: interval})
+    end
   end
 
   def handle_cast({:send_terminate_signal_to_client, {_device_id, _eid}}, state) do
     {:stop, :normal, state}
+  end
+
+  # A new websocket for this device_id took over the session.
+  def handle_cast({:replace_socket, new_ws_pid, exp, uupid}, %{ws_pid: old_ws_pid} = state) do
+    cond do
+      # Same socket: nothing to do.
+      new_ws_pid == old_ws_pid ->
+        {:noreply, state}
+
+      # Stale pid (e.g. a restarted SignalServer replaying its original start args): ignore.
+      not Process.alive?(new_ws_pid) ->
+        {:noreply, state}
+
+      true ->
+        if is_pid(old_ws_pid) and Process.alive?(old_ws_pid) do
+          send(old_ws_pid, :terminate_socket)
+        end
+
+        now = System.monotonic_time(:millisecond)
+
+        {:noreply,
+         %{state |
+           ws_pid: new_ws_pid, exp: exp, uupid: uupid,
+           last_seen: now, last_user_activity: now,
+           missed_pongs: 0, last_ping_sent_at: nil, last_rtt: nil}}
+    end
   end
 
 
@@ -282,6 +325,25 @@ defmodule Bimip.SignalClient do
         socket_outbound(ws_pid, throws)
         {:noreply, Util.Network.AdaptivePingPong.mark_user_activity(state)}
     end
+  end
+
+  # The token's exp (unix seconds) is only checked at connect time by the socket,
+  # so enforce it here on every ping tick (every 10-20s).
+  defp token_expired?(%{exp: exp}) when is_integer(exp), do: exp <= System.system_time(:second)
+  defp token_expired?(_state), do: false
+
+  defp expire_session(%{eid: eid, device_id: device_id, ws_pid: ws_pid} = state) do
+    Logger.info("Token expired for device #{device_id} (#{eid}); closing session")
+    Connect.client_server_inbound({:eid, eid, :terminate, device_id})
+
+    if is_pid(ws_pid) and Process.alive?(ws_pid) do
+      reason = "Field 'token' → Token expired 401"
+      throws = ThrowProtocolErrorSchema.build(@ping_route_id, reason, Until.UniPosTime.response_time())
+      send(ws_pid, {:binary, throws})
+      send(ws_pid, :terminate_socket)
+    end
+
+    {:stop, :normal, state}
   end
 
   defp socket_outbound(ws_pid, binary) do

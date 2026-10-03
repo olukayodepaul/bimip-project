@@ -32,16 +32,27 @@ defmodule Bimip.Socket do
   end
 
   def websocket_init(%{eid: eid, device_id: device_id, exp: exp, uupid: uupid} = state) do
-    state_with_ws = Map.put(state, :ws_pid, self())
-    case Horde.Registry.lookup(EidRegistry, eid) do
-      [{_pid, _value}] ->
-        Connect.start_device({device_id, eid, exp, self(), uupid})
-      [] ->
-        Server.start_mother(state_with_ws)
-        Logger.error("Mother process for #{eid} not found in Registry")
-        nil
+    case ensure_mother(eid) do
+      {:ok, mother_pid} ->
+        # Attach this socket as a device of the user's mother process.
+        GenServer.cast(mother_pid, {:start_device, {eid, device_id, exp, self(), uupid}})
+        {:ok, state}
+
+      {:error, reason} ->
+        Logger.error("Could not start mother process for #{eid}: #{inspect(reason)}")
+        {:stop, state}
     end
-    {:ok, state}
+  end
+
+  defp ensure_mother(eid) do
+    case Horde.Registry.lookup(EidRegistry, eid) do
+      [{pid, _value}] ->
+        {:ok, pid}
+
+      [] ->
+        Logger.info("Starting mother process for #{eid}")
+        Server.start_mother(%{eid: eid})
+    end
   end
 
   # ----------------------------------------------------------------------------
@@ -140,7 +151,7 @@ defmodule Bimip.Socket do
   end
 
   defp handle_message(state, data) do
-
+    IO.inspect(data)
     case Connect.client_server_inbound({:device_id, state.device_id, :message, data}) do
       :ok ->
         {:ok, state}

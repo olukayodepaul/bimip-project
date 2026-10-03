@@ -24,7 +24,7 @@ defmodule Bimip.SignalServer do
   # ----------------------
 
   @impl true
-  def init(%{eid: eid, device_id: device_id, ws_pid: ws_pid, exp: exp, uupid: uupid}) do
+  def init(%{eid: eid}) do
 
     now = System.system_time(:second)
     initial_timer = Process.send_after(self(), :expire_genserver, @global_ttl_ms)
@@ -49,16 +49,41 @@ defmodule Bimip.SignalServer do
     Bimip.Signal.RosterManager.start_link(eid, self())
     :ok = :pg.join(BimipGroups, "eid_#{eid}", self())
     Bimip.Broker.Server.user_topic(eid)
-    {:ok, initial_state, {:continue, {:start_device, {eid, device_id, exp, ws_pid, uupid}}}}
+    {:ok, initial_state, {:continue, :recover_devices}}
   end
 
+  # After a (re)start, rebuild the devices map from the device sessions that are
+  # still alive for this user (each SignalClient joins the "device_<eid>" group).
+  # On a first start the group is empty and devices are attached by :start_device.
   @impl true
-  def handle_continue({:start_device, args}, state) do
-    # Capture the result of the cast (which contains the new state with the device)
-    {:noreply, updated_state} = handle_cast({:start_device, args}, state)
+  def handle_continue(:recover_devices, %{eid: eid} = state) do
+    now = System.system_time(:second)
 
-    # Return the updated state so the GenServer actually saves it
-    {:noreply, updated_state}
+    devices =
+      BimipGroups
+      |> :pg.get_members("device_#{eid}")
+      |> Enum.reduce(%{}, fn pid, acc ->
+        try do
+          case GenServer.call(pid, :session_info, 1_000) do
+            %{device_id: device_id, ws_pid: ws_pid, uupid: uupid, exp: exp} when is_pid(ws_pid) ->
+              if Process.alive?(ws_pid) do
+                Map.put(acc, device_id, %{
+                  ws_pid: ws_pid, device_id: device_id, eid: eid,
+                  uupid: uupid, last_seen: now, token_expiration: exp
+                })
+              else
+                acc
+              end
+
+            _ ->
+              acc
+          end
+        catch
+          :exit, _ -> acc
+        end
+      end)
+
+    {:noreply, %{state | devices: devices}}
   end
 
   @impl true
@@ -146,7 +171,7 @@ defmodule Bimip.SignalServer do
 
         state_with_device = update_in(state, [:devices, device_id], fn
           nil -> device_info
-          existing -> %{existing | ws_pid: ws_pid, last_seen: now, token_expiration: exp}
+          existing -> %{existing | ws_pid: ws_pid, uupid: uupid, last_seen: now, token_expiration: exp}
         end)
 
         {:noreply, update_last_seen(state_with_device, device_id)}
@@ -314,25 +339,34 @@ defmodule Bimip.SignalServer do
   defp push_message(eid, uupid, offset, device_id) do
     Queue.QueueLogImpl.acknowledge(eid, uupid, offset)
 
-    case Queue.QueueLogImpl.fetch_batch(eid, @partition, uupid, Application.Config.max_batch_size()) do
-      {:ok, []} ->
-        :ok
+    # fetch_batch is a GenServer.call into the user's queue shard. If that shard
+    # is down or still booting, the call exits with :noproc. Catch it so one
+    # unavailable shard doesn't crash this user's SignalServer.
+    try do
+      case Queue.QueueLogImpl.fetch_batch(eid, @partition, uupid, Application.Config.max_batch_size()) do
+        {:ok, []} ->
+          :ok
 
-      {:ok, messages} ->
-        %Bimip.MessageScheme{
-          route_id: 10,
-          payload:
-            {:body,
-             %Bimip.Body{
-               route_id: 6,
-               messages: messages,
-               timestamp: System.system_time(:millisecond)
-             }}
-        }
-        |> Bimip.MessageScheme.encode()
-        |> then(&Device.Transmission.emit_single(device_id, eid, &1))
+        {:ok, messages} ->
+          %Bimip.MessageScheme{
+            route_id: 10,
+            payload:
+              {:body,
+               %Bimip.Body{
+                 route_id: 6,
+                 messages: messages,
+                 timestamp: System.system_time(:millisecond)
+               }}
+          }
+          |> Bimip.MessageScheme.encode()
+          |> then(&Device.Transmission.emit_single(device_id, eid, &1))
 
-      _error ->
+        _error ->
+          :error
+      end
+    catch
+      :exit, reason ->
+        Logger.warning("Queue shard unavailable for #{eid}, skipping push: #{inspect(reason)}")
         :error
     end
   end

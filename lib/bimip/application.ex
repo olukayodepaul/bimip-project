@@ -55,7 +55,9 @@ defmodule Bimip.Application do
     # -----------------------
     # SUPERVISION TREE
     # -----------------------
-    children = connections_children ++
+    # Listeners go LAST so no device can connect before the registries,
+    # queue shards and supervisors they depend on are running.
+    children =
       [
         {Phoenix.PubSub,
           name: Bimip.PubSub,
@@ -72,7 +74,7 @@ defmodule Bimip.Application do
         {Queue.BimipSupervisor, []},
         # {BimipsSignal.SignalManager, []},
         {Task.Supervisor, name: Message.TaskSupervisor}
-      ]
+      ] ++ connections_children
     opts = [strategy: :one_for_one, name: Bimip.Supervisor]
     Supervisor.start_link(children, opts)
   end

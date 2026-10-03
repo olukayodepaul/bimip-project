@@ -17,10 +17,12 @@ defmodule Supervisor.Server do
   end
 
   @spec start_mother(state :: map()) :: {:ok, pid} | {:error, any()}
-  def start_mother(%{eid: eid} = state) do
+  def start_mother(%{eid: eid}) do
     child_spec = %{
       id: {:orchestrator_session, eid},                  # unique per user
-      start: {Bimip.SignalServer, :start_link, [state]}, # pass full state to Master
+      # Only the eid: Horde replays these args on a restart, so they must not
+      # carry per-connection data (ws_pid, device_id, token) that goes stale.
+      start: {Bimip.SignalServer, :start_link, [%{eid: eid}]},
       restart: :transient,
       shutdown: 5000
     }

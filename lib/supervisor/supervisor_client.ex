@@ -16,7 +16,7 @@ use Horde.DynamicSupervisor
     Horde.DynamicSupervisor.init(strategy: :one_for_one)
   end
 
-  def start_session({eid, device_id, _exp, _ws_pid, _uupid} = state) do
+  def start_session({eid, device_id, exp, ws_pid, uupid} = state) do
     child_spec = %{
       id: {:device_session, device_id},
       start: {Bimip.SignalClient, :start_link, [state]},
@@ -30,7 +30,10 @@ use Horde.DynamicSupervisor
         {:ok, pid}
 
       {:error, {:already_started, pid}} ->
-        Logger.warning("Bimip.Device.Client Session already exists for device_id=#{device_id}, pid=#{inspect(pid)}")
+        # Reconnect with the same device_id: the old socket may be a dead
+        # (half-open) connection, so hand the existing session the new socket.
+        Logger.warning("Bimip.Device.Client Session already exists for device_id=#{device_id}, pid=#{inspect(pid)}; replacing socket")
+        GenServer.cast(pid, {:replace_socket, ws_pid, exp, uupid})
         {:ok, pid}
 
       {:error, reason} ->
